@@ -41,6 +41,11 @@ pub struct Finite(f64);
 impl Finite {
     pub const ZERO: Self = Self(0.0);
 
+    /// Accepts a finite value, normalising negative zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NonFiniteError`] if the value is `NaN` or an infinity.
     pub const fn new(value: f64) -> Result<Self, NonFiniteError> {
         if value.is_finite() {
             // Collapse negative zero so that equality and hashing agree.

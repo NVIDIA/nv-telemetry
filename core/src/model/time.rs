@@ -28,6 +28,12 @@ pub struct Timestamp {
 impl Timestamp {
     pub const NANOS_PER_SECOND: u32 = 1_000_000_000;
 
+    /// Builds a timestamp from a Unix second count and a sub-second offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimestampError::InvalidNanoseconds`] if the sub-second part is
+    /// not below one second, which would make two timestamps compare wrongly.
     pub const fn new(seconds: i64, nanoseconds: u32) -> Result<Self, TimestampError> {
         if nanoseconds >= Self::NANOS_PER_SECOND {
             return Err(TimestampError::InvalidNanoseconds(nanoseconds));
@@ -46,6 +52,12 @@ impl Timestamp {
         self.nanoseconds
     }
 
+    /// Converts from a system clock reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimestampError::OutOfRange`] if the instant falls outside the
+    /// range a 64-bit second count can address.
     pub fn from_system_time(value: SystemTime) -> Result<Self, TimestampError> {
         match value.duration_since(UNIX_EPOCH) {
             Ok(duration) => Self::from_positive_duration(duration),
@@ -53,6 +65,12 @@ impl Timestamp {
         }
     }
 
+    /// Converts to a system clock reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimestampError::OutOfRange`] if the instant is not
+    /// representable as a [`SystemTime`] on this platform.
     pub fn to_system_time(self) -> Result<SystemTime, TimestampError> {
         if self.seconds >= 0 {
             let seconds = u64::try_from(self.seconds).map_err(|_| TimestampError::OutOfRange)?;
@@ -100,6 +118,12 @@ pub struct ObservationWindow {
 }
 
 impl ObservationWindow {
+    /// Builds a window spanning two instants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimestampError::WindowEndsBeforeStart`] if the end precedes the
+    /// start, which would describe a collection that finished before it began.
     pub const fn new(
         started_at: Timestamp,
         completed_at: Timestamp,
