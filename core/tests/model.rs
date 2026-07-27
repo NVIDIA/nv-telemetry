@@ -14,15 +14,30 @@
 // limitations under the License.
 
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
-use nv_telemetry_core::{
-    AcquisitionOutcome, AcquisitionStatus, AttrValue, Attribute, Attributes, AttributesError,
-    Completeness, Coverage, EndpointContext, FailureClass, Finite, Name, ObservationScope,
-    ObservationWindow, Origin, Subject, Timestamp, TimestampError,
-};
+use nv_telemetry_core::AcquisitionOutcome;
+use nv_telemetry_core::AcquisitionStatus;
+use nv_telemetry_core::AttrValue;
+use nv_telemetry_core::Attribute;
+use nv_telemetry_core::Attributes;
+use nv_telemetry_core::AttributesError;
+use nv_telemetry_core::Completeness;
+use nv_telemetry_core::Coverage;
+use nv_telemetry_core::EndpointContext;
+use nv_telemetry_core::FailureClass;
+use nv_telemetry_core::Finite;
+use nv_telemetry_core::Name;
+use nv_telemetry_core::ObservationScope;
+use nv_telemetry_core::ObservationWindow;
+use nv_telemetry_core::Origin;
+use nv_telemetry_core::Subject;
+use nv_telemetry_core::Timestamp;
+use nv_telemetry_core::TimestampError;
 
 fn timestamp(seconds: i64) -> Timestamp {
     Timestamp::new(seconds, 0).expect("valid timestamp")

@@ -16,7 +16,8 @@
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 
 /// A floating point observation value that is never `NaN` or infinite.
 ///

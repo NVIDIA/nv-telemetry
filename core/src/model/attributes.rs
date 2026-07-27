@@ -16,7 +16,9 @@
 use std::error::Error;
 use std::fmt;
 
-use super::{Finite, Name, NonFiniteError};
+use super::Finite;
+use super::Name;
+use super::NonFiniteError;
 
 /// An attribute key, distinct from its value at the type level.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

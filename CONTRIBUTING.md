@@ -27,6 +27,11 @@
    git add .
    git commit -s -m "Your commit message"
    ```
+
+   Run `make all` before pushing; it is the same gate CI runs. Use `make fmt`
+   rather than `cargo fmt`, because the import layout relies on a nightly-only
+   rustfmt option that stable rustfmt ignores with a warning instead of an
+   error. `make rust-install` fetches the toolchain that step needs.
 6. **Push to your fork**:
    ```bash
    git push origin feature/your-feature-name
