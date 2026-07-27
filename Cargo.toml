@@ -11,3 +11,34 @@ repository = "https://github.com/NVIDIA/nv-telemetry"
 [workspace.dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "rc", "std"] }
 serde_json = "1"
+
+# CI runs clippy with `-D warnings`, so everything below is effectively an
+# error. Lints live here rather than in the CI invocation so that an editor
+# reports exactly what the pipeline will.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+unimplemented = "warn"
+undocumented_unsafe_blocks = "warn"
+# Every plain record in the model is #[non_exhaustive] and every invariant
+# carrier keeps its fields private, so this holds the line on that convention.
+exhaustive_structs = "warn"
+
+# Exact float comparison is the design of `Finite`, not an oversight: the type
+# exists so that observations can be diffed and hashed bit-for-bit.
+float_cmp = "allow"
+# The model is almost entirely pure accessors, so this fires on nearly every
+# method and says nothing useful.
+must_use_candidate = "allow"

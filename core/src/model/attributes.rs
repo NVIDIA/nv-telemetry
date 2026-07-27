@@ -69,6 +69,10 @@ pub enum AttrValue {
 
 impl AttrValue {
     /// Builds a floating point attribute, rejecting non-finite input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NonFiniteError`] if the value is `NaN` or an infinity.
     pub const fn f64(value: f64) -> Result<Self, NonFiniteError> {
         match Finite::new(value) {
             Ok(value) => Ok(Self::F64(value)),
@@ -153,6 +157,11 @@ pub struct Attributes(Box<[Attribute]>);
 
 impl Attributes {
     /// Sorts attributes by key and rejects duplicate keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttributesError::DuplicateKey`] if two attributes share a key,
+    /// since the sorted representation could not then be searched unambiguously.
     pub fn new(mut attributes: Vec<Attribute>) -> Result<Self, AttributesError> {
         attributes.sort_unstable_by(|left, right| left.key.cmp(&right.key));
         if let Some(duplicate) = attributes
