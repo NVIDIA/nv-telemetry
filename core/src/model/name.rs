@@ -16,7 +16,8 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 
 /// An immutable string used for model vocabulary and device-supplied names.

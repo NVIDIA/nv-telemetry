@@ -26,10 +26,21 @@ mod name;
 mod number;
 mod time;
 
-pub use attributes::{AttrKey, AttrValue, Attribute, Attributes, AttributesError};
-pub use context::{
-    Completeness, Coverage, EndpointContext, EndpointId, ObservationScope, Origin, Subject,
-};
+pub use attributes::AttrKey;
+pub use attributes::AttrValue;
+pub use attributes::Attribute;
+pub use attributes::Attributes;
+pub use attributes::AttributesError;
+pub use context::Completeness;
+pub use context::Coverage;
+pub use context::EndpointContext;
+pub use context::EndpointId;
+pub use context::ObservationScope;
+pub use context::Origin;
+pub use context::Subject;
 pub use name::Name;
-pub use number::{Finite, NonFiniteError};
-pub use time::{ObservationWindow, Timestamp, TimestampError};
+pub use number::Finite;
+pub use number::NonFiniteError;
+pub use time::ObservationWindow;
+pub use time::Timestamp;
+pub use time::TimestampError;

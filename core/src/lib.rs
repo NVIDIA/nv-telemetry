@@ -51,9 +51,24 @@
 pub mod model;
 pub mod status;
 
-pub use model::{
-    AttrKey, AttrValue, Attribute, Attributes, AttributesError, Completeness, Coverage,
-    EndpointContext, EndpointId, Finite, Name, NonFiniteError, ObservationScope, ObservationWindow,
-    Origin, Subject, Timestamp, TimestampError,
-};
-pub use status::{AcquisitionOutcome, AcquisitionStatus, FailureClass};
+pub use model::AttrKey;
+pub use model::AttrValue;
+pub use model::Attribute;
+pub use model::Attributes;
+pub use model::AttributesError;
+pub use model::Completeness;
+pub use model::Coverage;
+pub use model::EndpointContext;
+pub use model::EndpointId;
+pub use model::Finite;
+pub use model::Name;
+pub use model::NonFiniteError;
+pub use model::ObservationScope;
+pub use model::ObservationWindow;
+pub use model::Origin;
+pub use model::Subject;
+pub use model::Timestamp;
+pub use model::TimestampError;
+pub use status::AcquisitionOutcome;
+pub use status::AcquisitionStatus;
+pub use status::FailureClass;

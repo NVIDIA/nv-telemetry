@@ -5,11 +5,17 @@
 # an editor reports exactly what this pipeline will. The only thing added here
 # is promoting warnings to errors, which is wanted in CI but not while editing.
 #
+# rustfmt.toml uses a nightly-only option, and stable rustfmt would ignore it
+# with a warning rather than an error. Every format step therefore names the
+# toolchain, so a plain `cargo fmt` cannot quietly disagree with the pipeline.
+#
 
 export RUSTDOCFLAGS := -D warnings
 
+fmt-toolchain := nightly-2026-06-16
+
 define build-and-test
-	cargo fmt --all -- --check
+	cargo +$(fmt-toolchain) fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo clippy --workspace --all-targets $1 -- -D warnings
 	cargo build --workspace
@@ -27,8 +33,12 @@ all:
 ci: rust-install
 	$(call build-and-test,--all-features)
 
+fmt:
+	cargo +$(fmt-toolchain) fmt --all
+
 rust-install:
 	rustup component add clippy rustfmt
+	rustup toolchain install $(fmt-toolchain) --profile minimal --component rustfmt
 
 clean:
 	rm -rf target

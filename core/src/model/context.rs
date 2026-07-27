@@ -13,7 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Attributes, Name};
+use super::Attributes;
+use super::Name;
 
 /// Stable identity of an endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

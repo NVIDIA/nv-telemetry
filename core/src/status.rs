@@ -15,7 +15,9 @@
 
 use std::sync::Arc;
 
-use crate::{EndpointContext, ObservationWindow, Origin};
+use crate::EndpointContext;
+use crate::ObservationWindow;
+use crate::Origin;
 
 /// Stable, source-neutral classification of an acquisition failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

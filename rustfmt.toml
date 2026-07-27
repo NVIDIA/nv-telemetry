@@ -1,0 +1,12 @@
+# One `use` per item, so that two branches adding an import touch two different
+# lines instead of both editing the inside of one brace list. A merge of those
+# is a textual conflict that git cannot resolve, and resolving it by hand is
+# where a dropped import comes from.
+#
+# `imports_granularity` is a nightly rustfmt option and stable rustfmt ignores
+# it with a warning rather than an error, which would let unformatted code pass
+# unnoticed. The Makefile therefore pins the toolchain for the format step; run
+# `make fmt` rather than `cargo fmt` directly.
+unstable_features = true
+imports_granularity = "Item"
+group_imports = "StdExternalCrate"
