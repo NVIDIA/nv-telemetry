@@ -54,29 +54,37 @@ Endpoint inventory ─┐
                     ├─> embedder reconciliation loop
 Generic data needs ─┘             │
                                   v
-                         library provider planner
-                                  │
-                                  v
-                      dispatcher subtree recipes
-                                  │
-                                  v
-                    embedder-owned dispatcher graph
-                                  │
-                                  v
-                         read-only source tasks
-                                  │
-                         ┌────────┴────────┐
-                         v                 v
-                 observation batches  acquisition status
-                         └────────┬────────┘
-                                  v
-                          consumer adapters
+    ┌─────────────────> library provider planner
+    │                             │
+    │                             v
+    │                 dispatcher subtree recipes
+    │         (acquisition tasks and capability probes)
+    │                             │
+    │                             v
+    │              embedder-owned dispatcher graph
+    │                             │
+    │                             v
+    │                  read-only source tasks
+    │                             │
+    │            ┌────────────────┼────────────────┐
+    │            v                v                v
+    │       observation      acquisition      capability
+    │         batches          status          results
+    │            └───────┬────────┘                │
+    │                    v                         │
+    │            consumer adapters                 │
+    └──────────────────────────────────────────────┘
+                 replan when capability is learned
 ```
 
 On an endpoint or policy change, the embedder invokes the planner and recipes
 to update only the affected portion of its dispatcher graph. Endpoint removal,
 task cancellation, draining, and final graph lifecycle remain under embedder
 control.
+
+The loop on the left is why planning is not a single pass: a capability probe
+is itself dispatched work, so an unknown capability resolves only after its
+probe has been admitted and run.
 
 ## Inputs
 
@@ -120,6 +128,31 @@ endpoint changes and do not require source-specific code.
 A **data need** states what data is required. A **provider** states one way to
 obtain it.
 
+Three kinds of discovery remain distinct:
+
+- **Endpoint inventory** is supplied by the embedder and determines which
+  devices exist.
+- **Capability probing** determines which providers an endpoint supports.
+- **Resource cataloging** discovers protocol resources inside an endpoint,
+  such as sensors, log services, or firmware components.
+
+All three feed planning, but they differ in who produces them. Endpoint
+inventory is a control input: it arrives from the embedder and the library
+never derives it. A capability result is a control fact the library produces
+itself by issuing a probe request. A resource catalog is an acquisition result
+that can be reused by other acquisition stages and published as observation
+data.
+
+Collapsing any pair moves work into the wrong plane. If the library derived
+endpoint inventory, it would decide which devices exist, which belongs to the
+embedder. If capability probing and resource cataloging were one step, learning
+whether a bulk provider exists would require walking every sensor, making
+planning as expensive as collection and coupling plan stability to device data
+churn; the two also age differently, since capability is near-static and
+TTL-cached while a catalog changes whenever hardware does. If cataloging
+happened inside planning, the planner would perform I/O and the catalog could
+not also be emitted as an inventory batch.
+
 For example, sensor readings could be provided by:
 
 - Redfish TelemetryService with one bulk request;
@@ -144,6 +177,98 @@ This is intentionally not a scoring engine. Selection must remain explainable:
 the resolved plan records the selected provider and why alternatives were
 rejected or demoted.
 
+### Probing is dispatched work
+
+A capability probe is a request against a device, so it is subject to the same
+admission control as any acquisition: it runs as a dispatcher task under the
+endpoint's concurrency limits, rate budget, and breakers, and carries its own
+request class. Nothing in the library issues an unscheduled request. Without
+this, a fleet-wide restart or a wave of TTL expiries would probe every endpoint
+at once, which is exactly the burst the dispatcher exists to smooth, and probes
+would evade the breaker that an unreachable endpoint has already tripped.
+
+Planning is therefore asynchronous rather than a single blocking pass. When a
+need has no cached capability result, the planner emits a probe task and leaves
+that need unresolved; the probe result lands as a control fact and triggers a
+replan for the affected endpoint. A resolved plan is consequently allowed to be
+partial, and the embedder reconciles its dispatcher graph incrementally as
+capability becomes known.
+
+An endpoint whose capability is still unknown produces no observations and no
+fabricated ones. Probe failures are reported as acquisition status like any
+other request failure.
+
+### Composable acquisition stages
+
+A provider recipe expands a data need into a directed acyclic graph of
+acquisition stages. A stage declares its prerequisites and may produce:
+
+- a private, protocol-specific artifact for downstream stages;
+- one or more public observation batches, but only for requested data needs.
+
+Equivalent stages for the same endpoint are deduplicated. Their artifacts are
+cached by generation or TTL and invalidated when endpoint access changes or
+the provider reports that they are stale.
+
+For Redfish sensors, a `SensorCatalog` stage discovers resources once and
+retains `SensorLink` handles privately. The same catalog can then:
+
+- project sensor metadata into an inventory batch when sensor inventory was
+  explicitly requested;
+- expand into per-sensor OData reading tasks;
+- provide metadata needed to interpret bulk TelemetryService readings.
+
+If both inventory and readings are requested, they share one catalog fetch. If
+only readings are requested, the catalog remains an internal prerequisite and
+does not publish unsolicited inventory.
+
+Logs, firmware, and other domains use their own catalog or probe stages. They
+share only prerequisites they explicitly declare, such as a Redfish
+`ServiceRoot` stage:
+
+```
+ServiceRoot
+  ├─ SensorCatalog ──> sensor inventory and/or reading tasks
+  ├─ LogServiceCatalog ──> periodic log tasks
+  ├─ EventServiceProbe ──> SSE subscription
+  └─ FirmwareCatalog ──> firmware inventory
+```
+
+The embedder chooses data needs. Protocol modules declare recipes. The planner
+resolves provider preferences and deduplicates stages. Every stage that
+performs network I/O is admitted by the dispatcher.
+
+Private artifacts such as `SensorLink` never enter the data plane. Public
+inventory items and readings instead share a stable, protocol-neutral subject
+identity so consumers can correlate them without understanding Redfish.
+
+### Typed projection
+
+Protocol integrations map compiled source types into the data plane through
+compile-checked projection declarations. A declaration names required source
+fields, optional derived values, and the output constructor. Missing or invalid
+required fields produce structured projection issues; Rust type mismatches fail
+at compile time.
+
+Signal metadata and samples are projected separately. Metadata produces an
+immutable `SignalDescriptor` indexed by a canonical `SignalKey`. Sensor,
+EnvironmentMetrics, and MetricReport samples project to the same key and are
+joined with the descriptor through a `SignalCatalog`. This avoids repeating
+units, thresholds, and bounds on every sample while allowing the planner to
+change acquisition routes without changing public reading identity.
+
+Because readings share a descriptor by pointer, the catalog owns metadata
+revisions. A refresh that reports an unchanged definition keeps the existing
+descriptor, so revision counts real definition changes rather than polls and
+sharing survives across refreshes.
+
+Non-finite source values are dropped during projection and surface as a missing
+field. The observation model admits only finite floats, so that observations
+remain exactly comparable and can survive a serialization round trip.
+
+Projection declarations contain source-specific field knowledge. The core
+observation model and dispatcher do not depend on Redfish schema types.
+
 ## Dispatcher placement
 
 The dispatcher is the execution mechanism between planning and acquisition:
@@ -153,6 +278,11 @@ The dispatcher is the execution mechanism between planning and acquisition:
 - library recipes translate that plan into dispatcher subtrees;
 - the dispatcher decides **when** polled work may run;
 - the admitted source task constructs the request and parses the response.
+
+Capability probes are dispatched on the same terms. Planning emits them as
+tasks rather than issuing them directly, so the question the planner needs
+answered is subject to the same limits, breakers, and request-class policy as
+the collection it enables.
 
 The library exposes dispatcher-compatible task types, typed tuning policy, and
 standard subtree recipes. The embedding service owns the final graph, graph
@@ -257,8 +387,8 @@ The library exposes two generic output streams.
 - origin and provider/request-class provenance;
 - the observation time or window;
 - completeness information;
-- one homogeneous payload domain: readings, logs, state observations, or
-  inventory.
+- one homogeneous payload domain: readings, logs, state observations,
+  inventory, or an observed resource graph.
 
 Batches are immutable and safe to fan out by reference. Consumers may include
 exporters, in-process channels, persistence, APIs, or external adapters.
@@ -269,6 +399,49 @@ Completeness is part of the observation, not an acquisition error:
   absent;
 - a partial snapshot must not silently delete unobserved inventory;
 - a failed request emits no fabricated device observation.
+
+### Observed resource graph
+
+The resource graph is the structured snapshot domain for OOB device state. It
+preserves canonical subjects, original source keys, source schemas and
+versions, recursive properties, explicit nulls, unresolved references, and
+typed directed relationships.
+
+Graph snapshots may represent an entire endpoint or a subtree of one. Subject
+scope on a graph means reachability from the scope subject rather than subject
+equality, because a graph is a connected structure and the natural unit of
+partial collection is a subtree such as one chassis and its contents. A
+complete graph can establish absence for resources and relationships within
+that scope. A partial graph updates observed facts but cannot establish that
+omitted facts were removed.
+
+Absence is also tracked per resource. A resource records whether its properties
+are the device's full representation, so a consumer can tell a property the
+device does not implement from one that was never requested. A convergence
+consumer that conflates the two would read an uncollected property as unset and
+attempt to write it.
+
+Each resource maps to exactly one source location. Data from another URI becomes
+its own resource joined by a relation, never a merge, because merging collapses
+two observation times and two entity tags into one.
+
+Resource targets may be outside the collected graph so partial Redfish and
+switch topology walks can retain external links. Relationship sources must be
+present because the source is the resource on which the relation was observed.
+Cycles are valid: containment, management, fabric, and peer relationships do
+not form one universal tree.
+
+Graphs are stored in canonical sorted order and carry no non-finite floats, so
+a whole graph can be compared and content-hashed. A convergence adapter depends
+on that: state comparison must be exact and must not report spurious change.
+
+Graph size and property nesting are bounded at the model boundary. Collection
+policy owns request-level limits, but the data plane still refuses input that
+one malfunctioning endpoint could use to exhaust a collector serving many.
+
+The graph is suitable input for an embedder-owned adapter that materializes
+convergence observed state. Desired state, drift calculation, operation
+selection, and mutation remain outside `nv-telemetry`.
 
 ### Acquisition status
 
@@ -305,7 +478,9 @@ convergence concepts out of core observation types.
 The model must preserve:
 
 - endpoint identity without copying static context into every item;
-- typed values, units, timestamps, attributes, and provenance;
+- recursive typed properties, explicit nulls, references, units, timestamps,
+  attributes, and provenance;
+- stable resource identity and typed relationships across protocol sources;
 - complete versus partial snapshot semantics;
 - immutable sharing across multiple consumers;
 - private construction invariants and room to change internal storage.
