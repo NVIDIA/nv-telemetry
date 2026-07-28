@@ -39,12 +39,10 @@ impl Name {
         Self(NameRepr::Static(value))
     }
 
-    /// Creates a name from shared string storage.
     pub fn from_shared(value: Arc<str>) -> Self {
         Self(NameRepr::Shared(value))
     }
 
-    /// Returns the string content.
     pub fn as_str(&self) -> &str {
         match &self.0 {
             NameRepr::Static(value) => value,
@@ -52,7 +50,6 @@ impl Name {
         }
     }
 
-    /// Returns whether this name uses allocation-free static storage.
     pub const fn is_static(&self) -> bool {
         matches!(self.0, NameRepr::Static(_))
     }

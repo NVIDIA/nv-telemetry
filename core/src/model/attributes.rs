@@ -27,12 +27,10 @@ use super::NonFiniteError;
 pub struct AttrKey(Name);
 
 impl AttrKey {
-    /// Creates an attribute key from fixed vocabulary.
     pub const fn from_static(value: &'static str) -> Self {
         Self(Name::from_static(value))
     }
 
-    /// Returns the key content.
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -162,8 +160,7 @@ impl Attributes {
     ///
     /// # Errors
     ///
-    /// Returns [`AttributesError::DuplicateKey`] if two attributes share a key,
-    /// since the sorted representation could not then be searched unambiguously.
+    /// Returns [`AttributesError::DuplicateKey`] if two attributes share a key.
     pub fn new(mut attributes: Vec<Attribute>) -> Result<Self, AttributesError> {
         attributes.sort_unstable_by(|left, right| left.key.cmp(&right.key));
         if let Some(duplicate) = attributes

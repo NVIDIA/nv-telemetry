@@ -19,34 +19,42 @@
 //! protocol, I/O, async-runtime, dispatcher, exporter, or health-policy
 //! dependencies.
 //!
-//! Every observation is attributed to an endpoint, a subject, and the provider
-//! that produced it, and is qualified by how much of a declared scope it
-//! covers:
+//! A batch contains exactly one payload domain:
 //!
 //! ```
+//! use std::sync::Arc;
 //! use nv_telemetry_core::{
-//!     Attributes, Completeness, Coverage, EndpointContext, ObservationScope,
-//!     ObservationWindow, Origin, Subject, Timestamp,
+//!     Attributes, Coverage, EndpointContext, ObservationBatch, ObservationWindow,
+//!     Origin, Payload, Timestamp,
 //! };
 //!
-//! let endpoint = EndpointContext::new("bmc-1", Attributes::empty());
+//! let endpoint = Arc::new(EndpointContext::new("bmc-1", Attributes::empty()));
 //! let observed_at = Timestamp::new(1_700_000_000, 0)?;
 //! let window = ObservationWindow::point(observed_at);
-//! let origin = Origin::new("example-provider", "example-request");
+//! let payloads = [
+//!     Payload::Readings(Box::new([])),
+//!     Payload::Logs(Box::new([])),
+//!     Payload::States(Box::new([])),
+//!     Payload::Inventory(Box::new([])),
+//! ];
 //!
-//! // A partial sweep of one sensor cannot be used to infer that anything else
-//! // is absent, so the claim it carries is narrowed on both axes.
-//! let coverage = Coverage::new(
-//!     ObservationScope::Subject(Subject::new("sensor", "CPU0Temp")),
-//!     Completeness::partial(Some(1)),
-//! );
-//!
-//! assert_eq!(endpoint.id.as_str(), "bmc-1");
-//! assert_eq!(window.started_at(), observed_at);
-//! assert_eq!(origin.provider.as_str(), "example-provider");
-//! assert!(!coverage.completeness.is_complete());
+//! for payload in payloads {
+//!     let batch = ObservationBatch::new(
+//!         Arc::clone(&endpoint),
+//!         Origin::new("example-provider", "example-request"),
+//!         window,
+//!         Coverage::complete_endpoint(),
+//!         payload,
+//!     )?;
+//!     assert!(batch.payload().is_empty());
+//! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+
+// Compiles the README's examples so they cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct Readme;
 
 pub mod model;
 pub mod status;
@@ -56,19 +64,39 @@ pub use model::AttrValue;
 pub use model::Attribute;
 pub use model::Attributes;
 pub use model::AttributesError;
+pub use model::BatchError;
 pub use model::Completeness;
 pub use model::Coverage;
 pub use model::EndpointContext;
 pub use model::EndpointId;
 pub use model::Finite;
+pub use model::InventoryBuilder;
+pub use model::InventoryItem;
+pub use model::LogRecord;
+pub use model::LogsBuilder;
 pub use model::Name;
 pub use model::NonFiniteError;
+pub use model::NumericValue;
+pub use model::ObservationBatch;
 pub use model::ObservationScope;
 pub use model::ObservationWindow;
 pub use model::Origin;
+pub use model::Payload;
+pub use model::RangeOrderError;
+pub use model::Reading;
+pub use model::ReadingKind;
+pub use model::ReadingsBuilder;
+pub use model::ReportedState;
+pub use model::Severity;
+pub use model::SharedBatch;
+pub use model::SignalDescriptor;
+pub use model::StateObservation;
+pub use model::StatesBuilder;
 pub use model::Subject;
 pub use model::Timestamp;
 pub use model::TimestampError;
+pub use model::Unit;
+pub use model::ValueRange;
 pub use status::AcquisitionOutcome;
 pub use status::AcquisitionStatus;
 pub use status::FailureClass;

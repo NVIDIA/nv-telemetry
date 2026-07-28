@@ -81,13 +81,13 @@ pub struct AcquisitionStatus {
 
 impl AcquisitionStatus {
     pub fn new(
-        endpoint: Arc<EndpointContext>,
+        endpoint: impl Into<Arc<EndpointContext>>,
         origin: Origin,
         window: ObservationWindow,
         outcome: AcquisitionOutcome,
     ) -> Self {
         Self {
-            endpoint,
+            endpoint: endpoint.into(),
             origin,
             window,
             outcome,
