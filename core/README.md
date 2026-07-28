@@ -95,8 +95,8 @@ subject.
 ## Readings and signal metadata
 
 `SignalDescriptor` holds the long-lived metadata — subject, metric and instance
-identity, reading kind and unit, observation time and revision, attributes,
-thresholds and bounds — and each `Reading` adds its source key, numeric value,
+identity, reading kind and unit, observation time and revision, attributes, and
+readable bounds — and each `Reading` adds its source key, numeric value,
 sample timestamp, sample attributes, and source-reported state. The split lets
 different acquisition routes, such as an individual sensor request and a bulk
 metric report, produce readings with one logical signal identity.
@@ -110,10 +110,16 @@ rather than refreshes, and `observed_at` marks when the current definition first
 appeared; a catalog tracks re-observation separately so it can still prune
 signals an endpoint has stopped reporting.
 
-`Thresholds` and `ReadingBounds` record what a device reported, including
-contradictory lanes such as an upper critical below an upper caution. Their
-`checked` methods report an inversion; projections drop an inconsistent set
-rather than publishing it.
+A signal's `bounds` is a `ValueRange`: the span the sensor is able to read,
+with either edge optional. It is a capability of the device, not a judgement
+about the value, and `checked` reports a contradictory pair so a projection can
+drop it rather than publish it.
+
+Alarm thresholds are deliberately absent. Every other field here is something
+the device *is*; a threshold is something it is *configured to*, and on most
+Redfish implementations it is writable. That makes it observed configuration
+rather than reading metadata, so it belongs with resource state, where a
+convergence engine can diff it against a desired value.
 
 ## Finite values
 
@@ -179,9 +185,6 @@ Everything else is a plain record with public fields — `Subject`, `Origin`,
 as `reading.value`, match with `Subject { kind, .. }`, and build them with the
 `new` and `with_*` methods. They are `#[non_exhaustive]`, so a struct literal
 will not compile outside this crate and a new field is not a breaking change.
-`Thresholds` and `ReadingBounds` are deliberately here: they record what a
-device reported, and `checked` is the opt-in way to reject a contradictory
-range.
 
 ## Example
 

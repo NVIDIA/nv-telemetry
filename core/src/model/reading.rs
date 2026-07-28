@@ -134,121 +134,64 @@ impl ReportedState {
     }
 }
 
-/// Source-reported caution, critical, and fatal threshold lanes.
+/// An optional lower and upper limit on a reading's value.
+///
+/// Either edge may be absent: a source that reports only a ceiling leaves the
+/// floor unset rather than inventing one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
-pub struct Thresholds {
-    pub lower_caution: Option<Finite>,
-    pub upper_caution: Option<Finite>,
-    pub lower_critical: Option<Finite>,
-    pub upper_critical: Option<Finite>,
-    pub lower_fatal: Option<Finite>,
-    pub upper_fatal: Option<Finite>,
+pub struct ValueRange {
+    pub lower: Option<Finite>,
+    pub upper: Option<Finite>,
 }
 
-impl Thresholds {
-    pub const fn new() -> Self {
-        Self {
-            lower_caution: None,
-            upper_caution: None,
-            lower_critical: None,
-            upper_critical: None,
-            lower_fatal: None,
-            upper_fatal: None,
-        }
+impl ValueRange {
+    pub const fn new(lower: Option<Finite>, upper: Option<Finite>) -> Self {
+        Self { lower, upper }
+    }
+
+    pub const fn empty() -> Self {
+        Self::new(None, None)
     }
 
     #[must_use]
-    pub const fn with_lower_caution(mut self, value: Finite) -> Self {
-        self.lower_caution = Some(value);
+    pub const fn with_lower(mut self, value: Finite) -> Self {
+        self.lower = Some(value);
         self
     }
 
     #[must_use]
-    pub const fn with_upper_caution(mut self, value: Finite) -> Self {
-        self.upper_caution = Some(value);
-        self
-    }
-
-    #[must_use]
-    pub const fn with_lower_critical(mut self, value: Finite) -> Self {
-        self.lower_critical = Some(value);
-        self
-    }
-
-    #[must_use]
-    pub const fn with_upper_critical(mut self, value: Finite) -> Self {
-        self.upper_critical = Some(value);
-        self
-    }
-
-    #[must_use]
-    pub const fn with_lower_fatal(mut self, value: Finite) -> Self {
-        self.lower_fatal = Some(value);
-        self
-    }
-
-    #[must_use]
-    pub const fn with_upper_fatal(mut self, value: Finite) -> Self {
-        self.upper_fatal = Some(value);
+    pub const fn with_upper(mut self, value: Finite) -> Self {
+        self.upper = Some(value);
         self
     }
 
     pub const fn is_empty(self) -> bool {
-        self.lower_caution.is_none()
-            && self.upper_caution.is_none()
-            && self.lower_critical.is_none()
-            && self.upper_critical.is_none()
-            && self.lower_fatal.is_none()
-            && self.upper_fatal.is_none()
+        self.lower.is_none() && self.upper.is_none()
     }
 
-    /// Verifies that the reported lanes widen from caution out to fatal.
+    /// Verifies that the reported lower limit does not exceed the upper.
     ///
+    /// Storage stays permissive; a projection calls this and drops a
+    /// contradictory range rather than publishing one.
     ///
     /// # Errors
     ///
-    /// Returns [`RangeOrderError`] naming the first pair of lanes found out of
-    /// order.
+    /// Returns [`RangeOrderError`] if the two edges contradict each other.
     pub fn checked(self) -> Result<Self, RangeOrderError> {
-        let lanes = [
-            ("lower_fatal", self.lower_fatal),
-            ("lower_critical", self.lower_critical),
-            ("lower_caution", self.lower_caution),
-            ("upper_caution", self.upper_caution),
-            ("upper_critical", self.upper_critical),
-            ("upper_fatal", self.upper_fatal),
-        ];
-
-        let mut previous: Option<(&'static str, Finite)> = None;
-        for (name, value) in lanes {
-            let Some(value) = value else {
-                continue;
-            };
-            if let Some((lower_lane, lower)) = previous {
-                if lower > value {
-                    return Err(RangeOrderError {
-                        lower_lane,
-                        lower,
-                        upper_lane: name,
-                        upper: value,
-                    });
-                }
-            }
-            previous = Some((name, value));
+        match (self.lower, self.upper) {
+            (Some(lower), Some(upper)) if lower > upper => Err(RangeOrderError { lower, upper }),
+            _ => Ok(self),
         }
-        Ok(self)
     }
 }
 
-/// Two reported range values that contradict their intended ordering.
+/// Two reported range edges that contradict their intended ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RangeOrderError {
-    pub lower_lane: &'static str,
     pub lower: Finite,
-    pub upper_lane: &'static str,
     pub upper: Finite,
 }
 
@@ -256,46 +199,13 @@ impl fmt::Display for RangeOrderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "{} of {} must not exceed {} of {}",
-            self.lower_lane, self.lower, self.upper_lane, self.upper
+            "lower limit of {} must not exceed upper limit of {}",
+            self.lower, self.upper
         )
     }
 }
 
 impl Error for RangeOrderError {}
-
-/// Source-reported valid range for a reading.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub struct ReadingBounds {
-    pub minimum: Option<Finite>,
-    pub maximum: Option<Finite>,
-}
-
-impl ReadingBounds {
-    pub const fn new(minimum: Option<Finite>, maximum: Option<Finite>) -> Self {
-        Self { minimum, maximum }
-    }
-
-    /// Verifies that the reported minimum does not exceed the maximum.
-    ///
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RangeOrderError`] if the minimum exceeds the maximum.
-    pub fn checked(self) -> Result<Self, RangeOrderError> {
-        match (self.minimum, self.maximum) {
-            (Some(minimum), Some(maximum)) if minimum > maximum => Err(RangeOrderError {
-                lower_lane: "minimum",
-                lower: minimum,
-                upper_lane: "maximum",
-                upper: maximum,
-            }),
-            _ => Ok(self),
-        }
-    }
-}
 
 /// Immutable metadata shared by readings of one logical signal.
 ///
@@ -318,8 +228,7 @@ pub struct SignalDescriptor {
     /// How many times the definition has changed.
     pub revision: u64,
     pub attributes: Attributes,
-    pub thresholds: Option<Thresholds>,
-    pub bounds: Option<ReadingBounds>,
+    pub bounds: Option<ValueRange>,
 }
 
 impl SignalDescriptor {
@@ -340,7 +249,6 @@ impl SignalDescriptor {
             observed_at,
             revision: 0,
             attributes: Attributes::empty(),
-            thresholds: None,
             bounds: None,
         }
     }
@@ -358,13 +266,7 @@ impl SignalDescriptor {
     }
 
     #[must_use]
-    pub fn with_thresholds(mut self, thresholds: Thresholds) -> Self {
-        self.thresholds = Some(thresholds);
-        self
-    }
-
-    #[must_use]
-    pub fn with_bounds(mut self, bounds: ReadingBounds) -> Self {
+    pub fn with_bounds(mut self, bounds: ValueRange) -> Self {
         self.bounds = Some(bounds);
         self
     }
@@ -385,7 +287,6 @@ impl SignalDescriptor {
             observed_at: _,
             revision: _,
             attributes,
-            thresholds,
             bounds,
         } = self;
 
@@ -395,7 +296,6 @@ impl SignalDescriptor {
             && kind == &other.kind
             && unit == &other.unit
             && attributes == &other.attributes
-            && thresholds == &other.thresholds
             && bounds == &other.bounds
     }
 }

@@ -44,7 +44,6 @@ use nv_telemetry_core::ObservationWindow;
 use nv_telemetry_core::Origin;
 use nv_telemetry_core::Payload;
 use nv_telemetry_core::Reading;
-use nv_telemetry_core::ReadingBounds;
 use nv_telemetry_core::ReadingKind;
 use nv_telemetry_core::ReadingsBuilder;
 use nv_telemetry_core::ReportedState;
@@ -53,10 +52,10 @@ use nv_telemetry_core::SignalDescriptor;
 use nv_telemetry_core::StateObservation;
 use nv_telemetry_core::StatesBuilder;
 use nv_telemetry_core::Subject;
-use nv_telemetry_core::Thresholds;
 use nv_telemetry_core::Timestamp;
 use nv_telemetry_core::TimestampError;
 use nv_telemetry_core::Unit;
+use nv_telemetry_core::ValueRange;
 
 fn timestamp(seconds: i64) -> Timestamp {
     Timestamp::new(seconds, 0).expect("valid timestamp")
@@ -449,13 +448,6 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
     )
     .with_parent(entity);
 
-    let thresholds = Thresholds::new()
-        .with_lower_caution(finite!(10.0))
-        .with_upper_caution(finite!(70.0))
-        .with_lower_critical(finite!(5.0))
-        .with_upper_critical(finite!(80.0))
-        .with_lower_fatal(finite!(0.0))
-        .with_upper_fatal(finite!(90.0));
     let signal = Arc::new(
         SignalDescriptor::new(
             sensor.clone(),
@@ -465,11 +457,7 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
             Unit::from_static("celsius"),
             timestamp(99),
         )
-        .with_thresholds(thresholds)
-        .with_bounds(ReadingBounds::new(
-            Some(finite!(-5.0)),
-            Some(finite!(100.0)),
-        )),
+        .with_bounds(ValueRange::new(Some(finite!(-5.0)), Some(finite!(100.0)))),
     );
     let reading = Reading::new(
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
@@ -495,14 +483,7 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
         Some("critical")
     );
     assert_eq!(
-        reading
-            .signal
-            .thresholds
-            .and_then(|thresholds| thresholds.upper_critical),
-        Some(finite!(80.0))
-    );
-    assert_eq!(
-        reading.signal.bounds.and_then(|bounds| bounds.maximum),
+        reading.signal.bounds.and_then(|bounds| bounds.upper),
         Some(finite!(100.0))
     );
     assert_eq!(reading.value, NumericValue::F64(finite!(42.5)));
@@ -510,29 +491,17 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
 
 #[test]
 fn reported_ranges_are_stored_permissively_but_can_be_checked() {
-    let inverted = Thresholds::new()
-        .with_upper_caution(finite!(90.0))
-        .with_upper_critical(finite!(70.0));
+    let inverted = ValueRange::new(Some(finite!(100.0)), Some(finite!(-5.0)));
 
-    assert_eq!(inverted.upper_critical, Some(finite!(70.0)));
+    // Storage keeps what the device said; `checked` is the opt-in gate.
+    assert_eq!(inverted.lower, Some(finite!(100.0)));
 
-    let error = inverted.checked().expect_err("lanes contradict each other");
-    assert_eq!(error.lower_lane, "upper_caution");
-    assert_eq!(error.upper_lane, "upper_critical");
+    let error = inverted.checked().expect_err("the edges contradict");
+    assert_eq!(error.lower, finite!(100.0));
+    assert_eq!(error.upper, finite!(-5.0));
 
-    assert!(Thresholds::new()
-        .with_lower_critical(finite!(5.0))
-        .with_upper_critical(finite!(80.0))
-        .checked()
-        .is_ok());
-    assert!(
-        ReadingBounds::new(Some(finite!(100.0)), Some(finite!(-5.0)))
-            .checked()
-            .is_err()
-    );
-    assert!(ReadingBounds::new(Some(finite!(-5.0)), None)
-        .checked()
-        .is_ok());
+    assert!(ValueRange::new(Some(finite!(-5.0)), None).checked().is_ok());
+    assert!(ValueRange::empty().checked().is_ok());
 }
 
 #[test]
