@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::name::name_newtype;
 use super::Attributes;
 use super::Name;
 
@@ -22,33 +23,7 @@ use super::Name;
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EndpointId(Name);
 
-impl EndpointId {
-    pub const fn from_static(value: &'static str) -> Self {
-        Self(Name::from_static(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl From<Name> for EndpointId {
-    fn from(value: Name) -> Self {
-        Self(value)
-    }
-}
-
-impl From<String> for EndpointId {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for EndpointId {
-    fn from(value: &str) -> Self {
-        Self(value.into())
-    }
-}
+name_newtype!(EndpointId);
 
 /// Immutable endpoint identity and non-secret static attributes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

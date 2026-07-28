@@ -15,7 +15,11 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
+use super::collection::sort_and_find_duplicate;
+use super::collection::sorted_collection;
+use super::name::name_newtype;
 use super::Finite;
 use super::Name;
 use super::NonFiniteError;
@@ -26,33 +30,7 @@ use super::NonFiniteError;
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct AttrKey(Name);
 
-impl AttrKey {
-    pub const fn from_static(value: &'static str) -> Self {
-        Self(Name::from_static(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl From<Name> for AttrKey {
-    fn from(value: Name) -> Self {
-        Self(value)
-    }
-}
-
-impl From<String> for AttrKey {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for AttrKey {
-    fn from(value: &str) -> Self {
-        Self(value.into())
-    }
-}
+name_newtype!(AttrKey);
 
 /// A typed scalar attribute value.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -150,10 +128,8 @@ impl Attribute {
 }
 
 /// An immutable, key-sorted attribute collection.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Attributes(Box<[Attribute]>);
+#[derive(Clone)]
+pub struct Attributes(Arc<AttributeEntries>);
 
 impl Attributes {
     /// Sorts attributes by key and rejects duplicate keys.
@@ -162,58 +138,22 @@ impl Attributes {
     ///
     /// Returns [`AttributesError::DuplicateKey`] if two attributes share a key.
     pub fn new(mut attributes: Vec<Attribute>) -> Result<Self, AttributesError> {
-        attributes.sort_unstable_by(|left, right| left.key.cmp(&right.key));
-        if let Some(duplicate) = attributes
-            .windows(2)
-            .find(|pair| pair[0].key == pair[1].key)
+        if let Some(duplicate) =
+            sort_and_find_duplicate(&mut attributes, |left, right| left.key.cmp(&right.key))
         {
-            return Err(AttributesError::DuplicateKey(duplicate[0].key.clone()));
+            return Err(AttributesError::DuplicateKey(duplicate.key.clone()));
         }
-        Ok(Self(attributes.into_boxed_slice()))
-    }
-
-    pub fn empty() -> Self {
-        Self(Box::new([]))
-    }
-
-    pub fn as_slice(&self) -> &[Attribute] {
-        &self.0
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, Attribute> {
-        self.0.iter()
-    }
-
-    pub fn get(&self, key: &str) -> Option<&AttrValue> {
-        self.0
-            .binary_search_by(|attribute| attribute.key.as_str().cmp(key))
-            .ok()
-            .map(|index| &self.0[index].value)
-    }
-
-    pub const fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        Ok(Self::from_sorted(attributes))
     }
 }
+
+sorted_collection!(Attributes, AttributeEntries, Attribute, key, AttrValue);
 
 impl TryFrom<Vec<Attribute>> for Attributes {
     type Error = AttributesError;
 
     fn try_from(value: Vec<Attribute>) -> Result<Self, Self::Error> {
         Self::new(value)
-    }
-}
-
-impl<'a> IntoIterator for &'a Attributes {
-    type Item = &'a Attribute;
-    type IntoIter = std::slice::Iter<'a, Attribute>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
     }
 }
 

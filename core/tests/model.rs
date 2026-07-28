@@ -29,6 +29,7 @@ use nv_telemetry_core::Attributes;
 use nv_telemetry_core::AttributesError;
 use nv_telemetry_core::Completeness;
 use nv_telemetry_core::Coverage;
+use nv_telemetry_core::DurationValue;
 use nv_telemetry_core::EndpointContext;
 use nv_telemetry_core::FailureClass;
 use nv_telemetry_core::Finite;
@@ -41,19 +42,22 @@ use nv_telemetry_core::NumericValue;
 use nv_telemetry_core::ObservationBatch;
 use nv_telemetry_core::ObservationScope;
 use nv_telemetry_core::ObservationWindow;
+use nv_telemetry_core::ObservedResource;
 use nv_telemetry_core::Origin;
 use nv_telemetry_core::Payload;
+use nv_telemetry_core::PropertyMap;
 use nv_telemetry_core::Reading;
 use nv_telemetry_core::ReadingKind;
 use nv_telemetry_core::ReadingsBuilder;
 use nv_telemetry_core::ReportedState;
+use nv_telemetry_core::ResourceGraph;
 use nv_telemetry_core::Severity;
 use nv_telemetry_core::SignalDescriptor;
 use nv_telemetry_core::StateObservation;
 use nv_telemetry_core::StatesBuilder;
 use nv_telemetry_core::Subject;
+use nv_telemetry_core::TimeError;
 use nv_telemetry_core::Timestamp;
-use nv_telemetry_core::TimestampError;
 use nv_telemetry_core::Unit;
 use nv_telemetry_core::ValueRange;
 
@@ -182,16 +186,34 @@ fn attributes_are_sorted_searchable_and_unique() {
 }
 
 #[test]
+fn equal_attributes_hash_equally_however_they_were_built() {
+    // Each collection digests its entries once and hashes the digest, so two
+    // built separately have to agree for `Hash` to stay consistent with `Eq`.
+    let sorted = Attributes::new(vec![Attribute::new("a", true), Attribute::new("z", 3_u64)])
+        .expect("unique attributes");
+    let reversed = Attributes::new(vec![Attribute::new("z", 3_u64), Attribute::new("a", true)])
+        .expect("unique attributes");
+    let different = Attributes::new(vec![Attribute::new("a", false), Attribute::new("z", 3_u64)])
+        .expect("unique attributes");
+
+    assert_eq!(sorted, reversed);
+    assert_eq!(hash_of(&sorted), hash_of(&reversed));
+    assert_ne!(sorted, different);
+    assert_ne!(hash_of(&sorted), hash_of(&different));
+
+    assert_eq!(Attributes::empty(), Attributes::empty());
+    assert_eq!(hash_of(&Attributes::empty()), hash_of(&Attributes::empty()));
+}
+
+#[test]
 fn timestamps_validate_and_round_trip_before_the_epoch() {
     assert_eq!(
         Timestamp::new(0, Timestamp::NANOS_PER_SECOND),
-        Err(TimestampError::InvalidNanoseconds(
-            Timestamp::NANOS_PER_SECOND
-        ))
+        Err(TimeError::InvalidNanoseconds(Timestamp::NANOS_PER_SECOND))
     );
     assert_eq!(
         ObservationWindow::new(timestamp(2), timestamp(1)),
-        Err(TimestampError::WindowEndsBeforeStart)
+        Err(TimeError::WindowEndsBeforeStart)
     );
 
     let system_time = UNIX_EPOCH - Duration::from_millis(500);
@@ -204,6 +226,21 @@ fn timestamps_validate_and_round_trip_before_the_epoch() {
             .expect("representable system time"),
         system_time
     );
+}
+
+#[test]
+fn durations_share_the_timestamp_bound_and_carry_sign_in_the_seconds() {
+    assert!(DurationValue::new(1, 999_999_999).is_ok());
+    assert_eq!(
+        DurationValue::new(1, DurationValue::NANOS_PER_SECOND),
+        Err(TimeError::InvalidNanoseconds(
+            DurationValue::NANOS_PER_SECOND
+        ))
+    );
+
+    let negative_half_second = DurationValue::new(-1, 500_000_000).expect("valid duration");
+    assert_eq!(negative_half_second.as_nanos(), -500_000_000);
+    assert!(negative_half_second < DurationValue::new(0, 0).expect("valid duration"));
 }
 
 #[test]
@@ -229,11 +266,22 @@ fn all_payload_domains_build_as_immutable_slices() {
     let mut inventory = InventoryBuilder::new();
     inventory.push(InventoryItem::new(sensor_subject(), Attributes::empty()));
 
+    let resources = ResourceGraph::new(
+        vec![ObservedResource::complete(
+            sensor_subject(),
+            "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+            PropertyMap::empty(),
+        )],
+        Vec::new(),
+    )
+    .expect("valid resource graph");
+
     let payloads = [
         Payload::Readings(readings.finish()),
         Payload::Logs(logs.finish()),
         Payload::States(states.finish()),
         Payload::Inventory(inventory.finish()),
+        Payload::Resources(resources),
     ];
     assert!(payloads.iter().all(|payload| payload.len() == 1));
 }
@@ -637,6 +685,19 @@ fn serde_rejects_a_reading_naming_a_signal_the_table_does_not_hold() {
 fn serde_rejects_invalid_invariant_bearing_values() {
     let bad_timestamp = r#"{"seconds":0,"nanoseconds":1000000000}"#;
     assert!(serde_json::from_str::<Timestamp>(bad_timestamp).is_err());
+
+    // `DurationValue` shares the bound with `Timestamp` and validates on the
+    // way in for the same reason.
+    let bad_duration = r#"{"seconds":0,"nanoseconds":1000000000}"#;
+    assert!(serde_json::from_str::<DurationValue>(bad_duration).is_err());
+    let duration = DurationValue::new(-3, 500).expect("a valid duration");
+    assert_eq!(
+        serde_json::from_str::<DurationValue>(
+            &serde_json::to_string(&duration).expect("serialize duration")
+        )
+        .expect("round trips"),
+        duration
+    );
 
     let duplicate_attributes =
         r#"[{"key":"rack","value":{"string":"one"}},{"key":"rack","value":{"string":"two"}}]"#;

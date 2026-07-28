@@ -19,7 +19,24 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+/// Nanoseconds in one second.
+///
+/// Both types here split a signed quantity into whole seconds and a
+/// non-negative sub-second remainder, and both hold that remainder below this
+/// bound.
+const NANOS_PER_SECOND: u32 = 1_000_000_000;
+
+const fn check_nanoseconds(nanoseconds: u32) -> Result<(), TimeError> {
+    if nanoseconds >= NANOS_PER_SECOND {
+        return Err(TimeError::InvalidNanoseconds(nanoseconds));
+    }
+    Ok(())
+}
+
 /// A wall-clock timestamp represented as signed Unix seconds and nanoseconds.
+///
+/// This is an instant, not a span: see [`DurationValue`], which shares the
+/// representation but is deliberately a separate type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Timestamp {
@@ -28,17 +45,17 @@ pub struct Timestamp {
 }
 
 impl Timestamp {
-    pub const NANOS_PER_SECOND: u32 = 1_000_000_000;
+    pub const NANOS_PER_SECOND: u32 = NANOS_PER_SECOND;
 
     /// Builds a timestamp from a Unix second count and a sub-second offset.
     ///
     /// # Errors
     ///
-    /// Returns [`TimestampError::InvalidNanoseconds`] if the sub-second part is
+    /// Returns [`TimeError::InvalidNanoseconds`] if the sub-second part is
     /// not below one second.
-    pub const fn new(seconds: i64, nanoseconds: u32) -> Result<Self, TimestampError> {
-        if nanoseconds >= Self::NANOS_PER_SECOND {
-            return Err(TimestampError::InvalidNanoseconds(nanoseconds));
+    pub const fn new(seconds: i64, nanoseconds: u32) -> Result<Self, TimeError> {
+        if let Err(error) = check_nanoseconds(nanoseconds) {
+            return Err(error);
         }
         Ok(Self {
             seconds,
@@ -58,9 +75,9 @@ impl Timestamp {
     ///
     /// # Errors
     ///
-    /// Returns [`TimestampError::OutOfRange`] if the instant falls outside the
+    /// Returns [`TimeError::OutOfRange`] if the instant falls outside the
     /// range a 64-bit second count can address.
-    pub fn from_system_time(value: SystemTime) -> Result<Self, TimestampError> {
+    pub fn from_system_time(value: SystemTime) -> Result<Self, TimeError> {
         match value.duration_since(UNIX_EPOCH) {
             Ok(duration) => Self::from_positive_duration(duration),
             Err(error) => Self::from_negative_duration(error.duration()),
@@ -71,14 +88,14 @@ impl Timestamp {
     ///
     /// # Errors
     ///
-    /// Returns [`TimestampError::OutOfRange`] if the instant is not
+    /// Returns [`TimeError::OutOfRange`] if the instant is not
     /// representable as a [`SystemTime`] on this platform.
-    pub fn to_system_time(self) -> Result<SystemTime, TimestampError> {
+    pub fn to_system_time(self) -> Result<SystemTime, TimeError> {
         if self.seconds >= 0 {
-            let seconds = u64::try_from(self.seconds).map_err(|_| TimestampError::OutOfRange)?;
+            let seconds = u64::try_from(self.seconds).map_err(|_| TimeError::OutOfRange)?;
             return UNIX_EPOCH
                 .checked_add(Duration::new(seconds, self.nanoseconds))
-                .ok_or(TimestampError::OutOfRange);
+                .ok_or(TimeError::OutOfRange);
         }
 
         let absolute_seconds = self.seconds.unsigned_abs();
@@ -87,27 +104,77 @@ impl Timestamp {
         } else {
             let seconds = absolute_seconds
                 .checked_sub(1)
-                .ok_or(TimestampError::OutOfRange)?;
-            Duration::new(seconds, Self::NANOS_PER_SECOND - self.nanoseconds)
+                .ok_or(TimeError::OutOfRange)?;
+            Duration::new(seconds, NANOS_PER_SECOND - self.nanoseconds)
         };
         UNIX_EPOCH
             .checked_sub(duration)
-            .ok_or(TimestampError::OutOfRange)
+            .ok_or(TimeError::OutOfRange)
     }
 
-    fn from_positive_duration(duration: Duration) -> Result<Self, TimestampError> {
-        let seconds = i64::try_from(duration.as_secs()).map_err(|_| TimestampError::OutOfRange)?;
+    fn from_positive_duration(duration: Duration) -> Result<Self, TimeError> {
+        let seconds = i64::try_from(duration.as_secs()).map_err(|_| TimeError::OutOfRange)?;
         Self::new(seconds, duration.subsec_nanos())
     }
 
-    fn from_negative_duration(duration: Duration) -> Result<Self, TimestampError> {
-        let seconds = i64::try_from(duration.as_secs()).map_err(|_| TimestampError::OutOfRange)?;
+    fn from_negative_duration(duration: Duration) -> Result<Self, TimeError> {
+        let seconds = i64::try_from(duration.as_secs()).map_err(|_| TimeError::OutOfRange)?;
         if duration.subsec_nanos() == 0 {
             Self::new(-seconds, 0)
         } else {
-            let seconds = seconds.checked_add(1).ok_or(TimestampError::OutOfRange)?;
-            Self::new(-seconds, Self::NANOS_PER_SECOND - duration.subsec_nanos())
+            let seconds = seconds.checked_add(1).ok_or(TimeError::OutOfRange)?;
+            Self::new(-seconds, NANOS_PER_SECOND - duration.subsec_nanos())
         }
+    }
+}
+
+/// A signed span of time with nanosecond precision.
+///
+/// This shares [`Timestamp`]'s representation but not its meaning: one names
+/// an instant and the other a length, and they must not substitute for each
+/// other.
+///
+/// The nanosecond component is always a non-negative offset applied toward
+/// positive infinity, as on `Timestamp`. Minus half a second is therefore
+/// `seconds = -1, nanoseconds = 500_000_000`, and the derived ordering is
+/// chronological because of that convention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct DurationValue {
+    seconds: i64,
+    nanoseconds: u32,
+}
+
+impl DurationValue {
+    pub const NANOS_PER_SECOND: u32 = NANOS_PER_SECOND;
+
+    /// Builds a duration from a second count and a sub-second offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::InvalidNanoseconds`] if the sub-second part is
+    /// not below one second.
+    pub const fn new(seconds: i64, nanoseconds: u32) -> Result<Self, TimeError> {
+        if let Err(error) = check_nanoseconds(nanoseconds) {
+            return Err(error);
+        }
+        Ok(Self {
+            seconds,
+            nanoseconds,
+        })
+    }
+
+    pub const fn seconds(self) -> i64 {
+        self.seconds
+    }
+
+    pub const fn nanoseconds(self) -> u32 {
+        self.nanoseconds
+    }
+
+    /// Returns the total signed duration in nanoseconds.
+    pub const fn as_nanos(self) -> i128 {
+        self.seconds as i128 * NANOS_PER_SECOND as i128 + self.nanoseconds as i128
     }
 }
 
@@ -124,14 +191,11 @@ impl ObservationWindow {
     ///
     /// # Errors
     ///
-    /// Returns [`TimestampError::WindowEndsBeforeStart`] if the end precedes
+    /// Returns [`TimeError::WindowEndsBeforeStart`] if the end precedes
     /// the start.
-    pub const fn new(
-        started_at: Timestamp,
-        completed_at: Timestamp,
-    ) -> Result<Self, TimestampError> {
+    pub const fn new(started_at: Timestamp, completed_at: Timestamp) -> Result<Self, TimeError> {
         if timestamp_after(started_at, completed_at) {
-            return Err(TimestampError::WindowEndsBeforeStart);
+            return Err(TimeError::WindowEndsBeforeStart);
         }
         Ok(Self {
             started_at,
@@ -160,14 +224,16 @@ const fn timestamp_after(left: Timestamp, right: Timestamp) -> bool {
         || (left.seconds == right.seconds && left.nanoseconds > right.nanoseconds)
 }
 
+/// A rejected timestamp, duration, or observation window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TimestampError {
+#[non_exhaustive]
+pub enum TimeError {
     InvalidNanoseconds(u32),
     WindowEndsBeforeStart,
     OutOfRange,
 }
 
-impl fmt::Display for TimestampError {
+impl fmt::Display for TimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidNanoseconds(value) => {
@@ -184,10 +250,27 @@ impl fmt::Display for TimestampError {
     }
 }
 
-impl Error for TimestampError {}
+impl Error for TimeError {}
 
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Timestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Representation {
+            seconds: i64,
+            nanoseconds: u32,
+        }
+
+        let value = <Representation as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value.seconds, value.nanoseconds).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DurationValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,

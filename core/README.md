@@ -30,13 +30,16 @@ src/
     ├── mod.rs             model exports and completeness semantics
     ├── name.rs            owned or static names
     ├── number.rs          finite floating-point observation values
+    ├── collection.rs      shared machinery for the sorted collections
     ├── attributes.rs      sorted typed key/value attributes
-    ├── time.rs            timestamps and observation windows
+    ├── time.rs            timestamps, durations, and observation windows
     ├── context.rs         endpoints, subjects, origin, scope, coverage
     ├── reading.rs         signal metadata and numeric readings
     ├── log.rs             log records and severity
     ├── state.rs           source-reported state observations
     ├── inventory.rs       discovered inventory items
+    ├── property.rs        recursive resource property values
+    ├── resource.rs        observed resources, relations, resource graph
     └── batch.rs           payloads, batches, validation, row builders
 ```
 
@@ -53,8 +56,9 @@ crate root.
 - `Coverage`: the scope and completeness claim;
 - `Payload`: exactly one observation domain.
 
-`Payload` is `#[non_exhaustive]` with four variants — `Readings`, `Logs`,
-`States`, `Inventory` — each holding a `Box<[_]>` of rows.
+`Payload` is `#[non_exhaustive]` with five variants. `Readings`, `Logs`,
+`States`, and `Inventory` each hold a `Box<[_]>` of rows; `Resources` holds a
+`ResourceGraph`, which is a connected structure rather than a list.
 
 A batch and everything in it implements `Eq` and `Hash`, so a snapshot works as
 a cache key and a consumer can tell a changed observation from a repeated one
@@ -70,6 +74,19 @@ and status an endpoint produces, and `SignalDescriptor` because one is shared by
 every sample of its signal. `Arc::ptr_eq` is a fast path for "same definition",
 not a replacement for comparing descriptors: readings built from different
 catalogs hold equal definitions separately.
+
+`Attributes` and `PropertyMap` share their entries for the same reason: one
+projection labels every row it emits, so cloning is a refcount bump rather than
+a copy. The sharing is an implementation detail, since both are immutable once
+built and compare by content.
+
+Each also caches a digest of its entries in that shared allocation, computed on
+first use, because hashing a snapshot would otherwise walk every entry of every
+row. The digest is seeded per process, so an endpoint that chooses its own
+attribute keys cannot precompute entries that collide in a consumer's map.
+Caching counts as interior mutability, so clippy's `mutable_key_type` fires on a
+`HashMap` keyed by anything holding one; the digest is derived from the entries
+equality already compares, so it cannot change what a key hashes to.
 
 Constructors take `impl Into<Arc<_>>`, so a projection passes the handle it
 holds and a one-off caller passes the value. The batch itself is not forced
@@ -118,8 +135,51 @@ drop it rather than publish it.
 Alarm thresholds are deliberately absent. Every other field here is something
 the device *is*; a threshold is something it is *configured to*, and on most
 Redfish implementations it is writable. That makes it observed configuration
-rather than reading metadata, so it belongs with resource state, where a
-convergence engine can diff it against a desired value.
+rather than reading metadata, so it travels in the resource graph below, where
+a convergence engine can diff it against a desired value. A consumer that
+classifies readings joins the two by subject.
+
+## Observed resource graph
+
+Readings and logs are high-volume and narrow, so they get purpose-built rows.
+Device configuration, capabilities, and topology are the opposite — low-volume
+and arbitrarily shaped — and they go in `Payload::Resources` as a
+`ResourceGraph`. This is the observed half of a convergence comparison, so it
+preserves the source's own shape rather than flattening it.
+
+An `ObservedResource` carries its `Subject`, the `source_key` it came from,
+optional schema and version for concurrency control, an observation time, and a
+`PropertyMap`. `PropertyValue` recurses through objects and arrays and keeps
+nulls, references, bytes, timestamps, and durations distinct rather than
+stringifying them. `PropertyMap::MAX_DEPTH` caps nesting at 32, so walking or
+releasing a stored map cannot overflow the stack; a value that arrives deeper
+than that is dismantled iteratively as it is rejected, rather than taken apart
+by the recursive drop glue. The cap is set by what a decoder reads back rather
+than by what a walk survives: adjacent tagging multiplies each level against a
+decoder's own recursion limit, so a looser cap would let this crate encode
+graphs that a consumer of the same crate cannot decode.
+
+Absence is three different facts, and the model keeps them apart.
+`PropertyValue::Null` is a reported null. A property missing from a `Complete`
+resource is one the device does not implement. The same property missing from a
+`Partial` resource means nothing at all — `ResourceCompleteness` is what makes
+`establishes_absence` answerable.
+
+`ResourceRelation` is a typed directed edge identified by
+`(source, kind, target)`; properties describe an edge but do not distinguish
+two of them. Its source must be in the graph, while its target may be external,
+so a subtree keeps its links into scopes that were not collected. Assembly
+rejects a repeated subject, a repeated `source_key` (two fetches describing one
+location cannot be merged silently), a repeated edge, and an edge leaving an
+unknown subject. Resources sort by subject and relations by their identity
+triple, so two graphs with the same content hash identically no matter what
+order discovery found them in.
+
+`GraphLimits` bounds what a graph may hold. It is checked once the input is
+assembled, so it caps the stored snapshot rather than what a source buffers on
+the way there, and `GraphLimits::UNLIMITED` opts out for callers with their own
+ceiling — at the cost of a graph that will not decode, since deserialization
+always applies the default bound.
 
 ## Finite values
 
@@ -146,6 +206,18 @@ declared one, and `ObservationBatch::new` rejects mismatches with
 row is an endpoint-level observation admissible under any scope. Readings and
 inventory items always name one and are always checked.
 
+A graph is scoped by reachability instead. Requiring every resource to carry
+the scope subject would allow only single-resource graphs, and the natural unit
+of partial collection is a subtree — one chassis and what it contains. So a
+non-empty subject-scoped graph must hold the scope subject
+(`BatchError::MissingScopeRoot`) and every resource in it must be reachable
+from there by following relations (`BatchError::UnreachableFromScopeRoot`).
+An empty graph is accepted under any scope, as an empty row payload is.
+
+Reachability follows relations from source to target, so a subtree has to hang
+off its root by outgoing edges. A projection that emits only `containedBy`
+edges pointing at the parent produces a graph its own root cannot reach.
+
 A complete snapshot establishes absence only inside its declared scope.
 Staleness is not completeness: consumers apply freshness policy using
 observation timestamps.
@@ -162,10 +234,13 @@ dispatcher can act on a failure without it entering the payload.
 ## Invariants
 
 - `Attributes` sorts keys and rejects duplicates.
-- `Timestamp` validates nanoseconds.
+- `Timestamp` and `DurationValue` validate nanoseconds against one bound.
 - `ObservationWindow` rejects an end before its start.
 - `ObservationBatch` validates subject-scoped payloads.
 - `Finite` rejects `NaN` and the infinities.
+- `PropertyMap` rejects duplicate names and nesting past `MAX_DEPTH`.
+- `ResourceGraph` rejects duplicate subjects, source keys, and edges, edges
+  from unknown subjects, and input past its `GraphLimits`.
 
 With the `serde` feature, these types deserialize through their constructors
 rather than the derived field-by-field path, so a value arriving over the wire
@@ -178,10 +253,12 @@ are exactly the ones its constructor cross-checks. The test is per field, not
 per type: `ObservationBatch` keeps `coverage` and `payload` private because
 `new` validates them against each other, while `endpoint`, `origin`, and
 `window` are public. `Attributes`, `Timestamp`, `ObservationWindow`, `Finite`,
-and newtypes such as `Name` are private throughout.
+`PropertyMap`, `ResourceGraph`, `DurationValue`, and newtypes such as `Name`
+are private throughout.
 
 Everything else is a plain record with public fields — `Subject`, `Origin`,
-`Coverage`, `Reading`, `SignalDescriptor`, `LogRecord`, and the rest. Read them
+`Coverage`, `Reading`, `SignalDescriptor`, `LogRecord`, `Property`,
+`ObservedResource`, `ResourceRelation`, and the rest. Read them
 as `reading.value`, match with `Subject { kind, .. }`, and build them with the
 `new` and `with_*` methods. They are `#[non_exhaustive]`, so a struct literal
 will not compile outside this crate and a new field is not a breaking change.

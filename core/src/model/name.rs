@@ -141,11 +141,79 @@ impl serde::Serialize for Name {
 
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Name {
+    /// Builds the shared string straight from the input.
+    ///
+    /// Going through [`String`] would allocate and copy every name twice,
+    /// once for the owned string and again for the [`Arc`], and a decoded
+    /// payload is almost entirely names.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(value.into())
+        struct NameVisitor;
+
+        impl serde::de::Visitor<'_> for NameVisitor {
+            type Value = Name;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(Name::from(value))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(Name::from(value))
+            }
+        }
+
+        deserializer.deserialize_str(NameVisitor)
     }
 }
+
+/// Implements the conversions shared by every newtype wrapping a [`Name`].
+///
+/// Each wrapper exists to keep one vocabulary from being passed where another
+/// is expected, so each still declares its own doc comment and derives;
+/// `Severity` omits `Ord` because alphabetical severity means nothing. Only
+/// the mechanical part lives here.
+macro_rules! name_newtype {
+    ($newtype:ident) => {
+        impl $newtype {
+            pub const fn from_static(value: &'static str) -> Self {
+                Self(Name::from_static(value))
+            }
+
+            pub fn as_str(&self) -> &str {
+                self.0.as_str()
+            }
+        }
+
+        impl From<Name> for $newtype {
+            fn from(value: Name) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<String> for $newtype {
+            fn from(value: String) -> Self {
+                Self(value.into())
+            }
+        }
+
+        impl From<&str> for $newtype {
+            fn from(value: &str) -> Self {
+                Self(value.into())
+            }
+        }
+    };
+}
+
+pub(super) use name_newtype;

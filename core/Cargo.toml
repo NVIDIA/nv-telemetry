@@ -18,7 +18,29 @@ serde = ["dep:serde"]
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+# A self-describing binary format, to cover the non-human-readable encoding
+# paths that a text format never reaches.
+ciborium.workspace = true
 serde_json.workspace = true
+
+# Compiles only on unix: the runner library it pulls in uses
+# std::os::unix and nix unconditionally.
+[target.'cfg(unix)'.dev-dependencies]
+gungraun = { workspace = true }
+
+[[bench]]
+name = "model"
+harness = false
+
+[[bench]]
+name = "wire"
+harness = false
+required-features = ["serde"]
+
+[[bench]]
+name = "graph"
+harness = false
+required-features = ["serde"]
 
 [lints]
 workspace = true

@@ -254,13 +254,21 @@ Signal metadata and samples are projected separately. Metadata produces an
 immutable `SignalDescriptor` indexed by a canonical `SignalKey`. Sensor,
 EnvironmentMetrics, and MetricReport samples project to the same key and are
 joined with the descriptor through a `SignalCatalog`. This avoids repeating
-units, thresholds, and bounds on every sample while allowing the planner to
-change acquisition routes without changing public reading identity.
+units and bounds on every sample while allowing the planner to change
+acquisition routes without changing public reading identity.
 
 Because readings share a descriptor by pointer, the catalog owns metadata
 revisions. A refresh that reports an unchanged definition keeps the existing
 descriptor, so revision counts real definition changes rather than polls and
 sharing survives across refreshes.
+
+A descriptor carries only what a signal *is*: its identity, kind, unit, and the
+range the sensor can read. Device-settable configuration, alarm thresholds
+being the obvious case, is observed as resource state instead. The line is
+mutability. A threshold is writable on most implementations, which makes it a
+convergence target rather than reading metadata, and carrying it in both places
+would give one fact two representations that can disagree. Consumers that
+classify readings join by subject against the resource graph.
 
 Non-finite source values are dropped during projection and surface as a missing
 field. The observation model admits only finite floats, so that observations
@@ -415,6 +423,11 @@ complete graph can establish absence for resources and relationships within
 that scope. A partial graph updates observed facts but cannot establish that
 omitted facts were removed.
 
+Reachability follows relations from source to target. A subtree therefore has
+to hang off its root by outgoing edges, which is a constraint on projections: a
+walk that records only the inverse relation, each child naming its parent,
+produces a graph its own root cannot reach.
+
 Absence is also tracked per resource. A resource records whether its properties
 are the device's full representation, so a consumer can tell a property the
 device does not implement from one that was never requested. A convergence
@@ -435,9 +448,12 @@ Graphs are stored in canonical sorted order and carry no non-finite floats, so
 a whole graph can be compared and content-hashed. A convergence adapter depends
 on that: state comparison must be exact and must not report spurious change.
 
-Graph size and property nesting are bounded at the model boundary. Collection
-policy owns request-level limits, but the data plane still refuses input that
-one malfunctioning endpoint could use to exhaust a collector serving many.
+Graph size and property nesting are bounded at the model boundary, so no
+malformed endpoint response becomes a stored graph that later exhausts a
+collector serving many endpoints. The bound is on what the model accepts, not
+on what a source may buffer before offering it: an acquisition reading an
+endpoint incrementally owns its own ceiling, and collection policy owns
+request-level limits.
 
 The graph is suitable input for an embedder-owned adapter that materializes
 convergence observed state. Desired state, drift calculation, operation
