@@ -45,7 +45,9 @@ use nv_telemetry_core::ObservationWindow;
 use nv_telemetry_core::ObservedResource;
 use nv_telemetry_core::Origin;
 use nv_telemetry_core::Payload;
+use nv_telemetry_core::Property;
 use nv_telemetry_core::PropertyMap;
+use nv_telemetry_core::PropertyValue;
 use nv_telemetry_core::Reading;
 use nv_telemetry_core::ReadingKind;
 use nv_telemetry_core::ReadingsBuilder;
@@ -535,6 +537,71 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
         Some(finite!(100.0))
     );
     assert_eq!(reading.value, NumericValue::F64(finite!(42.5)));
+}
+
+/// A threshold is configuration, so it lives in the graph and not on the
+/// signal.
+///
+/// The descriptor carries what the sensor *is*, including the range it can
+/// read; a threshold is what it is *configured to*, is writable on most
+/// implementations, and so is a convergence target observed as resource state.
+/// Holding it in both places would give one fact two representations that can
+/// disagree. A consumer that classifies readings joins the two by subject,
+/// which is what this walks through.
+#[test]
+fn thresholds_are_observed_as_resource_state_and_join_to_readings_by_subject() {
+    let sensor = Subject::new("sensor", "CPU0Temp");
+    let signal = SignalDescriptor::new(
+        sensor.clone(),
+        "temperature",
+        "CPU0Temp",
+        ReadingKind::Gauge,
+        Unit::from_static("celsius"),
+        timestamp(1),
+    )
+    // The span the part can read, which is a capability and not a judgement.
+    .with_bounds(ValueRange::new(Some(finite!(-5.0)), Some(finite!(100.0))));
+    let reading = Reading::new(
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+        signal,
+        finite!(42.5),
+    );
+
+    let configured = ObservedResource::complete(
+        sensor.clone(),
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+        PropertyMap::new(vec![
+            Property::new("upper_caution", PropertyValue::F64(finite!(40.0))),
+            Property::new("upper_critical", PropertyValue::F64(finite!(90.0))),
+        ])
+        .expect("unique property names"),
+    );
+    let graph = ResourceGraph::new(vec![configured], Vec::new()).expect("a valid graph");
+
+    // The join a consumer makes: the reading names its subject, and the
+    // graph answers what that subject is configured to.
+    let observed = graph
+        .get(&reading.signal.subject)
+        .expect("the graph holds the sensor the reading names");
+    let caution = match observed.properties.get("upper_caution") {
+        Some(PropertyValue::F64(value)) => *value,
+        other => panic!("expected a float threshold, got {other:?}"),
+    };
+
+    let NumericValue::F64(sampled) = reading.value else {
+        panic!("expected a float reading, got {:?}", reading.value)
+    };
+
+    assert_eq!(caution, finite!(40.0));
+    assert!(
+        sampled > caution,
+        "classification is the consumer's to make from the two halves"
+    );
+    // The readable range stays on the signal and is not the threshold.
+    assert_eq!(
+        reading.signal.bounds.and_then(|bounds| bounds.upper),
+        Some(finite!(100.0))
+    );
 }
 
 #[test]
