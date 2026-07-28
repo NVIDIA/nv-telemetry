@@ -21,19 +21,12 @@ use std::hash::Hasher;
 
 /// A floating point observation value that is never `NaN` or infinite.
 ///
-/// The observation model must support exact comparison, because consumers diff
-/// successive observations to detect change. Raw `f64` cannot serve that role:
-/// `NaN` is unequal to itself, so a single non-finite value would make a
-/// resource appear changed on every comparison, and would bar the model from
-/// implementing `Eq` and `Hash` at all.
+/// Consumers diff successive observations to detect change, which needs exact
+/// comparison. `NaN` is unequal to itself, so one non-finite value would make
+/// a resource appear changed on every comparison and would bar the model from
+/// implementing `Eq` and `Hash`.
 ///
-/// Excluding them also keeps the type portable across encodings, since several
-/// common formats cannot represent a non-finite float and silently lose or
-/// reject it. That is a consequence of the rule rather than its reason.
-///
-/// An unmeasurable quantity is therefore expressed as absence, either by
-/// omitting the observation or by recording an explicit null property, never
-/// by a sentinel float.
+/// An unmeasurable quantity is expressed as absence, never a sentinel float.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -87,8 +80,7 @@ impl PartialOrd for Finite {
 
 impl Ord for Finite {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Total because both operands are finite and negative zero is
-        // normalized away at construction.
+        // Total: both operands are finite and negative zero is normalized.
         self.0.partial_cmp(&other.0).unwrap_or(Ordering::Equal)
     }
 }

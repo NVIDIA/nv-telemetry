@@ -51,7 +51,7 @@ impl From<&str> for EndpointId {
 }
 
 /// Immutable endpoint identity and non-secret static attributes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct EndpointContext {
@@ -70,8 +70,7 @@ impl EndpointContext {
 
 /// Stable, protocol-neutral identity of a resource inside an endpoint.
 ///
-/// Fields are public because any pair of names is a meaningful subject, so a
-/// consumer reads and matches them directly:
+/// Fields are public; read and match them directly:
 ///
 /// ```
 /// use nv_telemetry_core::Subject;

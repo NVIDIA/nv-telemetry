@@ -35,7 +35,7 @@ impl Timestamp {
     /// # Errors
     ///
     /// Returns [`TimestampError::InvalidNanoseconds`] if the sub-second part is
-    /// not below one second, which would make two timestamps compare wrongly.
+    /// not below one second.
     pub const fn new(seconds: i64, nanoseconds: u32) -> Result<Self, TimestampError> {
         if nanoseconds >= Self::NANOS_PER_SECOND {
             return Err(TimestampError::InvalidNanoseconds(nanoseconds));
@@ -124,8 +124,8 @@ impl ObservationWindow {
     ///
     /// # Errors
     ///
-    /// Returns [`TimestampError::WindowEndsBeforeStart`] if the end precedes the
-    /// start, which would describe a collection that finished before it began.
+    /// Returns [`TimestampError::WindowEndsBeforeStart`] if the end precedes
+    /// the start.
     pub const fn new(
         started_at: Timestamp,
         completed_at: Timestamp,
