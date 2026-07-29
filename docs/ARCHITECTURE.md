@@ -255,7 +255,12 @@ immutable `SignalDescriptor` indexed by a canonical `SignalKey`. Sensor,
 EnvironmentMetrics, and MetricReport samples project to the same key and are
 joined with the descriptor through a `SignalCatalog`. This avoids repeating
 units and bounds on every sample while allowing the planner to change
-acquisition routes without changing public reading identity.
+acquisition routes without changing public reading identity. Routes spell the
+same signal differently, a metric report naming a reading with a property
+fragment the sensor resource does not use, so a key reduces its URI to the
+resource denoted. Reduction happens when the key is built rather than at each
+call site, since a key that skipped it would fail to join without failing
+loudly.
 
 Because readings share a descriptor by pointer, the catalog owns metadata
 revisions. A refresh that reports an unchanged definition keeps the existing
@@ -270,9 +275,22 @@ convergence target rather than reading metadata, and carrying it in both places
 would give one fact two representations that can disagree. Consumers that
 classify readings join by subject against the resource graph.
 
-Non-finite source values are dropped during projection and surface as a missing
-field. The observation model admits only finite floats, so that observations
-remain exactly comparable and can survive a serialization round trip.
+That join only holds if both halves derive the subject the same way, so the
+convention is part of the contract rather than each projection's choice. A
+subject names what a thing *is*, never where it was read from: the URI stays
+the resource's source key. Where an identifier is unique only within a
+collection, the subject carries enough of the containing scope to separate
+them. A Redfish sensor is the standing example, since `Sensor.Id` repeats
+across chassis, so its subject is `sensor` / `{chassis}/{id}`. A location that
+does not yield the scope is reported as an invalid field rather than guessed
+at, because a wrong subject silently joins to the wrong resource.
+
+The observation model admits only finite floats, so that observations remain
+exactly comparable and can survive a serialization round trip. A non-finite
+source value is therefore reported as an invalid field rather than a missing
+one: the device answered, and the answer cannot be represented. Collapsing
+that into absence would tell a consumer nothing was reported, hiding a device
+that reports garbage behind one that stays quiet.
 
 Projection declarations contain source-specific field knowledge. The core
 observation model and dispatcher do not depend on Redfish schema types.
