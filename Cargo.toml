@@ -9,8 +9,12 @@ license = "Apache-2.0"
 repository = "https://github.com/NVIDIA/nv-telemetry"
 
 [workspace.dependencies]
+ciborium = "0.2"
 serde = { version = "1", default-features = false, features = ["derive", "rc", "std"] }
 serde_json = "1"
+
+# Dev
+gungraun = "0.19.3"
 
 # CI runs clippy with `-D warnings`, so everything below is effectively an
 # error. Lints live here rather than in the CI invocation so that an editor

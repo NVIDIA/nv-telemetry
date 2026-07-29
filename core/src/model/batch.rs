@@ -25,6 +25,7 @@ use super::ObservationScope;
 use super::ObservationWindow;
 use super::Origin;
 use super::Reading;
+use super::ResourceGraph;
 use super::StateObservation;
 use super::Subject;
 
@@ -38,6 +39,7 @@ pub enum Payload {
     Logs(Box<[LogRecord]>),
     States(Box<[StateObservation]>),
     Inventory(Box<[InventoryItem]>),
+    Resources(ResourceGraph),
 }
 
 impl Payload {
@@ -47,6 +49,9 @@ impl Payload {
             Self::Logs(rows) => rows.len(),
             Self::States(rows) => rows.len(),
             Self::Inventory(rows) => rows.len(),
+            // A graph counts relations too: consumers use this for size
+            // accounting and relations dominate a densely linked graph.
+            Self::Resources(graph) => graph.resource_count() + graph.relation_count(),
         }
     }
 
@@ -73,7 +78,10 @@ impl ObservationBatch {
     /// # Errors
     ///
     /// Returns [`BatchError::SubjectOutsideScope`] if an observation names a
-    /// subject the declared coverage does not cover.
+    /// subject the declared coverage does not cover. For a resource graph
+    /// under a subject scope, returns [`BatchError::MissingScopeRoot`] or
+    /// [`BatchError::UnreachableFromScopeRoot`] if the graph is not a subtree
+    /// hanging off that root.
     pub fn new(
         endpoint: impl Into<Arc<EndpointContext>>,
         origin: Origin,
@@ -128,6 +136,7 @@ fn validate_subject_scope(expected: &Subject, payload: &Payload) -> Result<(), B
             .iter()
             .map(|row| &row.subject)
             .find(|subject| *subject != expected),
+        Payload::Resources(graph) => return validate_graph_scope(expected, graph),
     };
 
     match actual {
@@ -139,10 +148,39 @@ fn validate_subject_scope(expected: &Subject, payload: &Payload) -> Result<(), B
     }
 }
 
+/// Validates that a graph is exactly the subtree rooted at the scope subject.
+///
+/// Row payloads are scoped by requiring every row to carry the scope subject,
+/// but a graph is a connected structure rather than a list of independent
+/// rows. The natural unit of partial graph collection is a subtree, such as one
+/// chassis and everything it contains, so scope here means reachability from
+/// the root rather than subject equality.
+fn validate_graph_scope(root: &Subject, graph: &ResourceGraph) -> Result<(), BatchError> {
+    // Checked before the root, which an empty graph cannot hold. Observing
+    // nothing contradicts no scope, exactly as an empty row payload does not.
+    if graph.is_empty() {
+        return Ok(());
+    }
+
+    if graph.get(root).is_none() {
+        return Err(BatchError::MissingScopeRoot(root.clone()));
+    }
+
+    match graph.first_unreachable_from(root) {
+        Some(subject) => Err(BatchError::UnreachableFromScopeRoot {
+            root: root.clone(),
+            subject: subject.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BatchError {
     SubjectOutsideScope { expected: Subject, actual: Subject },
+    MissingScopeRoot(Subject),
+    UnreachableFromScopeRoot { root: Subject, subject: Subject },
 }
 
 impl fmt::Display for BatchError {
@@ -152,6 +190,16 @@ impl fmt::Display for BatchError {
                 formatter,
                 "subject '{}:{}' is outside declared scope '{}:{}'",
                 actual.kind, actual.id, expected.kind, expected.id
+            ),
+            Self::MissingScopeRoot(root) => write!(
+                formatter,
+                "scope root '{}:{}' is not present in the resource graph",
+                root.kind, root.id
+            ),
+            Self::UnreachableFromScopeRoot { root, subject } => write!(
+                formatter,
+                "resource '{}:{}' is not reachable from scope root '{}:{}'",
+                subject.kind, subject.id, root.kind, root.id
             ),
         }
     }
@@ -260,6 +308,10 @@ mod readings_table {
         rows: Vec<Row>,
     }
 
+    // The descriptors carry a cached digest, which counts as interior
+    // mutability even though it is derived from the content the key compares
+    // by and cannot change what the key hashes to.
+    #[allow(clippy::mutable_key_type)]
     pub(super) fn serialize<S>(readings: &[Reading], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,

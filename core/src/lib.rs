@@ -25,7 +25,7 @@
 //! use std::sync::Arc;
 //! use nv_telemetry_core::{
 //!     Attributes, Coverage, EndpointContext, ObservationBatch, ObservationWindow,
-//!     Origin, Payload, Timestamp,
+//!     Origin, Payload, ResourceGraph, Timestamp,
 //! };
 //!
 //! let endpoint = Arc::new(EndpointContext::new("bmc-1", Attributes::empty()));
@@ -36,6 +36,7 @@
 //!     Payload::Logs(Box::new([])),
 //!     Payload::States(Box::new([])),
 //!     Payload::Inventory(Box::new([])),
+//!     Payload::Resources(ResourceGraph::empty()),
 //! ];
 //!
 //! for payload in payloads {
@@ -67,9 +68,11 @@ pub use model::AttributesError;
 pub use model::BatchError;
 pub use model::Completeness;
 pub use model::Coverage;
+pub use model::DurationValue;
 pub use model::EndpointContext;
 pub use model::EndpointId;
 pub use model::Finite;
+pub use model::GraphLimits;
 pub use model::InventoryBuilder;
 pub use model::InventoryItem;
 pub use model::LogRecord;
@@ -80,21 +83,32 @@ pub use model::NumericValue;
 pub use model::ObservationBatch;
 pub use model::ObservationScope;
 pub use model::ObservationWindow;
+pub use model::ObservedResource;
 pub use model::Origin;
 pub use model::Payload;
+pub use model::Property;
+pub use model::PropertyMap;
+pub use model::PropertyMapError;
+pub use model::PropertyValue;
 pub use model::RangeOrderError;
 pub use model::Reading;
 pub use model::ReadingKind;
 pub use model::ReadingsBuilder;
 pub use model::ReportedState;
+pub use model::ResourceCompleteness;
+pub use model::ResourceGraph;
+pub use model::ResourceGraphBuilder;
+pub use model::ResourceGraphError;
+pub use model::ResourceReference;
+pub use model::ResourceRelation;
 pub use model::Severity;
 pub use model::SharedBatch;
 pub use model::SignalDescriptor;
 pub use model::StateObservation;
 pub use model::StatesBuilder;
 pub use model::Subject;
+pub use model::TimeError;
 pub use model::Timestamp;
-pub use model::TimestampError;
 pub use model::Unit;
 pub use model::ValueRange;
 pub use status::AcquisitionOutcome;

@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use super::name::name_newtype;
 use super::Attributes;
 use super::Name;
 use super::Subject;
@@ -31,33 +32,7 @@ use super::Timestamp;
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Severity(Name);
 
-impl Severity {
-    pub const fn from_static(value: &'static str) -> Self {
-        Self(Name::from_static(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl From<Name> for Severity {
-    fn from(value: Name) -> Self {
-        Self(value)
-    }
-}
-
-impl From<String> for Severity {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for Severity {
-    fn from(value: &str) -> Self {
-        Self(value.into())
-    }
-}
+name_newtype!(Severity);
 
 /// One source log record.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

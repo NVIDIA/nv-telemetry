@@ -36,6 +36,13 @@ ci: rust-install
 fmt:
 	cargo +$(fmt-toolchain) fmt --all
 
+# Instruction counts under Valgrind, so results do not depend on machine
+# load. Needs valgrind and a gungraun-runner matching the gungraun version
+# the lockfile resolved. CI compares these against the merge-base; locally
+# they are absolute numbers unless a baseline was saved.
+bench:
+	cargo bench --workspace --all-features
+
 rust-install:
 	rustup component add clippy rustfmt
 	rustup toolchain install $(fmt-toolchain) --profile minimal --component rustfmt

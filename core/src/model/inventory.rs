@@ -22,6 +22,11 @@ use super::Subject;
 #[non_exhaustive]
 pub struct InventoryItem {
     pub subject: Subject,
+    /// The containing resource, when the source reports one.
+    ///
+    /// This is a containment hint on a flat list, not topology. Arbitrary
+    /// typed relationships belong in [`ResourceGraph`](super::ResourceGraph),
+    /// which inventory deliberately does not require a consumer to assemble.
     pub parent: Option<Subject>,
     pub attributes: Attributes,
 }

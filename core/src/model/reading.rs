@@ -17,6 +17,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use super::name::name_newtype;
 use super::Attributes;
 use super::Finite;
 use super::Name;
@@ -91,33 +92,7 @@ pub enum ReadingKind {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Unit(Name);
 
-impl Unit {
-    pub const fn from_static(value: &'static str) -> Self {
-        Self(Name::from_static(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl From<Name> for Unit {
-    fn from(value: Name) -> Self {
-        Self(value)
-    }
-}
-
-impl From<String> for Unit {
-    fn from(value: String) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<&str> for Unit {
-    fn from(value: &str) -> Self {
-        Self(value.into())
-    }
-}
+name_newtype!(Unit);
 
 /// State and health values reported by the device itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
