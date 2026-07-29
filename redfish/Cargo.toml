@@ -1,0 +1,19 @@
+[package]
+name = "nv-telemetry-redfish"
+description = "nv-redfish projections for nv-telemetry"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nv-redfish = { version = "0.12.1", default-features = false, features = ["std-redfish"] }
+nv-telemetry-core = { path = "../core" }
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
