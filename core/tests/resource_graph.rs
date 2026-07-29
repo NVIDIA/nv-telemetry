@@ -278,12 +278,30 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
     )
     .is_ok());
 
+    // A limit looser than the default is clamped to it, so the model cannot
+    // build a graph that its own deserialization would then reject.
+    let beyond_default = GraphLimits::new(usize::MAX, usize::MAX);
     assert!(ResourceGraph::with_limits(
         vec![host_resource(), dpu_resource()],
         Vec::new(),
-        GraphLimits::UNLIMITED,
+        beyond_default,
     )
     .is_ok());
+    assert!(matches!(
+        ResourceGraph::with_limits(
+            (0..=GraphLimits::DEFAULT.max_resources)
+                .map(|index| ObservedResource::complete(
+                    Subject::new("node", format!("n{index}")),
+                    format!("/nodes/{index}"),
+                    PropertyMap::empty(),
+                ))
+                .collect(),
+            Vec::new(),
+            beyond_default,
+        ),
+        Err(ResourceGraphError::TooManyResources { limit, .. })
+            if limit == GraphLimits::DEFAULT.max_resources
+    ));
 }
 
 #[test]
@@ -614,6 +632,72 @@ fn rejecting_a_large_graph_costs_what_the_traversal_costs() {
         elapsed < Duration::from_secs(30),
         "rejecting {RESOURCES} resources took {elapsed:?}, which suggests the \
          scan-per-resource form is back"
+    );
+}
+
+/// A link the collector cannot yet name is a property, not an edge.
+///
+/// Both ends of a relation are subjects, so stating one asserts an identity.
+/// A collector that has only a location keeps it as a reference until it can
+/// resolve it, because an invented subject would be indistinguishable from a
+/// genuine external target.
+#[test]
+fn an_unresolved_link_stays_a_reference_until_its_subject_is_known() {
+    const LINK: &str = "/redfish/v1/Chassis/1/NetworkAdapters/1";
+
+    let unresolved = ResourceGraph::new(
+        vec![ObservedResource::complete(
+            host_subject(),
+            "/redfish/v1/Systems/host-1",
+            PropertyMap::new(vec![Property::new(
+                "network_adapter",
+                ResourceReference::new(LINK),
+            )])
+            .expect("unique property names"),
+        )],
+        Vec::new(),
+    )
+    .expect("a valid graph");
+
+    let reference = match unresolved
+        .get(&host_subject())
+        .expect("the host is in the graph")
+        .properties
+        .get("network_adapter")
+    {
+        Some(PropertyValue::Reference(reference)) => reference,
+        other => panic!("expected a reference, got {other:?}"),
+    };
+    assert_eq!(reference.source_key.as_str(), LINK);
+    assert_eq!(reference.subject, None, "nothing has resolved it yet");
+    assert_eq!(unresolved.relation_count(), 0);
+
+    // Once the identity is known the link becomes an edge, and the target
+    // need not have been collected for the graph to accept it.
+    let adapter = Subject::new("network_adapter", "1");
+    let resolved = ResourceGraph::new(
+        vec![ObservedResource::complete(
+            host_subject(),
+            "/redfish/v1/Systems/host-1",
+            PropertyMap::new(vec![Property::new(
+                "network_adapter",
+                ResourceReference::new(LINK).with_subject(adapter.clone()),
+            )])
+            .expect("unique property names"),
+        )],
+        vec![ResourceRelation::new(
+            host_subject(),
+            "contains",
+            adapter.clone(),
+        )],
+    )
+    .expect("an external target is allowed");
+
+    assert_eq!(resolved.relations_from(&host_subject()).len(), 1);
+    assert_eq!(resolved.relations_from(&host_subject())[0].target, adapter);
+    assert!(
+        resolved.get(&adapter).is_none(),
+        "the edge names the adapter without the graph holding it"
     );
 }
 

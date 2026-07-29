@@ -444,6 +444,15 @@ present because the source is the resource on which the relation was observed.
 Cycles are valid: containment, management, fabric, and peer relationships do
 not form one universal tree.
 
+Both ends of a relationship are identities, so an edge is a resolved claim
+rather than a collected one. Because targets may be external, stating one costs
+no fetch, only knowledge of what the target is called; where a source names
+things canonically that comes out of the link itself. A link a walk cannot yet
+name stays an unresolved reference on the resource, carrying the location with
+no identity attached, and becomes an edge when a later pass resolves it. The
+distinction is what keeps a partial walk honest, since an identity invented to
+force an edge is indistinguishable from a real external target.
+
 Graphs are stored in canonical sorted order and carry no non-finite floats, so
 a whole graph can be compared and content-hashed. A convergence adapter depends
 on that: state comparison must be exact and must not report spurious change.
@@ -453,7 +462,10 @@ malformed endpoint response becomes a stored graph that later exhausts a
 collector serving many endpoints. The bound is on what the model accepts, not
 on what a source may buffer before offering it: an acquisition reading an
 endpoint incrementally owns its own ceiling, and collection policy owns
-request-level limits.
+request-level limits. A caller may tighten the bound but not loosen it, because
+decoding has no caller to take one from and applies the default: a graph built
+past it would encode into a payload the model then refuses to read, and the
+model should not be able to produce what it cannot consume.
 
 The graph is suitable input for an embedder-owned adapter that materializes
 convergence observed state. Desired state, drift calculation, operation

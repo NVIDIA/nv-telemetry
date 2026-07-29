@@ -175,11 +175,26 @@ unknown subject. Resources sort by subject and relations by their identity
 triple, so two graphs with the same content hash identically no matter what
 order discovery found them in.
 
+Both ends of a relation are `Subject`s, so an edge states a resolved fact. That
+is not the same as a collected one: the target may be external, so the collector
+needs the target's *identity*, not a fetch of it. Where a source names things
+canonically the identity comes out of the link — a Redfish path names its
+collection and id — so an edge can be stated as soon as the link is seen. Where
+it does not, the link is not yet an edge. It stays on the resource as a
+`PropertyValue::Reference`, which holds the location and leaves its `subject`
+empty, until a pass that learns the identity promotes it. That is the difference
+the two forms carry: an edge is a claim about topology, a reference is a link
+the source stated and the collector has not resolved. Inventing a subject to
+force the first would produce one no resource matches, which the graph cannot
+distinguish from a genuine external target.
+
 `GraphLimits` bounds what a graph may hold. It is checked once the input is
 assembled, so it caps the stored snapshot rather than what a source buffers on
-the way there, and `GraphLimits::UNLIMITED` opts out for callers with their own
-ceiling — at the cost of a graph that will not decode, since deserialization
-always applies the default bound.
+the way there. Limits only tighten `GraphLimits::DEFAULT`: deserialization has
+no caller to take a bound from, so it applies the default, and a looser one
+would let the crate build a graph it encodes and then refuses to read. A bound
+above the default is clamped, which keeps "whatever the model accepts, it can
+read back" true rather than conditional.
 
 ## Finite values
 

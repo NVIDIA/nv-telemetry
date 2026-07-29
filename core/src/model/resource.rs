@@ -134,6 +134,25 @@ impl ObservedResource {
 /// Identity is `(source, kind, target)`. Properties describe an edge but do
 /// not distinguish two of them, so a graph holding the same triple twice is
 /// rejected however their properties differ.
+///
+/// Both ends are [`Subject`]s, the canonical identity of a thing, not the
+/// location a link arrived as. A relation therefore asserts a resolved fact
+/// about topology. The target still need not be in the graph, so asserting one
+/// costs no fetch: what it requires is knowing the target's identity, not
+/// having collected it.
+///
+/// A collector holding only a link has two ways to get there. Where the
+/// source's naming is canonical it derives the subject from the link itself,
+/// as a Redfish path names its collection and id. Where it is not, the link is
+/// not yet a relation: it belongs on the resource as a
+/// [`PropertyValue::Reference`], which carries the location and leaves
+/// [`ResourceReference::subject`] empty, and a later pass that learns the
+/// identity promotes it. Inventing a subject to make an edge out of an
+/// unresolved link would produce one that no resource ever matches, which the
+/// graph cannot tell from a genuine external target.
+///
+/// [`PropertyValue::Reference`]: super::PropertyValue::Reference
+/// [`ResourceReference::subject`]: super::ResourceReference::subject
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -183,6 +202,12 @@ pub struct ResourceGraph {
 /// can hold rather than what a caller can allocate on the way there; a source
 /// reading an endpoint incrementally should stop itself rather than fill a
 /// [`ResourceGraphBuilder`] and learn at `finish`.
+///
+/// Limits only ever tighten [`DEFAULT`](Self::DEFAULT). Deserialization has no
+/// caller to take them from and so applies the default, and a graph built past
+/// it would encode into a payload this crate then refuses to read. A bound
+/// above the default is clamped rather than honoured, so whatever the model
+/// accepts, it can also read back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GraphLimits {
@@ -192,24 +217,33 @@ pub struct GraphLimits {
 
 impl GraphLimits {
     /// Generous bounds intended to catch runaway input, not to size a budget.
+    ///
+    /// Also the ceiling, since this is what deserialization applies.
     pub const DEFAULT: Self = Self {
         max_resources: 100_000,
         max_relations: 500_000,
-    };
-
-    /// Applies no bound, for callers that enforce their own.
-    ///
-    /// Deserialization always applies [`DEFAULT`](Self::DEFAULT), so a graph
-    /// built past those bounds serializes but will not decode.
-    pub const UNLIMITED: Self = Self {
-        max_resources: usize::MAX,
-        max_relations: usize::MAX,
     };
 
     pub const fn new(max_resources: usize, max_relations: usize) -> Self {
         Self {
             max_resources,
             max_relations,
+        }
+    }
+
+    /// Returns these limits with anything looser than the default pulled back.
+    const fn clamped(self) -> Self {
+        Self {
+            max_resources: if self.max_resources > Self::DEFAULT.max_resources {
+                Self::DEFAULT.max_resources
+            } else {
+                self.max_resources
+            },
+            max_relations: if self.max_relations > Self::DEFAULT.max_relations {
+                Self::DEFAULT.max_relations
+            } else {
+                self.max_relations
+            },
         }
     }
 }
@@ -249,6 +283,8 @@ impl ResourceGraph {
         mut relations: Vec<ResourceRelation>,
         limits: GraphLimits,
     ) -> Result<Self, ResourceGraphError> {
+        let limits = limits.clamped();
+
         // Checked before sorting so oversized input costs nothing.
         if resources.len() > limits.max_resources {
             return Err(ResourceGraphError::TooManyResources {
