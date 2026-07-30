@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
-use nv_telemetry_core::finite;
 use nv_telemetry_core::AcquisitionOutcome;
 use nv_telemetry_core::AcquisitionStatus;
 use nv_telemetry_core::AttrValue;
@@ -33,16 +32,16 @@ use nv_telemetry_core::DurationValue;
 use nv_telemetry_core::EndpointContext;
 use nv_telemetry_core::FailureClass;
 use nv_telemetry_core::Finite;
-use nv_telemetry_core::InventoryBuilder;
+use nv_telemetry_core::Health;
 use nv_telemetry_core::InventoryItem;
 use nv_telemetry_core::LogRecord;
-use nv_telemetry_core::LogsBuilder;
 use nv_telemetry_core::Name;
 use nv_telemetry_core::NumericValue;
 use nv_telemetry_core::ObservationBatch;
 use nv_telemetry_core::ObservationScope;
 use nv_telemetry_core::ObservationWindow;
 use nv_telemetry_core::ObservedResource;
+use nv_telemetry_core::OperatingState;
 use nv_telemetry_core::Origin;
 use nv_telemetry_core::Payload;
 use nv_telemetry_core::Property;
@@ -50,13 +49,11 @@ use nv_telemetry_core::PropertyMap;
 use nv_telemetry_core::PropertyValue;
 use nv_telemetry_core::Reading;
 use nv_telemetry_core::ReadingKind;
-use nv_telemetry_core::ReadingsBuilder;
 use nv_telemetry_core::ReportedState;
 use nv_telemetry_core::ResourceGraph;
 use nv_telemetry_core::Severity;
 use nv_telemetry_core::SignalDescriptor;
 use nv_telemetry_core::StateObservation;
-use nv_telemetry_core::StatesBuilder;
 use nv_telemetry_core::Subject;
 use nv_telemetry_core::TimeError;
 use nv_telemetry_core::Timestamp;
@@ -111,7 +108,7 @@ fn reading() -> Reading {
     Reading::new(
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
         descriptor(),
-        finite!(42.5),
+        Finite::new(42.5).unwrap(),
     )
 }
 
@@ -159,7 +156,7 @@ fn plain_records_read_and_match_as_data() {
         ..
     } = &reading;
 
-    assert_eq!(*value, NumericValue::F64(finite!(42.5)));
+    assert_eq!(*value, NumericValue::F64(Finite::new(42.5).unwrap()));
     assert_eq!(signal.subject.kind.as_str(), "sensor");
     assert_eq!(signal.unit.as_str(), "celsius");
     assert!(reported_state.is_none());
@@ -247,26 +244,19 @@ fn durations_share_the_timestamp_bound_and_carry_sign_in_the_seconds() {
 
 #[test]
 fn all_payload_domains_build_as_immutable_slices() {
-    let mut readings = ReadingsBuilder::new();
-    readings.push(reading());
-    assert_eq!(readings.len(), 1);
+    let readings = vec![reading()];
 
-    let mut logs = LogsBuilder::new();
-    logs.push(
+    let logs = vec![
         LogRecord::new(Severity::from_static("warning"), "fan degraded")
             .with_record_id("log-1")
             .with_subject(sensor_subject()),
-    );
+    ];
 
-    let mut states = StatesBuilder::new();
-    states.push(
-        StateObservation::new("power_state", "on")
-            .with_instance("system-1")
-            .with_subject(Subject::new("computer_system", "system-1")),
-    );
+    let states = vec![StateObservation::new("power_state", "on")
+        .with_instance("system-1")
+        .with_subject(Subject::new("computer_system", "system-1"))];
 
-    let mut inventory = InventoryBuilder::new();
-    inventory.push(InventoryItem::new(sensor_subject(), Attributes::empty()));
+    let inventory = vec![InventoryItem::new(sensor_subject(), Attributes::empty())];
 
     let resources = ResourceGraph::new(
         vec![ObservedResource::complete(
@@ -279,10 +269,10 @@ fn all_payload_domains_build_as_immutable_slices() {
     .expect("valid resource graph");
 
     let payloads = [
-        Payload::Readings(readings.finish()),
-        Payload::Logs(logs.finish()),
-        Payload::States(states.finish()),
-        Payload::Inventory(inventory.finish()),
+        Payload::Readings(readings.into()),
+        Payload::Logs(logs.into()),
+        Payload::States(states.into()),
+        Payload::Inventory(inventory.into()),
         Payload::Resources(resources),
     ];
     assert!(payloads.iter().all(|payload| payload.len() == 1));
@@ -404,8 +394,8 @@ fn owned_values_and_shared_handles_build_the_same_batch() {
     );
     let source_key = "/redfish/v1/Chassis/1/Sensors/CPU0Temp";
 
-    let from_value = Reading::new(source_key, descriptor.clone(), finite!(42.5));
-    let from_handle = Reading::new(source_key, Arc::new(descriptor), finite!(42.5));
+    let from_value = Reading::new(source_key, descriptor.clone(), Finite::new(42.5).unwrap());
+    let from_handle = Reading::new(source_key, Arc::new(descriptor), Finite::new(42.5).unwrap());
     assert_eq!(from_value, from_handle);
 
     let context = EndpointContext::new("bmc-1", Attributes::empty());
@@ -507,16 +497,19 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
             Unit::from_static("celsius"),
             timestamp(99),
         )
-        .with_bounds(ValueRange::new(Some(finite!(-5.0)), Some(finite!(100.0)))),
+        .with_bounds(ValueRange::new(
+            Some(Finite::new(-5.0).unwrap()),
+            Some(Finite::new(100.0).unwrap()),
+        )),
     );
     let reading = Reading::new(
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
         signal,
-        finite!(42.5),
+        Finite::new(42.5).unwrap(),
     )
     .with_reported_state(ReportedState::new(
-        Some(Name::from_static("enabled")),
-        Some(Name::from_static("critical")),
+        Some(OperatingState::from_static("enabled")),
+        Some(Health::from_static("critical")),
     ));
 
     assert_eq!(inventory_item.subject, reading.signal.subject);
@@ -529,14 +522,14 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
             .reported_state
             .as_ref()
             .and_then(|state| state.health.as_ref())
-            .map(Name::as_str),
+            .map(Health::as_str),
         Some("critical")
     );
     assert_eq!(
         reading.signal.bounds.and_then(|bounds| bounds.upper),
-        Some(finite!(100.0))
+        Some(Finite::new(100.0).unwrap())
     );
-    assert_eq!(reading.value, NumericValue::F64(finite!(42.5)));
+    assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
 }
 
 /// A threshold is configuration, so it lives in the graph and not on the
@@ -560,19 +553,28 @@ fn thresholds_are_observed_as_resource_state_and_join_to_readings_by_subject() {
         timestamp(1),
     )
     // The span the part can read, which is a capability and not a judgement.
-    .with_bounds(ValueRange::new(Some(finite!(-5.0)), Some(finite!(100.0))));
+    .with_bounds(ValueRange::new(
+        Some(Finite::new(-5.0).unwrap()),
+        Some(Finite::new(100.0).unwrap()),
+    ));
     let reading = Reading::new(
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
         signal,
-        finite!(42.5),
+        Finite::new(42.5).unwrap(),
     );
 
     let configured = ObservedResource::complete(
         sensor.clone(),
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
         PropertyMap::new(vec![
-            Property::new("upper_caution", PropertyValue::F64(finite!(40.0))),
-            Property::new("upper_critical", PropertyValue::F64(finite!(90.0))),
+            Property::new(
+                "upper_caution",
+                PropertyValue::F64(Finite::new(40.0).unwrap()),
+            ),
+            Property::new(
+                "upper_critical",
+                PropertyValue::F64(Finite::new(90.0).unwrap()),
+            ),
         ])
         .expect("unique property names"),
     );
@@ -592,7 +594,7 @@ fn thresholds_are_observed_as_resource_state_and_join_to_readings_by_subject() {
         panic!("expected a float reading, got {:?}", reading.value)
     };
 
-    assert_eq!(caution, finite!(40.0));
+    assert_eq!(caution, Finite::new(40.0).unwrap());
     assert!(
         sampled > caution,
         "classification is the consumer's to make from the two halves"
@@ -600,22 +602,27 @@ fn thresholds_are_observed_as_resource_state_and_join_to_readings_by_subject() {
     // The readable range stays on the signal and is not the threshold.
     assert_eq!(
         reading.signal.bounds.and_then(|bounds| bounds.upper),
-        Some(finite!(100.0))
+        Some(Finite::new(100.0).unwrap())
     );
 }
 
 #[test]
 fn reported_ranges_are_stored_permissively_but_can_be_checked() {
-    let inverted = ValueRange::new(Some(finite!(100.0)), Some(finite!(-5.0)));
+    let inverted = ValueRange::new(
+        Some(Finite::new(100.0).unwrap()),
+        Some(Finite::new(-5.0).unwrap()),
+    );
 
     // Storage keeps what the device said; `checked` is the opt-in gate.
-    assert_eq!(inverted.lower, Some(finite!(100.0)));
+    assert_eq!(inverted.lower, Some(Finite::new(100.0).unwrap()));
 
     let error = inverted.checked().expect_err("the edges contradict");
-    assert_eq!(error.lower, finite!(100.0));
-    assert_eq!(error.upper, finite!(-5.0));
+    assert_eq!(error.lower, Finite::new(100.0).unwrap());
+    assert_eq!(error.upper, Finite::new(-5.0).unwrap());
 
-    assert!(ValueRange::new(Some(finite!(-5.0)), None).checked().is_ok());
+    assert!(ValueRange::new(Some(Finite::new(-5.0).unwrap()), None)
+        .checked()
+        .is_ok());
     assert!(ValueRange::empty().checked().is_ok());
 }
 
@@ -680,7 +687,7 @@ fn readings_share_one_descriptor_across_the_wire() {
             Reading::new(
                 format!("sample-{index}"),
                 Arc::clone(&shared),
-                finite!(42.5),
+                Finite::new(42.5).unwrap(),
             )
         })
         .collect();
@@ -712,14 +719,20 @@ fn descriptor_sharing_is_a_memory_detail_the_wire_format_does_not_expose() {
                 Reading::new(
                     format!("sample-{index}"),
                     Arc::clone(&shared),
-                    finite!(42.5),
+                    Finite::new(42.5).unwrap(),
                 )
             })
             .collect(),
     );
     let without_sharing = readings_batch(
         (0..3)
-            .map(|index| Reading::new(format!("sample-{index}"), descriptor(), finite!(42.5)))
+            .map(|index| {
+                Reading::new(
+                    format!("sample-{index}"),
+                    descriptor(),
+                    Finite::new(42.5).unwrap(),
+                )
+            })
             .collect(),
     );
     assert_eq!(with_sharing, without_sharing);

@@ -28,8 +28,8 @@ use std::hash::Hasher;
 ///
 /// An unmeasurable quantity is expressed as absence, never a sentinel float.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(into = "f64", try_from = "f64"))]
 pub struct Finite(f64);
 
 impl Finite {
@@ -54,20 +54,6 @@ impl Finite {
     pub const fn get(self) -> f64 {
         self.0
     }
-}
-
-/// Builds a [`Finite`] from a literal, failing at compile time in a constant.
-///
-/// Useful for fixed vocabulary such as default thresholds, where the value is
-/// known to be finite and threading a `Result` through would add no safety.
-#[macro_export]
-macro_rules! finite {
-    ($value:expr) => {
-        match $crate::Finite::new($value) {
-            Ok(value) => value,
-            Err(_) => panic!("expected a finite value"),
-        }
-    };
 }
 
 impl Eq for Finite {}
@@ -141,17 +127,6 @@ impl fmt::Display for NonFiniteError {
 }
 
 impl Error for NonFiniteError {}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Finite {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value).map_err(serde::de::Error::custom)
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -10,23 +10,39 @@ core model already validates.
 ```text
 src/
 ├── lib.rs           public API
-├── projection.rs    the projection trait, issues, and the declaration macro
+├── projection.rs    the projection trait, field values, and issue reporting
 ├── sensor.rs        Sensor projections and the subject convention
 ├── signal.rs        signal identity, catalog, and sample resolution
 └── uri.rs           reducing Redfish URIs to the resource they denote
 ```
 
-## Declaring a projection
+## Writing a projection
 
-`telemetry_projection!` declares a mapping from one source type to one output.
-Required fields are all evaluated, so a failed projection reports every missing
-or invalid field rather than only the first. Optional fields are evaluated only
-once the required ones hold. A type mismatch between a source field and the
-output fails at compile time.
+A projection implements `Project` and reads its source fields through `Fields`,
+which collects the reasons the source could not be used. Every required field
+is offered to `Fields::require` before the projection decides whether it can
+build, so a failure reports all of them rather than only the first one read:
+
+```rust
+let mut fields = Fields::new();
+let source_key = fields.require("Sensor.@odata.id", source_key(sensor));
+let value = fields.require("Sensor.Reading", reading_value(sensor.reading.flatten()));
+
+let (Some(source_key), Some(value)) = (source_key, value) else {
+    return fields.incomplete();
+};
+```
 
 A field is *missing* when the device said nothing and *invalid* when it
 answered unusably, a distinction a consumer needs: a `NaN` reading is a device
 reporting garbage, not a device staying quiet.
+
+Projections are written by hand rather than generated. `nv-redfish` generates
+its types because DMTF publishes the CSDL they come from and the mapping is
+mechanical; a projection is the opposite, and everything it adds — that
+`EnergykWh` counts up while `Temperature` does not, that a subject needs the
+chassis the payload never names — is judgement no schema states. Written in
+Rust, that judgement is type-checked where it is read.
 
 ## Two layers per sensor
 

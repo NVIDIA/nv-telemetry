@@ -47,8 +47,13 @@ pub(super) fn sort_and_find_duplicate<T>(
 /// `$entries` names the private type holding those entries, which exists so
 /// the cached fingerprint sits inside the shared allocation rather than beside
 /// it. A copy per clone would be recomputed by every row.
+///
+/// `$error` is what `new` rejects with, which also makes the collection a
+/// `TryFrom<Vec<_>>`. Decoding is declared in terms of that conversion, so a
+/// decoded collection is admitted by the constructor a caller uses rather
+/// than by a second copy of the rule.
 macro_rules! sorted_collection {
-    ($collection:ident, $entries:ident, $item:ty, $key:ident, $value:ty) => {
+    ($collection:ident, $entries:ident, $item:ty, $key:ident, $value:ty, $error:ty) => {
         #[derive(Debug, Default)]
         pub(super) struct $entries {
             items: Box<[$item]>,
@@ -147,6 +152,14 @@ macro_rules! sorted_collection {
                     .debug_tuple(stringify!($collection))
                     .field(&self.as_slice())
                     .finish()
+            }
+        }
+
+        impl TryFrom<Vec<$item>> for $collection {
+            type Error = $error;
+
+            fn try_from(items: Vec<$item>) -> Result<Self, Self::Error> {
+                Self::new(items)
             }
         }
 

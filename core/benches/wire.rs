@@ -37,18 +37,17 @@ mod unix {
     use std::sync::Arc;
 
     use gungraun::library_benchmark;
-    use nv_telemetry_core::finite;
     use nv_telemetry_core::Attribute;
     use nv_telemetry_core::Attributes;
     use nv_telemetry_core::Coverage;
     use nv_telemetry_core::EndpointContext;
+    use nv_telemetry_core::Finite;
     use nv_telemetry_core::ObservationBatch;
     use nv_telemetry_core::ObservationWindow;
     use nv_telemetry_core::Origin;
     use nv_telemetry_core::Payload;
     use nv_telemetry_core::Reading;
     use nv_telemetry_core::ReadingKind;
-    use nv_telemetry_core::ReadingsBuilder;
     use nv_telemetry_core::SignalDescriptor;
     use nv_telemetry_core::Subject;
     use nv_telemetry_core::Timestamp;
@@ -97,20 +96,18 @@ mod unix {
         signal: impl Fn(usize) -> (usize, Arc<SignalDescriptor>),
     ) -> Box<[Reading]> {
         let attributes = attributes(LABELS);
-        let mut rows = ReadingsBuilder::new();
-        for index in 0..count {
-            let (index, signal) = signal(index);
-            rows.push(
+        (0..count)
+            .map(|index| {
+                let (index, signal) = signal(index);
                 Reading::new(
                     format!("/redfish/v1/Chassis/1/Sensors/CPU{index}Temp"),
                     signal,
-                    finite!(42.5),
+                    Finite::new(42.5).unwrap(),
                 )
                 .with_observed_at(timestamp())
-                .with_attributes(attributes.clone()),
-            );
-        }
-        rows.finish()
+                .with_attributes(attributes.clone())
+            })
+            .collect()
     }
 
     fn batch(rows: Box<[Reading]>) -> ObservationBatch {

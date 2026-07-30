@@ -129,6 +129,8 @@ impl Attribute {
 
 /// An immutable, key-sorted attribute collection.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "Vec<Attribute>"))]
 pub struct Attributes(Arc<AttributeEntries>);
 
 impl Attributes {
@@ -147,15 +149,14 @@ impl Attributes {
     }
 }
 
-sorted_collection!(Attributes, AttributeEntries, Attribute, key, AttrValue);
-
-impl TryFrom<Vec<Attribute>> for Attributes {
-    type Error = AttributesError;
-
-    fn try_from(value: Vec<Attribute>) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
+sorted_collection!(
+    Attributes,
+    AttributeEntries,
+    Attribute,
+    key,
+    AttrValue,
+    AttributesError
+);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -174,14 +175,3 @@ impl fmt::Display for AttributesError {
 }
 
 impl Error for AttributesError {}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Attributes {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let attributes = <Vec<Attribute> as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(attributes).map_err(serde::de::Error::custom)
-    }
-}

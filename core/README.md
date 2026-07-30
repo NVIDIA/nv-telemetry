@@ -63,9 +63,9 @@ crate root.
 A batch and everything in it implements `Eq` and `Hash`, so a snapshot works as
 a cache key and a consumer can tell a changed observation from a repeated one
 without walking it field by field. Batches are homogeneous; one acquisition may
-emit several when its response spans domains. `ReadingsBuilder`, `LogsBuilder`,
-`StatesBuilder`, and `InventoryBuilder` accumulate rows, and `finish` converts
-them into immutable boxed slices.
+emit several when its response spans domains. A row payload is built from a
+`Vec` and converted with `into`, since nothing about accumulating rows needs
+checking; `ResourceGraphBuilder` is separate because assembling a graph does.
 
 ## Shared ownership
 
@@ -108,6 +108,14 @@ payloads encode to identical bytes and decoding can only widen sharing. A
 These must not be collapsed into one string: a subject can be observed through
 several providers, and one provider can report many source records for the same
 subject.
+
+Each half of a compound identity is its own type rather than a bare `Name`:
+`Subject` pairs a `SubjectKind` with a `SubjectId`, `Origin` pairs a `Provider`
+with a `RequestClass`, and a signal is a `Metric` at an `Instance`. The pairs
+would otherwise be two interchangeable strings sitting next to each other in a
+constructor, where swapping them still compiles and yields an identity that
+joins to the wrong thing. All of them accept `&str`, `String`, or `Name`, so
+the wrapper costs a call site nothing.
 
 ## Readings and signal metadata
 
@@ -204,8 +212,9 @@ value would make an observation look changed on every diff and would bar `Eq`
 and `Hash` entirely.
 
 An unmeasurable quantity is absence, not a sentinel float: omit the reading.
-Projections drop non-finite source values. Use the `finite!` macro for
-literals, which fails at compile time.
+Projections drop non-finite source values. `Finite::new` is `const`, so a
+literal known to be finite can be matched out in a constant and the rejection
+becomes a compile error rather than something to handle at runtime.
 
 ## Scope and completeness
 
@@ -259,7 +268,9 @@ dispatcher can act on a failure without it entering the payload.
 
 With the `serde` feature, these types deserialize through their constructors
 rather than the derived field-by-field path, so a value arriving over the wire
-is held to the same rules as one built in process.
+is held to the same rules as one built in process. Each states that as
+`#[serde(try_from = "...")]` over a `TryFrom` that calls the constructor, so
+the rule has one statement and a caller can reach it without serde.
 
 ## Field visibility
 
@@ -282,9 +293,8 @@ will not compile outside this crate and a new field is not a breaking change.
 
 ```rust
 use nv_telemetry_core::{
-    finite, Attributes, Coverage, EndpointContext, ObservationBatch, ObservationWindow,
-    Origin, Payload, Reading, ReadingKind, ReadingsBuilder, SignalDescriptor, Subject,
-    Timestamp, Unit,
+    Attributes, Coverage, EndpointContext, Finite, ObservationBatch, ObservationWindow,
+    Origin, Payload, Reading, ReadingKind, SignalDescriptor, Subject, Timestamp, Unit,
 };
 
 fn build_batch() -> Result<ObservationBatch, Box<dyn std::error::Error>> {
@@ -299,18 +309,21 @@ fn build_batch() -> Result<ObservationBatch, Box<dyn std::error::Error>> {
         observed_at,
     );
 
-    let mut rows = ReadingsBuilder::new();
-    rows.push(
-        Reading::new("/redfish/v1/Chassis/1/Sensors/CPU0Temp", descriptor, finite!(42.5))
-            .with_observed_at(observed_at),
-    );
+    let rows = vec![
+        Reading::new(
+            "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+            descriptor,
+            Finite::new(42.5)?,
+        )
+        .with_observed_at(observed_at),
+    ];
 
     Ok(ObservationBatch::new(
         EndpointContext::new("bmc-1", Attributes::empty()),
         Origin::new("redfish-sensor", "sensor-reading"),
         ObservationWindow::point(observed_at),
         Coverage::complete_subject(subject),
-        Payload::Readings(rows.finish()),
+        Payload::Readings(rows.into()),
     )?)
 }
 ```

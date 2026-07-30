@@ -7,19 +7,19 @@
 
 use std::sync::Arc;
 
-use nv_telemetry_core::finite;
 use nv_telemetry_core::Finite;
-use nv_telemetry_core::Name;
+use nv_telemetry_core::Health;
 use nv_telemetry_core::NumericValue;
 use nv_telemetry_core::ReadingKind;
 use nv_telemetry_core::ReportedState;
 use nv_telemetry_core::SignalDescriptor;
 use nv_telemetry_core::Subject;
 use nv_telemetry_core::Timestamp;
-use nv_telemetry_redfish::telemetry_projection;
 use nv_telemetry_redfish::FieldValue;
+use nv_telemetry_redfish::Fields;
 use nv_telemetry_redfish::Project;
 use nv_telemetry_redfish::ProjectionIssueKind;
+use nv_telemetry_redfish::ProjectionResult;
 use nv_telemetry_redfish::SignalCatalog;
 use nv_telemetry_redfish::SignalDescriptorRecord;
 use nv_telemetry_redfish::SignalKey;
@@ -60,84 +60,127 @@ struct ProjectionContext {
     observed_at: Timestamp,
 }
 
-telemetry_projection! {
-    FixtureSensorMetadataProjection(SensorSchema, ProjectionContext) -> SignalDescriptorRecord
-    |sensor, context| {
-        required {
-            source_key: "Sensor.@odata.id" =>
-                FieldValue::from_option(sensor.odata_id.clone()),
-            instance: "Sensor.Id" =>
-                FieldValue::from_option(sensor.id.clone()),
-            metric: "Sensor.ReadingType" =>
-                FieldValue::from_option(
-                    sensor
-                        .reading_type
-                        .clone()
-                        .flatten()
-                        .map(|value| value.to_ascii_lowercase())
-                ),
-            unit: "Sensor.ReadingUnits" =>
-                FieldValue::from_nested_option(sensor.reading_units.clone())
-        }
-        optional { }
-        build {
-            let descriptor = SignalDescriptor::new(
-                Subject::new("sensor", source_key.clone()),
-                metric,
-                instance,
-                ReadingKind::Gauge,
-                unit,
-                context.observed_at,
-            );
-            SignalDescriptorRecord::new(source_key, descriptor)
-        }
+#[derive(Debug)]
+struct FixtureSensorMetadataProjection;
+
+impl Project<SensorSchema, ProjectionContext> for FixtureSensorMetadataProjection {
+    type Output = SignalDescriptorRecord;
+
+    fn project(
+        sensor: &SensorSchema,
+        context: &ProjectionContext,
+    ) -> ProjectionResult<Self::Output> {
+        let mut fields = Fields::new();
+        let source_key = fields.require(
+            "Sensor.@odata.id",
+            FieldValue::from_option(sensor.odata_id.clone()),
+        );
+        let instance = fields.require("Sensor.Id", FieldValue::from_option(sensor.id.clone()));
+        let metric = fields.require(
+            "Sensor.ReadingType",
+            FieldValue::from_option(
+                sensor
+                    .reading_type
+                    .clone()
+                    .flatten()
+                    .map(|value| value.to_ascii_lowercase()),
+            ),
+        );
+        let unit = fields.require(
+            "Sensor.ReadingUnits",
+            FieldValue::from_nested_option(sensor.reading_units.clone()),
+        );
+
+        let (Some(source_key), Some(instance), Some(metric), Some(unit)) =
+            (source_key, instance, metric, unit)
+        else {
+            return fields.incomplete();
+        };
+
+        let descriptor = SignalDescriptor::new(
+            Subject::new("sensor", source_key.clone()),
+            metric,
+            instance,
+            ReadingKind::Gauge,
+            unit,
+            context.observed_at,
+        );
+        fields.complete(SignalDescriptorRecord::new(source_key, descriptor))
     }
 }
 
-telemetry_projection! {
-    FixtureSensorSampleProjection(SensorSchema, ProjectionContext) -> SignalSample
-    |sensor, context| {
-        required {
-            source_key: "Sensor.@odata.id" =>
-                FieldValue::from_option(sensor.odata_id.clone()),
-            signal_key: "Sensor.@odata.id" =>
-                FieldValue::from_option(sensor.odata_id.clone()),
-            value: "Sensor.Reading" =>
-                FieldValue::from_option(finite_reading(sensor.reading.flatten()))
+#[derive(Debug)]
+struct FixtureSensorSampleProjection;
+
+impl Project<SensorSchema, ProjectionContext> for FixtureSensorSampleProjection {
+    type Output = SignalSample;
+
+    fn project(
+        sensor: &SensorSchema,
+        context: &ProjectionContext,
+    ) -> ProjectionResult<Self::Output> {
+        let mut fields = Fields::new();
+        let source_key = fields.require(
+            "Sensor.@odata.id",
+            FieldValue::from_option(sensor.odata_id.clone()),
+        );
+        let signal_key = fields.require(
+            "Sensor.@odata.id",
+            FieldValue::from_option(sensor.odata_id.clone()),
+        );
+        let value = fields.require(
+            "Sensor.Reading",
+            FieldValue::from_option(finite_reading(sensor.reading.flatten())),
+        );
+
+        let (Some(source_key), Some(signal_key), Some(value)) = (source_key, signal_key, value)
+        else {
+            return fields.incomplete();
+        };
+
+        let reported_state = sensor
+            .status
+            .as_ref()
+            .and_then(|status| status.health.clone().flatten())
+            .map(|health| ReportedState::new(None, Some(health.into())));
+
+        let mut sample =
+            SignalSample::new(source_key, signal_key, value).with_observed_at(context.observed_at);
+        if let Some(reported_state) = reported_state {
+            sample = sample.with_reported_state(reported_state);
         }
-        optional {
-            reported_state = sensor.status
-                .as_ref()
-                .and_then(|status| status.health.clone().flatten())
-                .map(|health| ReportedState::new(None, Some(health.into())))
-        }
-        build {
-            let mut sample = SignalSample::new(source_key, signal_key, value)
-                .with_observed_at(context.observed_at);
-            if let Some(reported_state) = reported_state {
-                sample = sample.with_reported_state(reported_state);
-            }
-            sample
-        }
+        fields.complete(sample)
     }
 }
 
-telemetry_projection! {
-    MetricReportSampleProjection(MetricValueSchema, ProjectionContext) -> SignalSample
-    |metric_value, context| {
-        required {
-            signal_key: "MetricValue.MetricProperty" =>
-                FieldValue::from_option(metric_value.metric_property.clone()),
-            value: "MetricValue.MetricValue" =>
-                parse_metric_value(metric_value.metric_value.as_deref())
-        }
-        optional {
-            source_key = format!("metric-report:{}", metric_value.report_id)
-        }
-        build {
-            SignalSample::new(source_key, signal_key, value)
-                .with_observed_at(context.observed_at)
-        }
+#[derive(Debug)]
+struct MetricReportSampleProjection;
+
+impl Project<MetricValueSchema, ProjectionContext> for MetricReportSampleProjection {
+    type Output = SignalSample;
+
+    fn project(
+        metric_value: &MetricValueSchema,
+        context: &ProjectionContext,
+    ) -> ProjectionResult<Self::Output> {
+        let mut fields = Fields::new();
+        let signal_key = fields.require(
+            "MetricValue.MetricProperty",
+            FieldValue::from_option(metric_value.metric_property.clone()),
+        );
+        let value = fields.require(
+            "MetricValue.MetricValue",
+            parse_metric_value(metric_value.metric_value.as_deref()),
+        );
+
+        let (Some(signal_key), Some(value)) = (signal_key, value) else {
+            return fields.incomplete();
+        };
+
+        let source_key = format!("metric-report:{}", metric_value.report_id);
+        fields.complete(
+            SignalSample::new(source_key, signal_key, value).with_observed_at(context.observed_at),
+        )
     }
 }
 
@@ -178,7 +221,7 @@ fn sensor_metadata_and_samples_are_projected_in_two_layers() {
         .expect("sample output");
     let reading = catalog.resolve(sample).expect("catalog metadata");
 
-    assert_eq!(reading.value, NumericValue::F64(finite!(42.5)));
+    assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
     assert_eq!(reading.signal.unit.as_str(), "Cel");
     assert_eq!(reading.signal.metric.as_str(), "temperature");
     assert_eq!(
@@ -186,7 +229,7 @@ fn sensor_metadata_and_samples_are_projected_in_two_layers() {
             .reported_state
             .as_ref()
             .and_then(|state| state.health.as_ref())
-            .map(Name::as_str),
+            .map(Health::as_str),
         Some("OK")
     );
 }
@@ -217,7 +260,7 @@ fn compiled_nv_redfish_sensor_projects_without_an_adapter() {
     assert_eq!(reading.signal.revision, 0);
     assert_eq!(
         reading.signal.bounds.and_then(|bounds| bounds.lower),
-        Some(finite!(-10.0))
+        Some(Finite::new(-10.0).unwrap())
     );
 }
 
@@ -352,7 +395,10 @@ fn metric_report_sample_reuses_sensor_metadata() {
     let key = SignalKey::from("/redfish/v1/Chassis/1/Sensors/CPU0Temp");
     let descriptor = catalog.get(&key).expect("catalog descriptor");
     assert!(Arc::ptr_eq(&reading.signal, descriptor));
-    assert_eq!(reading.value, NumericValue::F64(finite!(43.25)));
+    assert_eq!(
+        reading.value,
+        NumericValue::F64(Finite::new(43.25).unwrap())
+    );
 }
 
 #[test]

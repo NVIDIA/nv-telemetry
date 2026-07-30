@@ -9,6 +9,7 @@ mod signal;
 mod uri;
 
 pub use projection::FieldValue;
+pub use projection::Fields;
 pub use projection::Project;
 pub use projection::ProjectionIssue;
 pub use projection::ProjectionIssueKind;

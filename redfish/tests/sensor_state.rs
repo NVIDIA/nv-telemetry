@@ -5,7 +5,7 @@
 //! joins the two halves back together.
 
 use nv_redfish::schema::sensor::Sensor;
-use nv_telemetry_core::finite;
+use nv_telemetry_core::Finite;
 use nv_telemetry_core::NumericValue;
 use nv_telemetry_core::PropertyValue;
 use nv_telemetry_core::ReadingKind;
@@ -80,9 +80,9 @@ fn a_reading_finds_its_thresholds_through_the_subject_they_share() {
     );
     assert_eq!(
         observed.properties.get("upper_critical"),
-        Some(&PropertyValue::F64(finite!(90.0)))
+        Some(&PropertyValue::F64(Finite::new(90.0).unwrap()))
     );
-    assert_eq!(reading.value, NumericValue::F64(finite!(42.5)));
+    assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn a_threshold_the_device_leaves_unset_is_stated_rather_than_omitted() {
 
     assert_eq!(
         resource.properties.get("upper_caution"),
-        Some(&PropertyValue::F64(finite!(80.0)))
+        Some(&PropertyValue::F64(Finite::new(80.0).unwrap()))
     );
     // The device implements thresholds and reports no upper critical, which
     // is a different claim from this projection not carrying one.

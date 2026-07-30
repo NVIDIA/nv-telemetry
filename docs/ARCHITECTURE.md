@@ -245,10 +245,27 @@ identity so consumers can correlate them without understanding Redfish.
 ### Typed projection
 
 Protocol integrations map compiled source types into the data plane through
-compile-checked projection declarations. A declaration names required source
-fields, optional derived values, and the output constructor. Missing or invalid
-required fields produce structured projection issues; Rust type mismatches fail
-at compile time.
+projections written in Rust against those types. A projection reads its
+required source fields, reports the missing or invalid ones as structured
+issues, and builds its output only once all of them hold; type mismatches fail
+at compile time. Every required field is read before the decision, so one
+failed projection names all of them, which is what a consumer diagnosing an
+unfamiliar device needs.
+
+Projections are written rather than generated, which is the opposite choice
+from the schema types they consume. A protocol binding generates those types
+because their source of truth is external, machine-readable, and not ours to
+maintain: DMTF publishes the CSDL, the mapping from schema element to Rust type
+is mechanical, and regenerating is how the binding tracks a new revision. A
+projection has none of those properties. That `EnergykWh` accumulates while
+`Temperature` does not, that a sensor's subject needs the chassis its payload
+never names, that a non-finite reading is invalid rather than absent: none of
+it appears in any schema, and all of it is judgement this library is
+responsible for. Generating it would mean first writing that judgement into a
+specification file, a second language for the same content that the compiler
+cannot check and whose errors point at lines nobody wrote. The rule those two
+cases share: generate from a source of truth you do not own, and write in Rust
+what you are deciding yourself.
 
 Signal metadata and samples are projected separately. Metadata produces an
 immutable `SignalDescriptor` indexed by a canonical `SignalKey`. Sensor,
@@ -292,8 +309,8 @@ one: the device answered, and the answer cannot be represented. Collapsing
 that into absence would tell a consumer nothing was reported, hiding a device
 that reports garbage behind one that stays quiet.
 
-Projection declarations contain source-specific field knowledge. The core
-observation model and dispatcher do not depend on Redfish schema types.
+Projections contain source-specific field knowledge. The core observation model
+and dispatcher do not depend on Redfish schema types.
 
 ## Dispatcher placement
 

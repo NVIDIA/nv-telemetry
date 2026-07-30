@@ -27,25 +27,29 @@ impl SignalKey {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Takes an owned URI, keeping its allocation when nothing has to go.
+    ///
+    /// Only a metric report names a reading with a fragment, so most inputs
+    /// are already canonical and reducing one must not cost a copy.
+    fn from_owned(value: impl Into<Name> + AsRef<str>) -> Self {
+        let reduced = canonical(value.as_ref());
+        if reduced.len() == value.as_ref().len() {
+            return Self(value.into());
+        }
+        Self(Name::from(reduced))
+    }
 }
 
 impl From<Name> for SignalKey {
     fn from(value: Name) -> Self {
-        let canonical = canonical(value.as_str());
-        if canonical.len() == value.as_str().len() {
-            return Self(value);
-        }
-        Self(Name::from(canonical))
+        Self::from_owned(value)
     }
 }
 
 impl From<String> for SignalKey {
     fn from(value: String) -> Self {
-        let canonical = canonical(&value);
-        if canonical.len() == value.len() {
-            return Self(Name::from(value));
-        }
-        Self(Name::from(canonical))
+        Self::from_owned(value)
     }
 }
 

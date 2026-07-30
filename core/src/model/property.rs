@@ -191,6 +191,8 @@ impl Property {
 /// properties hash identically regardless of the order the source reported
 /// them.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "Vec<Property>"))]
 pub struct PropertyMap(Arc<PropertyEntries>);
 
 impl PropertyMap {
@@ -245,7 +247,14 @@ impl PropertyMap {
     }
 }
 
-sorted_collection!(PropertyMap, PropertyEntries, Property, name, PropertyValue);
+sorted_collection!(
+    PropertyMap,
+    PropertyEntries,
+    Property,
+    name,
+    PropertyValue,
+    PropertyMapError
+);
 
 /// Releases rejected properties without recursing through their nesting.
 ///
@@ -358,12 +367,13 @@ mod hex_bytes {
             ));
         }
 
+        // Collected by hand rather than with `collect`, which cannot size the
+        // output: a fallible iterator reports no lower bound, so the buffer
+        // would grow from empty even though the length is known exactly.
         let bytes = encoded.as_bytes();
         let mut decoded = Vec::with_capacity(bytes.len() / 2);
         for pair in bytes.chunks_exact(2) {
-            let high = decode_digit::<D>(pair[0])?;
-            let low = decode_digit::<D>(pair[1])?;
-            decoded.push(high << 4 | low);
+            decoded.push(decode_digit::<D>(pair[0])? << 4 | decode_digit::<D>(pair[1])?);
         }
         Ok(Arc::from(decoded))
     }
@@ -419,16 +429,5 @@ mod hex_bytes {
                 digit as char
             ))),
         }
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for PropertyMap {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let properties = <Vec<Property> as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(properties).map_err(serde::de::Error::custom)
     }
 }

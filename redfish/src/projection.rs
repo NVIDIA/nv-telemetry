@@ -66,7 +66,12 @@ impl<T> ProjectionResult<T> {
     }
 }
 
-/// Intermediate value consumed by `telemetry_projection!`.
+/// What one source field yielded, before a projection judges whether it can
+/// proceed without it.
+///
+/// A field is *missing* when the device said nothing and *invalid* when it
+/// answered unusably. A consumer needs the difference: a `NaN` reading is a
+/// device reporting garbage, not a device staying quiet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FieldValue<T> {
     Present(T),
@@ -104,110 +109,73 @@ impl<T> FieldValue<T> {
             Err(error) => Self::Invalid(error.to_string()),
         }
     }
-
-    #[doc(hidden)]
-    pub fn issue_kind(&self) -> Option<ProjectionIssueKind> {
-        match self {
-            Self::Present(_) => None,
-            Self::Missing => Some(ProjectionIssueKind::MissingRequired),
-            Self::Invalid(detail) => Some(ProjectionIssueKind::Invalid {
-                detail: detail.clone(),
-            }),
-        }
-    }
 }
 
-/// Defines a compile-checked projection from typed source expressions.
+/// Collects the reasons a projection could not produce output.
 ///
-/// Required expressions return [`FieldValue`]. All required fields are
-/// evaluated so one failed projection reports every missing or invalid field.
-/// Optional expressions are evaluated only when all required fields are valid.
-///
-/// Type mismatches in a mapping fail at compile time:
-///
-/// ```compile_fail
-/// use nv_telemetry_redfish::{telemetry_projection, FieldValue};
-///
-/// struct Source {
-///     value: Option<String>,
-/// }
-///
-/// telemetry_projection! {
-///     BrokenProjection(Source, ()) -> u64
-///     |source, _context| {
-///         required {
-///             value: "Source.Value" => FieldValue::from_option(source.value.clone())
-///         }
-///         optional {
-///         }
-///         build {
-///             value
-///         }
-///     }
-/// }
-/// ```
-#[macro_export]
-macro_rules! telemetry_projection {
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident($input:ty, $context:ty) -> $output:ty
-        |$source:ident, $ctx:ident| {
-            required {
-                $(
-                    $required:ident : $path:literal => $required_expr:expr
-                ),+ $(,)?
+/// A projection offers every required field to [`require`](Self::require)
+/// before deciding whether it can build, so a failure reports all of them
+/// rather than only the first one read. Reading a field and judging it are
+/// separate steps for that reason: the judgement is recorded here and the
+/// projection carries on.
+#[derive(Debug, Default)]
+pub struct Fields {
+    issues: Vec<ProjectionIssue>,
+}
+
+impl Fields {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Yields the value, recording why it was unusable when it is not.
+    ///
+    /// `path` names the source field in its own schema's terms, so a consumer
+    /// reading the issue can look it up against the device's documentation.
+    pub fn require<T>(&mut self, path: &'static str, value: FieldValue<T>) -> Option<T> {
+        match value {
+            FieldValue::Present(value) => Some(value),
+            FieldValue::Missing => {
+                self.issues.push(ProjectionIssue::new(
+                    path,
+                    ProjectionIssueKind::MissingRequired,
+                ));
+                None
             }
-            optional {
-                $(
-                    $optional:ident = $optional_expr:expr
-                ),* $(,)?
-            }
-            build $build:block
-        }
-    ) => {
-        $(#[$meta])*
-        // A projection is a type-level tag, never constructed.
-        #[derive(::std::fmt::Debug)]
-        #[non_exhaustive]
-        $vis struct $name;
-
-        impl $crate::Project<$input, $context> for $name {
-            type Output = $output;
-
-            fn project(
-                $source: &$input,
-                $ctx: &$context,
-            ) -> $crate::ProjectionResult<Self::Output> {
-                let mut issues = ::std::vec::Vec::new();
-
-                $(
-                    let $required = $required_expr;
-                    if let ::std::option::Option::Some(kind) = $required.issue_kind() {
-                        issues.push($crate::ProjectionIssue::new($path, kind));
-                    }
-                )+
-
-                let output = match ($($required,)+) {
-                    ($($crate::FieldValue::Present($required),)+) => {
-                        $(
-                            let $optional = $optional_expr;
-                        )*
-                        ::std::option::Option::Some($build)
-                    }
-                    _ => ::std::option::Option::None,
-                };
-
-                $crate::ProjectionResult::new(output, issues)
+            FieldValue::Invalid(detail) => {
+                self.issues.push(ProjectionIssue::new(
+                    path,
+                    ProjectionIssueKind::Invalid { detail },
+                ));
+                None
             }
         }
-    };
+    }
+
+    /// Finishes with the projected value, which may still carry issues from
+    /// fields that were not required.
+    pub fn complete<T>(self, output: T) -> ProjectionResult<T> {
+        ProjectionResult::new(Some(output), self.issues)
+    }
+
+    /// Finishes with no value, which is only reachable once a required field
+    /// has failed.
+    pub fn incomplete<T>(self) -> ProjectionResult<T> {
+        debug_assert!(
+            !self.issues.is_empty(),
+            "a projection produced no output and no reason"
+        );
+        ProjectionResult::new(None, self.issues)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::FieldValue;
+    use super::Fields;
     use super::Project;
     use super::ProjectionIssueKind;
+    use super::ProjectionResult;
 
     #[derive(Debug)]
     struct Source {
@@ -215,18 +183,21 @@ mod tests {
         value: Option<u64>,
     }
 
-    crate::telemetry_projection! {
-        ExampleProjection(Source, ()) -> (String, u64)
-        |source, _context| {
-            required {
-                name: "Source.Name" => FieldValue::from_option(source.name.clone()),
-                value: "Source.Value" => FieldValue::from_option(source.value)
-            }
-            optional {
-            }
-            build {
-                (name, value)
-            }
+    #[derive(Debug)]
+    struct ExampleProjection;
+
+    impl Project<Source> for ExampleProjection {
+        type Output = (String, u64);
+
+        fn project(source: &Source, _context: &()) -> ProjectionResult<Self::Output> {
+            let mut fields = Fields::new();
+            let name = fields.require("Source.Name", FieldValue::from_option(source.name.clone()));
+            let value = fields.require("Source.Value", FieldValue::from_option(source.value));
+
+            let (Some(name), Some(value)) = (name, value) else {
+                return fields.incomplete();
+            };
+            fields.complete((name, value))
         }
     }
 

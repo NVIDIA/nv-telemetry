@@ -38,11 +38,11 @@ mod unix {
     use std::time::SystemTime;
 
     use gungraun::library_benchmark;
-    use nv_telemetry_core::finite;
     use nv_telemetry_core::Attribute;
     use nv_telemetry_core::Attributes;
     use nv_telemetry_core::Coverage;
     use nv_telemetry_core::EndpointContext;
+    use nv_telemetry_core::Finite;
     use nv_telemetry_core::Name;
     use nv_telemetry_core::ObservationBatch;
     use nv_telemetry_core::ObservationWindow;
@@ -50,7 +50,6 @@ mod unix {
     use nv_telemetry_core::Payload;
     use nv_telemetry_core::Reading;
     use nv_telemetry_core::ReadingKind;
-    use nv_telemetry_core::ReadingsBuilder;
     use nv_telemetry_core::SignalDescriptor;
     use nv_telemetry_core::Subject;
     use nv_telemetry_core::Timestamp;
@@ -126,15 +125,13 @@ mod unix {
     }
 
     fn assemble(rows: Vec<Row>, attributes: &Attributes) -> Box<[Reading]> {
-        let mut readings = ReadingsBuilder::new();
-        for (source_key, signal) in rows {
-            readings.push(
-                Reading::new(source_key, signal, finite!(42.5))
+        rows.into_iter()
+            .map(|(source_key, signal)| {
+                Reading::new(source_key, signal, Finite::new(42.5).unwrap())
                     .with_observed_at(timestamp())
-                    .with_attributes(attributes.clone()),
-            );
-        }
-        readings.finish()
+                    .with_attributes(attributes.clone())
+            })
+            .collect()
     }
 
     fn endpoint() -> Arc<EndpointContext> {

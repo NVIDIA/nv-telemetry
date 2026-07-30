@@ -15,6 +15,7 @@
 
 use super::AttrValue;
 use super::Attributes;
+use super::Instance;
 use super::Name;
 use super::Subject;
 use super::Timestamp;
@@ -25,7 +26,7 @@ use super::Timestamp;
 #[non_exhaustive]
 pub struct StateObservation {
     pub name: Name,
-    pub instance: Option<Name>,
+    pub instance: Option<Instance>,
     pub subject: Option<Subject>,
     pub value: AttrValue,
     pub observed_at: Option<Timestamp>,
@@ -45,7 +46,7 @@ impl StateObservation {
     }
 
     #[must_use]
-    pub fn with_instance(mut self, instance: impl Into<Name>) -> Self {
+    pub fn with_instance(mut self, instance: impl Into<Instance>) -> Self {
         self.instance = Some(instance.into());
         self
     }

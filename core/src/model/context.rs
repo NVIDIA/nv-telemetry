@@ -43,6 +43,22 @@ impl EndpointContext {
     }
 }
 
+/// What kind of thing a subject names, such as `sensor`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct SubjectKind(Name);
+
+name_newtype!(SubjectKind);
+
+/// Which thing of that kind a subject names, unique within its kind.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct SubjectId(Name);
+
+name_newtype!(SubjectId);
+
 /// Stable, protocol-neutral identity of a resource inside an endpoint.
 ///
 /// Fields are public; read and match them directly:
@@ -60,12 +76,12 @@ impl EndpointContext {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct Subject {
-    pub kind: Name,
-    pub id: Name,
+    pub kind: SubjectKind,
+    pub id: SubjectId,
 }
 
 impl Subject {
-    pub fn new(kind: impl Into<Name>, id: impl Into<Name>) -> Self {
+    pub fn new(kind: impl Into<SubjectKind>, id: impl Into<SubjectId>) -> Self {
         Self {
             kind: kind.into(),
             id: id.into(),
@@ -130,17 +146,34 @@ impl Coverage {
     }
 }
 
+/// Which acquisition source produced an observation, such as `redfish`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct Provider(Name);
+
+name_newtype!(Provider);
+
+/// Which category of request produced an observation, as the caller's
+/// scheduling and rate policy names it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct RequestClass(Name);
+
+name_newtype!(RequestClass);
+
 /// Provenance of an acquisition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct Origin {
-    pub provider: Name,
-    pub request_class: Name,
+    pub provider: Provider,
+    pub request_class: RequestClass,
 }
 
 impl Origin {
-    pub fn new(provider: impl Into<Name>, request_class: impl Into<Name>) -> Self {
+    pub fn new(provider: impl Into<Provider>, request_class: impl Into<RequestClass>) -> Self {
         Self {
             provider: provider.into(),
             request_class: request_class.into(),

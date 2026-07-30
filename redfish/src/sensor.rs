@@ -7,8 +7,12 @@ use nv_redfish::schema::sensor::ReadingType;
 use nv_redfish::schema::sensor::Sensor;
 use nv_redfish::schema::sensor::Thresholds;
 use nv_telemetry_core::Finite;
+use nv_telemetry_core::Health;
+use nv_telemetry_core::Instance;
+use nv_telemetry_core::Metric;
 use nv_telemetry_core::Name;
 use nv_telemetry_core::ObservedResource;
+use nv_telemetry_core::OperatingState;
 use nv_telemetry_core::Property;
 use nv_telemetry_core::PropertyMap;
 use nv_telemetry_core::PropertyValue;
@@ -22,6 +26,9 @@ use nv_telemetry_core::ValueRange;
 
 use crate::uri::chassis_of;
 use crate::FieldValue;
+use crate::Fields;
+use crate::Project;
+use crate::ProjectionResult;
 use crate::SignalDescriptorRecord;
 use crate::SignalSample;
 
@@ -54,96 +61,144 @@ impl SensorProjectionContext {
     }
 }
 
-crate::telemetry_projection! {
-    /// Projects stable metadata from an `nv-redfish` Sensor.
-    pub SensorMetadataProjection(Sensor, SensorProjectionContext) -> SignalDescriptorRecord
-    |sensor, context| {
-        required {
-            subject: "Sensor.@odata.id" => sensor_subject(sensor),
-            source_key: "Sensor.@odata.id" =>
-                FieldValue::present(Name::from(sensor.odata_id().to_string())),
-            instance: "Sensor.Id" =>
-                FieldValue::present(Name::from(sensor.base.id.as_str())),
-            metric: "Sensor.ReadingType" =>
-                FieldValue::from_option(
-                    sensor.reading_type.flatten().map(|value| Name::from_static(value.to_snake_case()))
-                )
+/// Projects stable metadata from an `nv-redfish` Sensor.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SensorMetadataProjection;
+
+impl Project<Sensor, SensorProjectionContext> for SensorMetadataProjection {
+    type Output = SignalDescriptorRecord;
+
+    fn project(
+        sensor: &Sensor,
+        context: &SensorProjectionContext,
+    ) -> ProjectionResult<Self::Output> {
+        let mut fields = Fields::new();
+        let subject = fields.require("Sensor.@odata.id", sensor_subject(sensor));
+        let source_key = fields.require("Sensor.@odata.id", source_key(sensor));
+        let instance = fields.require(
+            "Sensor.Id",
+            FieldValue::present(Instance::from(sensor.base.id.as_str())),
+        );
+        let metric = fields.require(
+            "Sensor.ReadingType",
+            FieldValue::from_option(
+                sensor
+                    .reading_type
+                    .flatten()
+                    .map(|value| Metric::from_static(value.to_snake_case())),
+            ),
+        );
+
+        let (Some(subject), Some(source_key), Some(instance), Some(metric)) =
+            (subject, source_key, instance, metric)
+        else {
+            return fields.incomplete();
+        };
+
+        let kind = sensor
+            .reading_type
+            .flatten()
+            .map_or(ReadingKind::Gauge, reading_kind);
+        let unit = sensor
+            .reading_units
+            .clone()
+            .flatten()
+            .filter(|unit| !unit.is_empty());
+
+        let mut descriptor = SignalDescriptor::new(
+            subject,
+            metric,
+            instance,
+            kind,
+            unit.map_or(DIMENSIONLESS, Unit::from),
+            context.observed_at,
+        );
+        if let Some(bounds) = project_bounds(sensor) {
+            descriptor = descriptor.with_bounds(bounds);
         }
-        optional {
-            kind = sensor.reading_type.flatten().map_or(ReadingKind::Gauge, reading_kind),
-            unit = sensor.reading_units.clone().flatten().filter(|unit| !unit.is_empty()),
-            bounds = project_bounds(sensor)
-        }
-        build {
-            let mut descriptor = SignalDescriptor::new(
-                subject,
-                metric,
-                instance,
-                kind,
-                unit.map_or(DIMENSIONLESS, Unit::from),
-                context.observed_at,
-            );
-            if let Some(bounds) = bounds {
-                descriptor = descriptor.with_bounds(bounds);
-            }
-            SignalDescriptorRecord::new(source_key, descriptor)
-        }
+        fields.complete(SignalDescriptorRecord::new(source_key, descriptor))
     }
 }
 
-crate::telemetry_projection! {
-    /// Projects a current reading from an `nv-redfish` Sensor.
-    pub SensorSampleProjection(Sensor, SensorProjectionContext) -> SignalSample
-    |sensor, context| {
-        required {
-            source_key: "Sensor.@odata.id" =>
-                FieldValue::present(Name::from(sensor.odata_id().to_string())),
-            value: "Sensor.Reading" => reading_value(sensor.reading.flatten())
+/// Projects a current reading from an `nv-redfish` Sensor.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SensorSampleProjection;
+
+impl Project<Sensor, SensorProjectionContext> for SensorSampleProjection {
+    type Output = SignalSample;
+
+    fn project(
+        sensor: &Sensor,
+        context: &SensorProjectionContext,
+    ) -> ProjectionResult<Self::Output> {
+        let mut fields = Fields::new();
+        let source_key = fields.require("Sensor.@odata.id", source_key(sensor));
+        let value = fields.require("Sensor.Reading", reading_value(sensor.reading.flatten()));
+
+        let (Some(source_key), Some(value)) = (source_key, value) else {
+            return fields.incomplete();
+        };
+
+        let mut sample = SignalSample::new(source_key.clone(), source_key, value)
+            .with_observed_at(context.observed_at);
+        if let Some(reported_state) = project_reported_state(sensor) {
+            sample = sample.with_reported_state(reported_state);
         }
-        optional {
-            reported_state = project_reported_state(sensor)
-        }
-        build {
-            let mut sample = SignalSample::new(source_key.clone(), source_key, value)
-                .with_observed_at(context.observed_at);
-            if let Some(reported_state) = reported_state {
-                sample = sample.with_reported_state(reported_state);
-            }
-            sample
-        }
+        fields.complete(sample)
     }
 }
 
-crate::telemetry_projection! {
-    /// Projects the configuration a Sensor reports about itself.
-    ///
-    /// Thresholds are the device's own judgement of its readings, so they are
-    /// observed state rather than part of a signal's definition. A consumer
-    /// joins them to a reading through the subject both carry.
-    ///
-    /// The resource is [`partial`] because this lifts a chosen subset of the
-    /// representation: a property missing here may simply not be projected,
-    /// which is why an unconfigured threshold is stated as null rather than
-    /// left out.
-    ///
-    /// [`partial`]: nv_telemetry_core::ResourceCompleteness::Partial
-    pub SensorResourceProjection(Sensor, SensorProjectionContext) -> ObservedResource
-    |sensor, context| {
-        required {
-            subject: "Sensor.@odata.id" => sensor_subject(sensor),
-            source_key: "Sensor.@odata.id" =>
-                FieldValue::present(Name::from(sensor.odata_id().to_string())),
-            properties: "Sensor.Thresholds" =>
-                FieldValue::from_result(PropertyMap::new(sensor_properties(sensor)))
-        }
-        optional {
-        }
-        build {
+/// Projects the configuration a Sensor reports about itself.
+///
+/// Thresholds are the device's own judgement of its readings, so they are
+/// observed state rather than part of a signal's definition. A consumer joins
+/// them to a reading through the subject both carry.
+///
+/// The resource is [`partial`] because this lifts a chosen subset of the
+/// representation: a property missing here may simply not be projected, which
+/// is why an unconfigured threshold is stated as null rather than left out.
+///
+/// [`partial`]: nv_telemetry_core::ResourceCompleteness::Partial
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SensorResourceProjection;
+
+impl Project<Sensor, SensorProjectionContext> for SensorResourceProjection {
+    type Output = ObservedResource;
+
+    fn project(
+        sensor: &Sensor,
+        context: &SensorProjectionContext,
+    ) -> ProjectionResult<Self::Output> {
+        let mut fields = Fields::new();
+        let subject = fields.require("Sensor.@odata.id", sensor_subject(sensor));
+        let source_key = fields.require("Sensor.@odata.id", source_key(sensor));
+        let properties = fields.require(
+            "Sensor.Thresholds",
+            FieldValue::from_result(PropertyMap::new(sensor_properties(sensor))),
+        );
+
+        let (Some(subject), Some(source_key), Some(properties)) = (subject, source_key, properties)
+        else {
+            return fields.incomplete();
+        };
+
+        fields.complete(
             ObservedResource::partial(subject, source_key, properties)
                 .with_schema(SCHEMA)
-                .with_observed_at(context.observed_at)
-        }
+                .with_observed_at(context.observed_at),
+        )
     }
+}
+
+/// Where the sensor was read from, which every projection of it carries.
+///
+/// This is the location, not the identity: [`sensor_subject`] gives the
+/// identity, and the two are deliberately different strings.
+fn source_key(sensor: &Sensor) -> FieldValue<Name> {
+    FieldValue::present(Name::from(sensor.odata_id().to_string()))
 }
 
 /// Separates the readings that accumulate from the ones that stand alone.
@@ -205,11 +260,11 @@ fn project_reported_state(sensor: &Sensor) -> Option<ReportedState> {
     let state = status
         .state
         .flatten()
-        .map(|value| Name::from_static(value.to_snake_case()));
+        .map(|value| OperatingState::from_static(value.to_snake_case()));
     let health = status
         .health
         .flatten()
-        .map(|value| Name::from_static(value.to_snake_case()));
+        .map(|value| Health::from_static(value.to_snake_case()));
     (state.is_some() || health.is_some()).then(|| ReportedState::new(state, health))
 }
 

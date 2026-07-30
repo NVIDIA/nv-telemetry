@@ -213,6 +213,12 @@ macro_rules! name_newtype {
                 Self(value.into())
             }
         }
+
+        impl std::fmt::Display for $newtype {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.0, formatter)
+            }
+        }
     };
 }
 

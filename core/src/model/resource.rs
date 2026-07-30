@@ -16,6 +16,7 @@
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
+use std::ops::Range;
 
 use super::collection::sort_and_find_duplicate;
 use super::Name;
@@ -189,7 +190,8 @@ impl ResourceRelation {
 /// Relation sources must be present in the graph. Targets may be external, so
 /// that a partial graph keeps its links into scopes that were not collected.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "GraphParts"))]
 pub struct ResourceGraph {
     resources: Box<[ObservedResource]>,
     relations: Box<[ResourceRelation]>,
@@ -283,69 +285,13 @@ impl ResourceGraph {
         mut relations: Vec<ResourceRelation>,
         limits: GraphLimits,
     ) -> Result<Self, ResourceGraphError> {
-        let limits = limits.clamped();
-
-        // Checked before sorting so oversized input costs nothing.
-        if resources.len() > limits.max_resources {
-            return Err(ResourceGraphError::TooManyResources {
-                count: resources.len(),
-                limit: limits.max_resources,
-            });
-        }
-        if relations.len() > limits.max_relations {
-            return Err(ResourceGraphError::TooManyRelations {
-                count: relations.len(),
-                limit: limits.max_relations,
-            });
-        }
-
-        if let Some(duplicate) = sort_and_find_duplicate(&mut resources, |left, right| {
-            left.subject.cmp(&right.subject)
-        }) {
-            return Err(ResourceGraphError::DuplicateResource(
-                duplicate.subject.clone(),
-            ));
-        }
-
-        let mut source_keys: Vec<&Name> = resources
-            .iter()
-            .map(|resource| &resource.source_key)
-            .collect();
-        if let Some(duplicate) = sort_and_find_duplicate(&mut source_keys, Ord::cmp) {
-            let duplicate = (*duplicate).clone();
-            return Err(ResourceGraphError::DuplicateSourceKey(duplicate));
-        }
-
-        if let Some(duplicate) = sort_and_find_duplicate(&mut relations, compare_relations) {
-            return Err(ResourceGraphError::DuplicateRelation {
-                source: duplicate.source.clone(),
-                kind: duplicate.kind.clone(),
-                target: duplicate.target.clone(),
-            });
-        }
-
-        // Both sides are now sorted on the same key, so one merge pass finds a
-        // source the graph does not hold. A relation left behind by the walk
-        // sorts before every remaining resource and so can never match one.
-        let mut relation = 0;
-        for resource in &resources {
-            while let Some(next) = relations.get(relation) {
-                match next.source.cmp(&resource.subject) {
-                    Ordering::Less => {
-                        return Err(ResourceGraphError::UnknownRelationSource(
-                            next.source.clone(),
-                        ));
-                    }
-                    Ordering::Equal => relation += 1,
-                    Ordering::Greater => break,
-                }
-            }
-        }
-        if let Some(orphan) = relations.get(relation) {
-            return Err(ResourceGraphError::UnknownRelationSource(
-                orphan.source.clone(),
-            ));
-        }
+        check_size(&resources, &relations, limits.clamped())?;
+        sort_unique_subjects(&mut resources)?;
+        check_unique_source_keys(&resources)?;
+        sort_unique_relations(&mut relations)?;
+        // Both sides are sorted on the same key by the two steps above, which
+        // is what lets this one be a single merge pass.
+        check_relation_sources(&resources, &relations)?;
 
         Ok(Self {
             resources: resources.into_boxed_slice(),
@@ -366,7 +312,7 @@ impl ResourceGraph {
     }
 
     pub fn get(&self, subject: &Subject) -> Option<&ObservedResource> {
-        self.index_of(subject).map(|index| &self.resources[index])
+        self.index_of(subject).map(|index| self.resource(index))
     }
 
     /// Returns the outgoing relations of `subject` in `O(log n)`.
@@ -404,9 +350,8 @@ impl ResourceGraph {
         };
 
         self.visit_from(root)
-            .into_iter()
-            .zip(&self.resources)
-            .filter_map(|(seen, resource)| seen.then_some(&resource.subject))
+            .reached()
+            .map(|index| &self.resource(index).subject)
             .collect()
     }
 
@@ -422,60 +367,39 @@ impl ResourceGraph {
     /// root has no resource to single out.
     pub fn first_unreachable_from(&self, root: &Subject) -> Option<&Subject> {
         let root = self.index_of(root)?;
-        let visited = self.visit_from(root);
-        let index = visited.iter().position(|seen| !seen)?;
-        Some(&self.resources[index].subject)
+        let unreached = self.visit_from(root).first_unreached()?;
+        Some(&self.resource(unreached).subject)
     }
 
     /// Marks every resource reachable from the resource at `root`.
-    fn visit_from(&self, root: usize) -> Vec<bool> {
-        let bounds = self.relation_bounds();
-        let mut visited = vec![false; self.resources.len()];
-        visited[root] = true;
+    fn visit_from(&self, root: ResourceIndex) -> Reached {
+        let bounds = RelationBounds::of(self);
+        let mut reached = Reached::none(self.resources.len());
+        reached.mark(root);
+
         let mut pending = vec![root];
         while let Some(index) = pending.pop() {
-            for relation in &self.relations[bounds[index]..bounds[index + 1]] {
+            for relation in &self.relations[bounds.of_resource(index)] {
                 let Some(target) = self.index_of(&relation.target) else {
                     continue;
                 };
-                if std::mem::replace(&mut visited[target], true) {
-                    continue;
+                if reached.mark(target) {
+                    pending.push(target);
                 }
-                pending.push(target);
             }
         }
-        visited
+        reached
     }
 
-    /// Returns where each resource's outgoing relations start, plus a final
-    /// entry holding the relation count.
-    ///
-    /// Resolving a subject to its relations costs a string comparison per
-    /// probe, which a traversal would otherwise pay at every node it visits.
-    /// Both slices are sorted on the same key, so one merge pass bounds every
-    /// run at once. Sources are known to exist, having been checked during
-    /// assembly, so the walk never has to skip a relation.
-    fn relation_bounds(&self) -> Vec<usize> {
-        let mut bounds = Vec::with_capacity(self.resources.len() + 1);
-        let mut relation = 0;
-        for resource in &self.resources {
-            bounds.push(relation);
-            while self
-                .relations
-                .get(relation)
-                .is_some_and(|next| next.source == resource.subject)
-            {
-                relation += 1;
-            }
-        }
-        bounds.push(relation);
-        bounds
-    }
-
-    fn index_of(&self, subject: &Subject) -> Option<usize> {
+    fn index_of(&self, subject: &Subject) -> Option<ResourceIndex> {
         self.resources
             .binary_search_by(|resource| resource.subject.cmp(subject))
             .ok()
+            .map(ResourceIndex)
+    }
+
+    fn resource(&self, index: ResourceIndex) -> &ObservedResource {
+        &self.resources[index.0]
     }
 
     pub const fn resource_count(&self) -> usize {
@@ -491,11 +415,170 @@ impl ResourceGraph {
     }
 }
 
+/// A resource's position in the graph's subject-sorted resource list.
+///
+/// A traversal carries positions in both the resource list and the relation
+/// list, and as bare integers the two were interchangeable. This one indexes
+/// resources; [`RelationBounds`] converts it to the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResourceIndex(usize);
+
+/// Which resources a traversal reached, indexed by [`ResourceIndex`].
+#[derive(Debug)]
+struct Reached(Vec<bool>);
+
+impl Reached {
+    fn none(resources: usize) -> Self {
+        Self(vec![false; resources])
+    }
+
+    /// Marks `index`, returning whether that was news.
+    fn mark(&mut self, index: ResourceIndex) -> bool {
+        !std::mem::replace(&mut self.0[index.0], true)
+    }
+
+    fn reached(&self) -> impl Iterator<Item = ResourceIndex> + '_ {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(index, reached)| reached.then_some(ResourceIndex(index)))
+    }
+
+    fn first_unreached(&self) -> Option<ResourceIndex> {
+        self.0
+            .iter()
+            .position(|reached| !reached)
+            .map(ResourceIndex)
+    }
+}
+
+/// Where each resource's outgoing relations sit in the relation list.
+///
+/// Resolving a subject to its relations costs a string comparison per probe,
+/// which a traversal would otherwise pay at every node it visits. Both slices
+/// are sorted on the same key, so one merge pass bounds every run at once.
+/// Sources are known to exist, having been checked during assembly, so the
+/// walk never has to skip a relation.
+#[derive(Debug)]
+struct RelationBounds(Vec<usize>);
+
+impl RelationBounds {
+    fn of(graph: &ResourceGraph) -> Self {
+        let mut starts = Vec::with_capacity(graph.resources.len() + 1);
+        let mut relation = 0;
+        for resource in &graph.resources {
+            starts.push(relation);
+            while graph
+                .relations
+                .get(relation)
+                .is_some_and(|next| next.source == resource.subject)
+            {
+                relation += 1;
+            }
+        }
+        starts.push(relation);
+        Self(starts)
+    }
+
+    fn of_resource(&self, index: ResourceIndex) -> Range<usize> {
+        self.0[index.0]..self.0[index.0 + 1]
+    }
+}
+
 fn compare_relations(left: &ResourceRelation, right: &ResourceRelation) -> Ordering {
     left.source
         .cmp(&right.source)
         .then_with(|| left.kind.cmp(&right.kind))
         .then_with(|| left.target.cmp(&right.target))
+}
+
+/// Rejects input past `limits` before anything has been sorted, so oversized
+/// input costs no more than counting it.
+fn check_size(
+    resources: &[ObservedResource],
+    relations: &[ResourceRelation],
+    limits: GraphLimits,
+) -> Result<(), ResourceGraphError> {
+    if resources.len() > limits.max_resources {
+        return Err(ResourceGraphError::TooManyResources {
+            count: resources.len(),
+            limit: limits.max_resources,
+        });
+    }
+    if relations.len() > limits.max_relations {
+        return Err(ResourceGraphError::TooManyRelations {
+            count: relations.len(),
+            limit: limits.max_relations,
+        });
+    }
+    Ok(())
+}
+
+/// Orders resources by subject, rejecting a subject described twice.
+fn sort_unique_subjects(resources: &mut [ObservedResource]) -> Result<(), ResourceGraphError> {
+    match sort_and_find_duplicate(resources, |left, right| left.subject.cmp(&right.subject)) {
+        Some(duplicate) => Err(ResourceGraphError::DuplicateResource(
+            duplicate.subject.clone(),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Rejects one source location described by two resources.
+fn check_unique_source_keys(resources: &[ObservedResource]) -> Result<(), ResourceGraphError> {
+    let mut source_keys: Vec<&Name> = resources
+        .iter()
+        .map(|resource| &resource.source_key)
+        .collect();
+    match sort_and_find_duplicate(&mut source_keys, Ord::cmp) {
+        Some(duplicate) => Err(ResourceGraphError::DuplicateSourceKey(Name::clone(
+            duplicate,
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Orders relations by source, then kind, then target, rejecting a repeat.
+fn sort_unique_relations(relations: &mut [ResourceRelation]) -> Result<(), ResourceGraphError> {
+    match sort_and_find_duplicate(relations, compare_relations) {
+        Some(duplicate) => Err(ResourceGraphError::DuplicateRelation {
+            source: duplicate.source.clone(),
+            kind: duplicate.kind.clone(),
+            target: duplicate.target.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Rejects an edge leaving a subject the graph does not hold.
+///
+/// Both slices arrive sorted on the subject, so one merge pass answers this.
+/// A relation the walk leaves behind sorts before every remaining resource
+/// and so can never match one.
+fn check_relation_sources(
+    resources: &[ObservedResource],
+    relations: &[ResourceRelation],
+) -> Result<(), ResourceGraphError> {
+    let mut relation = 0;
+    for resource in resources {
+        while let Some(next) = relations.get(relation) {
+            match next.source.cmp(&resource.subject) {
+                Ordering::Less => {
+                    return Err(ResourceGraphError::UnknownRelationSource(
+                        next.source.clone(),
+                    ));
+                }
+                Ordering::Equal => relation += 1,
+                Ordering::Greater => break,
+            }
+        }
+    }
+    match relations.get(relation) {
+        Some(orphan) => Err(ResourceGraphError::UnknownRelationSource(
+            orphan.source.clone(),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Mutable assembly boundary for an immutable [`ResourceGraph`].
@@ -619,19 +702,17 @@ impl fmt::Display for ResourceGraphError {
 
 impl Error for ResourceGraphError {}
 
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for ResourceGraph {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Representation {
-            resources: Vec<ObservedResource>,
-            relations: Vec<ResourceRelation>,
-        }
+/// The unvalidated parts a [`ResourceGraph`] is assembled from.
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+struct GraphParts {
+    resources: Vec<ObservedResource>,
+    relations: Vec<ResourceRelation>,
+}
 
-        let value = <Representation as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value.resources, value.relations).map_err(serde::de::Error::custom)
+impl TryFrom<GraphParts> for ResourceGraph {
+    type Error = ResourceGraphError;
+
+    fn try_from(value: GraphParts) -> Result<Self, Self::Error> {
+        Self::new(value.resources, value.relations)
     }
 }

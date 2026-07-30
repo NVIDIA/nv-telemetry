@@ -62,7 +62,8 @@ impl Payload {
 
 /// Canonical immutable unit of telemetry flow.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "BatchParts"))]
 pub struct ObservationBatch {
     pub endpoint: Arc<EndpointContext>,
     pub origin: Origin,
@@ -207,53 +208,6 @@ impl fmt::Display for BatchError {
 
 impl Error for BatchError {}
 
-macro_rules! collection_builder {
-    ($builder:ident, $row:ty, $what:literal) => {
-        #[doc = concat!("Accumulates ", $what, " for a [`Payload`].")]
-        ///
-        /// Checks nothing itself: a payload is validated against the declared
-        /// coverage by [`ObservationBatch::new`].
-        #[derive(Debug, Default)]
-        pub struct $builder {
-            rows: Vec<$row>,
-        }
-
-        impl $builder {
-            pub fn new() -> Self {
-                Self::default()
-            }
-
-            pub fn with_capacity(capacity: usize) -> Self {
-                Self {
-                    rows: Vec::with_capacity(capacity),
-                }
-            }
-
-            /// Appends a row, preserving source order.
-            pub fn push(&mut self, row: $row) {
-                self.rows.push(row);
-            }
-
-            pub fn len(&self) -> usize {
-                self.rows.len()
-            }
-
-            pub fn is_empty(&self) -> bool {
-                self.rows.is_empty()
-            }
-
-            pub fn finish(self) -> Box<[$row]> {
-                self.rows.into_boxed_slice()
-            }
-        }
-    };
-}
-
-collection_builder!(ReadingsBuilder, Reading, "numeric readings");
-collection_builder!(LogsBuilder, LogRecord, "log records");
-collection_builder!(StatesBuilder, StateObservation, "state observations");
-collection_builder!(InventoryBuilder, InventoryItem, "inventory items");
-
 /// Wire form for [`Payload::Readings`], hoisting descriptors into a table.
 ///
 /// Serde does not carry `Arc` identity, so rows index into a table of distinct
@@ -380,22 +334,20 @@ mod readings_table {
     }
 }
 
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for ObservationBatch {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Representation {
-            endpoint: Arc<EndpointContext>,
-            origin: Origin,
-            window: ObservationWindow,
-            coverage: Coverage,
-            payload: Payload,
-        }
+/// The unvalidated fields an [`ObservationBatch`] is assembled from.
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+struct BatchParts {
+    endpoint: Arc<EndpointContext>,
+    origin: Origin,
+    window: ObservationWindow,
+    coverage: Coverage,
+    payload: Payload,
+}
 
-        let value = <Representation as serde::Deserialize>::deserialize(deserializer)?;
+impl TryFrom<BatchParts> for ObservationBatch {
+    type Error = BatchError;
+
+    fn try_from(value: BatchParts) -> Result<Self, Self::Error> {
         Self::new(
             value.endpoint,
             value.origin,
@@ -403,6 +355,5 @@ impl<'de> serde::Deserialize<'de> for ObservationBatch {
             value.coverage,
             value.payload,
         )
-        .map_err(serde::de::Error::custom)
     }
 }

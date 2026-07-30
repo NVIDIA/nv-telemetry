@@ -26,6 +26,36 @@ use std::time::UNIX_EPOCH;
 /// bound.
 const NANOS_PER_SECOND: u32 = 1_000_000_000;
 
+/// The unvalidated field pair both types are built from.
+///
+/// Deserialization goes through this so that a decoded value is admitted by
+/// the same constructor a caller uses, rather than by a second copy of the
+/// rule that could drift from it.
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+struct SplitSeconds {
+    seconds: i64,
+    nanoseconds: u32,
+}
+
+impl TryFrom<SplitSeconds> for Timestamp {
+    type Error = TimeError;
+
+    fn try_from(value: SplitSeconds) -> Result<Self, Self::Error> {
+        Self::new(value.seconds, value.nanoseconds)
+    }
+}
+
+impl TryFrom<SplitSeconds> for DurationValue {
+    type Error = TimeError;
+
+    fn try_from(value: SplitSeconds) -> Result<Self, Self::Error> {
+        Self::new(value.seconds, value.nanoseconds)
+    }
+}
+
+/// Rejects a sub-second remainder that is not below one second, which is the
+/// only thing either type can get wrong.
 const fn check_nanoseconds(nanoseconds: u32) -> Result<(), TimeError> {
     if nanoseconds >= NANOS_PER_SECOND {
         return Err(TimeError::InvalidNanoseconds(nanoseconds));
@@ -38,7 +68,8 @@ const fn check_nanoseconds(nanoseconds: u32) -> Result<(), TimeError> {
 /// This is an instant, not a span: see [`DurationValue`], which shares the
 /// representation but is deliberately a separate type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "SplitSeconds"))]
 pub struct Timestamp {
     seconds: i64,
     nanoseconds: u32,
@@ -139,7 +170,8 @@ impl Timestamp {
 /// `seconds = -1, nanoseconds = 500_000_000`, and the derived ordering is
 /// chronological because of that convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "SplitSeconds"))]
 pub struct DurationValue {
     seconds: i64,
     nanoseconds: u32,
@@ -180,7 +212,8 @@ impl DurationValue {
 
 /// The wall-clock interval during which an observation was acquired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "Span"))]
 pub struct ObservationWindow {
     started_at: Timestamp,
     completed_at: Timestamp,
@@ -252,53 +285,18 @@ impl fmt::Display for TimeError {
 
 impl Error for TimeError {}
 
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Timestamp {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Representation {
-            seconds: i64,
-            nanoseconds: u32,
-        }
-
-        let value = <Representation as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value.seconds, value.nanoseconds).map_err(serde::de::Error::custom)
-    }
+/// The unvalidated field pair an [`ObservationWindow`] is built from.
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+struct Span {
+    started_at: Timestamp,
+    completed_at: Timestamp,
 }
 
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for DurationValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Representation {
-            seconds: i64,
-            nanoseconds: u32,
-        }
+impl TryFrom<Span> for ObservationWindow {
+    type Error = TimeError;
 
-        let value = <Representation as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value.seconds, value.nanoseconds).map_err(serde::de::Error::custom)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for ObservationWindow {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Representation {
-            started_at: Timestamp,
-            completed_at: Timestamp,
-        }
-
-        let value = <Representation as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value.started_at, value.completed_at).map_err(serde::de::Error::custom)
+    fn try_from(value: Span) -> Result<Self, Self::Error> {
+        Self::new(value.started_at, value.completed_at)
     }
 }

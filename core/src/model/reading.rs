@@ -94,17 +94,50 @@ pub struct Unit(Name);
 
 name_newtype!(Unit);
 
+/// What is being measured, such as `temperature`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct Metric(Name);
+
+name_newtype!(Metric);
+
+/// Which occurrence of a metric this is, such as `CPU0Temp`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct Instance(Name);
+
+name_newtype!(Instance);
+
+/// The source's own word for whether a subject is operating, such as
+/// `enabled` or `absent`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct OperatingState(Name);
+
+name_newtype!(OperatingState);
+
+/// The source's own judgement of a subject's condition, such as `ok`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct Health(Name);
+
+name_newtype!(Health);
+
 /// State and health values reported by the device itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct ReportedState {
-    pub state: Option<Name>,
-    pub health: Option<Name>,
+    pub state: Option<OperatingState>,
+    pub health: Option<Health>,
 }
 
 impl ReportedState {
-    pub fn new(state: Option<Name>, health: Option<Name>) -> Self {
+    pub fn new(state: Option<OperatingState>, health: Option<Health>) -> Self {
         Self { state, health }
     }
 }
@@ -188,14 +221,50 @@ impl Error for RangeOrderError {}
 /// `revision` counts how many times it has changed. Neither advances on a
 /// refresh reporting identical content; see [`matches_definition`].
 ///
+/// A signal is a [`Metric`] at an [`Instance`], and those are separate types
+/// so that the pair cannot be given in the wrong order. Either accepts a
+/// string, so the guard costs an ordinary call site nothing:
+///
+/// ```
+/// use nv_telemetry_core::{ReadingKind, SignalDescriptor, Subject, Timestamp};
+///
+/// let descriptor = SignalDescriptor::new(
+///     Subject::new("sensor", "CPU0Temp"),
+///     "temperature",
+///     "CPU0Temp",
+///     ReadingKind::Gauge,
+///     "Cel",
+///     Timestamp::new(0, 0).unwrap(),
+/// );
+/// assert_eq!(descriptor.metric.as_str(), "temperature");
+/// ```
+///
+/// Once either side is held in a variable, swapping the two stops compiling
+/// rather than producing a signal that joins to the wrong readings:
+///
+/// ```compile_fail
+/// use nv_telemetry_core::{Instance, Metric, ReadingKind, SignalDescriptor, Subject, Timestamp};
+///
+/// let metric = Metric::from("temperature");
+/// let instance = Instance::from("CPU0Temp");
+/// let descriptor = SignalDescriptor::new(
+///     Subject::new("sensor", "CPU0Temp"),
+///     instance,
+///     metric,
+///     ReadingKind::Gauge,
+///     "Cel",
+///     Timestamp::new(0, 0).unwrap(),
+/// );
+/// ```
+///
 /// [`matches_definition`]: SignalDescriptor::matches_definition
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct SignalDescriptor {
     pub subject: Subject,
-    pub metric: Name,
-    pub instance: Name,
+    pub metric: Metric,
+    pub instance: Instance,
     pub kind: ReadingKind,
     pub unit: Unit,
     /// When this definition was first observed.
@@ -209,8 +278,8 @@ pub struct SignalDescriptor {
 impl SignalDescriptor {
     pub fn new(
         subject: Subject,
-        metric: impl Into<Name>,
-        instance: impl Into<Name>,
+        metric: impl Into<Metric>,
+        instance: impl Into<Instance>,
         kind: ReadingKind,
         unit: impl Into<Unit>,
         observed_at: Timestamp,
