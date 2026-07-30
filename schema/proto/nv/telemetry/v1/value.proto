@@ -47,6 +47,14 @@ message Null {}
 // A union rather than a bare double because counters are 64-bit integers:
 // a gNMI in-octets value above 2^53 would silently lose precision in a
 // double, which is a fabricated observation with extra steps.
+//
+// Which arm carries a value follows the source field's declared type, not the
+// value observed in a given poll. The number 5 is representable by all three
+// arms and each is a distinct encoding, so a projection that chose by value
+// would move a signal between arms as the reading crossed zero or lost its
+// fraction, and every such move would register as a content change to a
+// consumer comparing hashes. Selection is therefore a property of the
+// mapping, fixed for a field across polls.
 message NumericValue {
   option (nv.telemetry.options.v1.message_invariant) = {validated: true};
 
@@ -62,9 +70,21 @@ message NumericValue {
 }
 
 message Value {
+  // 16, not a round larger number, and the arithmetic is worth keeping.
+  // prost's decoder admits 100 nested message levels and the limit is not
+  // configurable. One logical level of map nesting costs three message
+  // levels — Value, Map, Entry — and the deepest batch path adds four before
+  // the first Value, so a depth-D map-nested value in a graph batch costs
+  // 3D + 2 levels. Depth 32 sits at the edge (98 of 100), and the measured
+  // ceiling differs by a level between prost's generated decoder and
+  // prost-reflect's dynamic one — a bound at the edge would make a batch's
+  // validity depend on which decoder the consumer runs. 16 costs 50 of 100,
+  // leaves the same again in margin, and still far exceeds anything a BMC or
+  // a YANG model nests. codegen's depth test pins that a depth-16 value in
+  // the deepest path decodes.
   option (nv.telemetry.options.v1.message_invariant) = {
     validated: true
-    max_depth: 32
+    max_depth: 16
   };
 
   message List {
@@ -101,6 +121,10 @@ message Value {
     }];
   }
 
+  // As with NumericValue, arm selection follows the source's declared type
+  // rather than the observed value: an integer and a double holding the same
+  // number are different encodings and hash differently, so a field must not
+  // drift between them from one poll to the next.
   oneof kind {
     option (nv.telemetry.options.v1.oneof_invariant) = {required: true};
 

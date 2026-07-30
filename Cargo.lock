@@ -161,6 +161,7 @@ name = "nv-telemetry-codegen"
 version = "0.1.0"
 dependencies = [
  "nv-telemetry-schema",
+ "prost",
  "prost-reflect",
  "protox",
 ]

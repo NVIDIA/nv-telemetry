@@ -58,6 +58,12 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
                 outcome.examined,
                 outcome.written.len()
             );
+            if !outcome.written.is_empty() {
+                println!(
+                    "review the schema/contract.lock diff: it records semantics no other \
+                     gate checks"
+                );
+            }
             ExitCode::SUCCESS
         }
         Mode::Check if outcome.stale.is_empty() => {
@@ -68,10 +74,16 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
             ExitCode::SUCCESS
         }
         Mode::Check => {
-            eprintln!("nv-telemetry-codegen: generated tree is stale; run `make codegen`");
+            eprintln!("nv-telemetry-codegen: the contract lock is stale");
             for path in &outcome.stale {
                 eprintln!("  {}", path.display());
             }
+            eprintln!(
+                "\nThe lock records contract semantics: numbers, types, presence, \
+                 annotations,\nenum values, and oneofs. `make codegen` regenerates it, and \
+                 the diff it\nproduces is the only review surface for annotation and \
+                 pre-release changes —\nread the diff; do not just commit it."
+            );
             ExitCode::FAILURE
         }
     }

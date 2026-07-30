@@ -28,11 +28,18 @@ message nv.telemetry.v1.States validated
 message nv.telemetry.v1.Subject validated hashable
 message nv.telemetry.v1.Timestamp validated
 message nv.telemetry.v1.UnresolvedReference validated
-message nv.telemetry.v1.Value validated max_depth=32
+message nv.telemetry.v1.Value validated max_depth=16
 message nv.telemetry.v1.Value.List validated
 message nv.telemetry.v1.Value.Map validated
 message nv.telemetry.v1.Value.Map.Entry validated
 message nv.telemetry.v1.ValueRange validated
+enum nv.telemetry.v1.AcquisitionStatus.FailureClass FAILURE_CLASS_UNSPECIFIED=0 FAILURE_CLASS_CONNECTIVITY=1 FAILURE_CLASS_AUTHENTICATION=2 FAILURE_CLASS_TIMEOUT=3 FAILURE_CLASS_PROTOCOL=4 FAILURE_CLASS_UNSUPPORTED=5 FAILURE_CLASS_DEVICE=6 FAILURE_CLASS_INTERNAL=7
+enum nv.telemetry.v1.AcquisitionStatus.Outcome OUTCOME_UNSPECIFIED=0 OUTCOME_SUCCEEDED=1 OUTCOME_FAILED=2
+enum nv.telemetry.v1.Completeness COMPLETENESS_UNSPECIFIED=0 COMPLETENESS_COMPLETE=1 COMPLETENESS_PARTIAL=2
+enum nv.telemetry.v1.Severity SEVERITY_UNSPECIFIED=0 SEVERITY_DEBUG=1 SEVERITY_INFO=2 SEVERITY_WARNING=3 SEVERITY_ERROR=4 SEVERITY_CRITICAL=5
+oneof nv.telemetry.v1.NumericValue.kind [1,2,3] required
+oneof nv.telemetry.v1.ObservationBatch.payload [10,11,12,13,14] required
+oneof nv.telemetry.v1.Value.kind [1,2,3,4,5,6,7,8,9,10] required
 field nv.telemetry.v1.AcquisitionStatus 1 endpoint_id string single explicit required max_len=256
 field nv.telemetry.v1.AcquisitionStatus 2 provider string single explicit required max_len=128
 field nv.telemetry.v1.AcquisitionStatus 3 request_class string single explicit required max_len=128
@@ -74,8 +81,8 @@ field nv.telemetry.v1.ObservationWindow 2 end nv.telemetry.v1.Timestamp single e
 field nv.telemetry.v1.ObservedResource 1 subject nv.telemetry.v1.Subject single explicit required
 field nv.telemetry.v1.ObservedResource 2 source_key string single explicit required max_len=1024
 field nv.telemetry.v1.ObservedResource 3 source_schema string single explicit max_len=256
-field nv.telemetry.v1.ObservedResource 4 entity_tag string single explicit max_len=256
-field nv.telemetry.v1.ObservedResource 5 observed_at nv.telemetry.v1.Timestamp single explicit
+field nv.telemetry.v1.ObservedResource 4 entity_tag string single explicit max_len=256 collection_metadata
+field nv.telemetry.v1.ObservedResource 5 observed_at nv.telemetry.v1.Timestamp single explicit collection_metadata
 field nv.telemetry.v1.ObservedResource 6 properties nv.telemetry.v1.Value.Map single explicit
 field nv.telemetry.v1.ObservedResource 7 properties_complete bool single explicit required
 field nv.telemetry.v1.ObservedResource 8 unresolved nv.telemetry.v1.UnresolvedReference repeated implicit unordered max_items=1024

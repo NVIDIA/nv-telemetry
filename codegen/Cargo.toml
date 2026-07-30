@@ -17,7 +17,9 @@ nv-telemetry-schema.workspace = true
 prost-reflect.workspace = true
 
 [dev-dependencies]
-# Fixture schemas for compiler tests are compiled in-process.
+# Fixture schemas for compiler tests are compiled in-process, and the depth
+# test encodes dynamic messages.
+prost.workspace = true
 protox.workspace = true
 
 [lints]

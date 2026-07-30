@@ -9,9 +9,15 @@
 //! reach CI. It stands in for the generated Rust until there is any, and
 //! remains useful afterwards as a readable record of the contract.
 //!
-//! Backward compatibility is not judged here. `buf breaking` owns that, and
-//! covers reserved ranges, enum changes, JSON names, and oneof moves that a
+//! Backward compatibility is not judged here: the lock records declarations
+//! — including enum values and oneofs — so their edits surface as diffs, but
+//! it byte-compares rather than judges. `buf breaking` owns judgment, and
+//! covers reserved ranges, JSON names, and wire compatibility that a
 //! comparison written here would have to grow one case at a time.
+//!
+//! One deliberate blindness: with `allow_alias`, values come back sorted by
+//! number, so swapping which alias is declared first — observable in JSON and
+//! text format — does not diff the lock. The contract declares no aliases.
 //!
 //! The format is one sorted line per declaration so that a review reads it as
 //! a schema-shaped diff. Staleness is a byte comparison against the committed
@@ -58,6 +64,12 @@ struct Entry {
 pub struct Snapshot {
     fields: BTreeMap<(String, u32), Entry>,
     messages: BTreeSet<String>,
+    // Enum values and oneofs are recorded because the semantics live there as
+    // much as in the fields. Without them, adding a failure class or deleting
+    // the `required` from a oneof — which is what keeps an empty Value
+    // distinguishable from an explicit null — leaves the lock unchanged.
+    enums: BTreeSet<String>,
+    oneofs: BTreeSet<String>,
 }
 
 impl Snapshot {
@@ -91,6 +103,30 @@ impl Snapshot {
                     .to_owned(),
             );
 
+            for oneof in message.oneofs() {
+                // proto3 `optional` compiles to a synthetic one-field oneof.
+                // Recording those would restate presence, which the field
+                // lines already carry.
+                if oneof.is_synthetic() {
+                    continue;
+                }
+                let required = vocabulary
+                    .oneof_invariant(&oneof)
+                    .is_some_and(|invariant| invariant.required);
+                let mut numbers: Vec<u32> = oneof.fields().map(|field| field.number()).collect();
+                numbers.sort_unstable();
+                let members: Vec<String> = numbers
+                    .into_iter()
+                    .map(|number| number.to_string())
+                    .collect();
+                snapshot.oneofs.insert(format!(
+                    "{} [{}]{}",
+                    oneof.full_name(),
+                    members.join(","),
+                    if required { " required" } else { "" }
+                ));
+            }
+
             for field in message.fields() {
                 snapshot.fields.insert(
                     (message.full_name().to_owned(), field.number()),
@@ -117,6 +153,19 @@ impl Snapshot {
             }
         }
 
+        for enumeration in pool.all_enums() {
+            if !is_contract_package(enumeration.package_name()) {
+                continue;
+            }
+            let values: Vec<String> = enumeration
+                .values()
+                .map(|value| format!("{}={}", value.name(), value.number()))
+                .collect();
+            snapshot
+                .enums
+                .insert(format!("{} {}", enumeration.full_name(), values.join(" ")));
+        }
+
         snapshot
     }
 
@@ -125,6 +174,12 @@ impl Snapshot {
         let mut out = String::from(HEADER);
         for name in &self.messages {
             let _ = writeln!(out, "message {name}");
+        }
+        for name in &self.enums {
+            let _ = writeln!(out, "enum {name}");
+        }
+        for name in &self.oneofs {
+            let _ = writeln!(out, "oneof {name}");
         }
         for ((message, number), entry) in &self.fields {
             let _ = writeln!(
@@ -190,6 +245,9 @@ fn field_annotations(vocabulary: &Vocabulary, field: &FieldDescriptor) -> String
     }
     if let Some(len) = invariant.max_len {
         parts.push(format!("max_len={len}"));
+    }
+    if invariant.collection_metadata {
+        parts.push("collection_metadata".to_owned());
     }
     parts.join(" ")
 }

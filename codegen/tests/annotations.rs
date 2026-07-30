@@ -22,18 +22,57 @@ fn pool_for(file: &str) -> DescriptorPool {
     pool_with_vocabulary(file, None)
 }
 
+/// Writes a copy of the real vocabulary with `edit` applied, and returns a
+/// root that shadows the real one.
+///
+/// Derived at test time rather than checked in. A committed copy is a second
+/// definition of the vocabulary that drifts the moment the real one gains a
+/// field, and then these tests fail for a reason that has nothing to do with
+/// what they are testing.
+fn mutated_vocabulary(name: &str, replacements: &[(&str, &str)]) -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let real = manifest.join("../schema/proto/nv/telemetry/options/v1/annotations.proto");
+    let source = std::fs::read_to_string(&real).expect("the vocabulary is readable");
+
+    // Asserted per pattern rather than on the whole edit, so one stale
+    // pattern is named instead of sailing through because a sibling still
+    // matched.
+    let mut edited = source;
+    for (from, to) in replacements {
+        assert!(
+            edited.contains(from),
+            "mutation `{name}`: pattern {from:?} no longer matches the vocabulary"
+        );
+        edited = edited.replace(from, to);
+    }
+
+    // Namespaced by process id and written via rename: CARGO_TARGET_TMPDIR is
+    // one directory shared by every test binary and every concurrent cargo
+    // invocation on this target dir, and a reader catching a plain write
+    // mid-flight sees zero bytes, which parses as an empty file rather than
+    // failing.
+    let root =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{}-{name}", std::process::id()));
+    let dir = root.join("nv/telemetry/options/v1");
+    std::fs::create_dir_all(&dir).expect("fixture directory is writable");
+    let staged = dir.join("annotations.proto.staged");
+    std::fs::write(&staged, edited).expect("fixture is writable");
+    std::fs::rename(&staged, dir.join("annotations.proto")).expect("fixture renames");
+    root
+}
+
 /// Compiles `file`, optionally shadowing the real annotation vocabulary with a
-/// deliberately wrong one from `vocabulary_root`. Shadowing works because the
-/// first include path that resolves a name wins, which lets a fixture exercise
-/// a broken vocabulary without a second copy of the contract.
-fn pool_with_vocabulary(file: &str, vocabulary_root: Option<&str>) -> DescriptorPool {
+/// deliberately wrong one. Shadowing works because the first include path that
+/// resolves a name wins, which lets a fixture exercise a broken vocabulary
+/// without a second copy of the contract.
+fn pool_with_vocabulary(file: &str, vocabulary_root: Option<PathBuf>) -> DescriptorPool {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixtures = manifest.join("tests/fixtures");
     let contract = manifest.join("../schema/proto");
 
     let mut roots = Vec::new();
     if let Some(root) = vocabulary_root {
-        roots.push(fixtures.join(root));
+        roots.push(root);
     }
     roots.push(fixtures.clone());
     roots.push(contract);
@@ -111,8 +150,25 @@ fn rules_other_than_presence_are_reachable() {
         found,
         [
             (
+                "nv.telemetry.v1.Conflicted.counter".to_owned(),
+                lint::Reason::NotApplicable {
+                    option: "collection_metadata",
+                    applies_to: "fields hashing can skip, which a \
+                                 zero_is_meaningful field is not",
+                }
+            ),
+            (
                 "nv.telemetry.v1.Hashed".to_owned(),
                 lint::Reason::HashableWithoutValidated
+            ),
+            (
+                "nv.telemetry.v1.Island.tag".to_owned(),
+                lint::Reason::NotApplicable {
+                    option: "collection_metadata",
+                    applies_to: "fields of messages a hashable message \
+                                 reaches; nothing hashes this one, so there \
+                                 is nothing to skip",
+                }
             ),
             (
                 "nv.telemetry.v1.sneaky".to_owned(),
@@ -135,7 +191,16 @@ fn a_proto2_contract_file_is_rejected() {
 
 #[test]
 fn a_vocabulary_missing_a_field_is_an_error() {
-    let pool = pool_with_vocabulary("minimal.proto", Some("badvocab"));
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "badvocab",
+            &[
+                ("bool finite = 2;", "bool finiteness = 2;"),
+                ("finite: true", "finiteness: true"),
+            ],
+        )),
+    );
     let error = Vocabulary::resolve(&pool).expect_err("the vocabulary is missing `finite`");
 
     assert_eq!(
@@ -148,7 +213,16 @@ fn a_vocabulary_missing_a_field_is_an_error() {
 fn a_widened_bound_is_an_error_rather_than_a_silent_zero() {
     // uint32 -> uint64 is wire-compatible, so nothing else would notice; the
     // reader would return the type's default and switch the bound off.
-    let pool = pool_with_vocabulary("minimal.proto", Some("wrongtype"));
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "wrongtype",
+            &[(
+                "optional uint32 max_items = 5;",
+                "optional uint64 max_items = 5;",
+            )],
+        )),
+    );
     let error = Vocabulary::resolve(&pool).expect_err("max_items is unreadable as declared");
 
     assert_eq!(
@@ -165,7 +239,13 @@ fn the_canary_can_actually_fail() {
     // Without this, `check_canary` could be replaced with `Ok(())` and every
     // other test would still pass — leaving the one guard against silently
     // dropped option values unverified.
-    let pool = pool_with_vocabulary("minimal.proto", Some("badcanary"));
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "badcanary",
+            &[("max_depth: 8", "max_depth: 9")],
+        )),
+    );
     let error = Vocabulary::resolve(&pool).expect_err("the canary declares different values");
 
     assert!(matches!(

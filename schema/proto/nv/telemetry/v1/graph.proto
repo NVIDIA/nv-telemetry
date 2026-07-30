@@ -57,9 +57,18 @@ message ObservedResource {
   optional string source_schema = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
 
   // The source's change marker for this resource, such as an entity tag.
-  optional string entity_tag = 4 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+  // Collection metadata: a source free to regenerate it would otherwise make
+  // an unchanged resource hash differently.
+  optional string entity_tag = 4 [(nv.telemetry.options.v1.field_invariant) = {
+    max_len: 256
+    collection_metadata: true
+  }];
 
-  optional Timestamp observed_at = 5;
+  // When this resource was read. Collection metadata, and the reason the
+  // annotation exists: a graph is hashed so a convergence adapter can compare
+  // states exactly, and a per-resource timestamp would change that hash on
+  // every poll of a device that did not change.
+  optional Timestamp observed_at = 5 [(nv.telemetry.options.v1.field_invariant) = {collection_metadata: true}];
 
   optional Value.Map properties = 6;
 

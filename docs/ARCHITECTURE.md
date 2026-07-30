@@ -402,8 +402,9 @@ The model must preserve:
 ### Schema and annotations
 
 The schema carries two kinds of annotation. Invariant and semantic options
-state what a valid message is: presence requirements, finite-float
-constraints, size and depth bounds, canonical ordering, subject scoping.
+state what a valid message is — presence requirements, finite-float
+constraints, size and depth bounds, canonical ordering — and how it is
+compared, which is where the collection-metadata exclusion lives.
 Where an established vocabulary exists the schema uses it rather than
 inventing one. The exception is value constraints, where protovalidate would
 otherwise be the obvious choice: the compiler is a component this project owns
@@ -461,9 +462,11 @@ signed and unsigned 64-bit integers, finite double, string, bytes, timestamp,
 list, and key-sorted map. `google.protobuf.Struct` is not used because it
 collapses every number to double, silently corrupting 64-bit identifiers, and
 cannot represent bytes or timestamps. Depth is bounded by an annotation on
-`Value` itself rather than on each field that holds one: a decoder's recursion
-limit is a property of the parse, global to it, so a per-field bound could
-never be enforced on the decode side and the two halves would disagree.
+`Value` itself rather than on each field that holds one, because recursion is
+a property of the type. The bound does not translate into a decoder setting —
+runtimes fix their own recursion limit, and one logical level of a recursive
+type costs several message levels — so it is chosen to fit underneath the
+runtime's limit with margin, and the type carrying it records the arithmetic.
 Lengths and element counts are bounded per field, where a decoder can be given
 nothing to enforce and validators do the work.
 
@@ -508,7 +511,19 @@ Validation is symmetric between construction and decode: a decoded batch
 passes the same validators as a built one, so the model cannot produce what it
 cannot consume. Structural bounds are enforced twice — at decode by message
 size and recursion limits, and by validators on logical size such as graph
-resource counts and value nesting. A caller may tighten the bounds but not
+resource counts and value nesting.
+
+Symmetry does not follow from the per-field bounds alone, and this is the one
+place it has to be arranged deliberately. Those bounds are local: a resource
+count, a map's entry count, and a string's length are each modest, while their
+product is not, so a batch can satisfy every one of them and still be far
+larger than any decoder will accept. Nor does a recursion bound translate into
+a decoder setting, because runtimes fix their own limit and one logical level
+of a recursive type costs several message levels. The aggregate ceiling is
+therefore a single limit the validated wrappers apply at construction, chosen
+to match what decoding accepts, and recursive types carry a depth bound
+selected to fit underneath the runtime's fixed limit rather than to look
+round. A caller may tighten the bounds but not
 loosen them, because decoding has no caller to take a bound from and applies
 the default. An acquisition reading an endpoint incrementally owns its own
 buffering ceiling, and collection policy owns request-level limits.
@@ -524,17 +539,26 @@ and a message-level flag would either corrupt the first or leave the second
 uncanonicalized.
 
 Sorting repeated messages needs a total order over messages, which has to be
-defined rather than assumed. The order is the same traversal the content hash
-uses: fields in field-number order, comparing present values pairwise, where an
-absent field sorts before a present one and each value type compares within
-itself — integers numerically, strings and bytes lexicographically, booleans
-false first, doubles numerically with only finite values admitted, nested
-messages recursively. Encoded bytes are not used, for the same reason they are
-not hashed. Two elements that compare equal under this order have equal
-content, so their relative order cannot be observed.
+defined rather than assumed. The order compares hash-visible fields first, in
+the hash's own traversal: fields in field-number order, comparing present
+values pairwise, where an absent field sorts before a present one and each
+value type compares within itself — integers numerically, strings and bytes
+lexicographically, booleans false first, doubles numerically with only finite
+values admitted, nested messages recursively. Collection-metadata fields are
+compared only after every hash-visible field, as a final tiebreaker. The split
+is what keeps both properties at once: elements that tie on hash-visible
+fields contribute identical hash streams in either order, so the tiebreaker
+cannot move the hash, while still making canonical bytes deterministic.
+Encoded bytes are not used in the comparison, for the same reason they are not
+hashed.
 
 Content hashes are computed by a generated logical traversal of present known
-fields, labeled by field number. Encoded bytes are never hashed: protobuf
+fields, labeled by field number, skipping fields annotated as collection
+metadata — an observation timestamp or an entity tag records how a fact was
+collected rather than what was observed, and hashing it would report that an
+unchanged device changed. The exclusion is transitive: the traversal inherits
+it through nested messages whether or not they are hashable themselves, so a
+resource inside a hashable graph still has its collection metadata skipped. Encoded bytes are never hashed: protobuf
 encoding is not canonical across implementations, and unknown fields would
 make equal graphs hash unequal. Absent fields contribute nothing, so a schema
 revision that adds fields changes a hash only when those fields carry data —
@@ -542,13 +566,14 @@ an upgrade that observes nothing new reports no change. Field numbers are
 never reused, which the breaking-change checks enforce, so a number labels the
 same meaning forever.
 
-A field whose zero value is declared meaningful is the exception: it has no
-"present" to test, so it is hashed unconditionally. Adding one to a message
-that is already hashable therefore changes every existing hash. Nothing catches that
-automatically — the compatibility check compares numbers, types, and
-cardinality, not the values of custom options — so it is a review obligation,
-and the contract lock records annotations partly so that the diff makes it
-visible. Hashing also requires validated construction, since equal
+A field whose zero value is declared meaningful is the exception in the other
+direction: it has no "present" to test, so it is hashed unconditionally.
+Either kind of annotation change on a field a hashable message reaches —
+declaring a zero meaningful, marking collection metadata, or removing either —
+changes every existing hash. Nothing catches that automatically: the
+compatibility check compares numbers, types, and cardinality, not the values
+of custom options, so it is a review obligation, and the contract lock records
+annotations so that the diff makes it visible. Hashing also requires validated construction, since equal
 content only hashes equal once canonicalization has run.
 
 The hash is a generated capability computed where comparison happens, not a
@@ -574,9 +599,10 @@ would have to grow a case at a time for reserved ranges, enum changes, JSON
 names, and oneof moves, and would be wrong in the interval before each one was
 noticed.
 
-A separate, checked-in contract lock records every message and field with its
-number, type, cardinality, and presence. Its job is staleness, not
-compatibility: regenerating it and finding the tree unchanged is what proves a
+A separate, checked-in contract lock records every declaration: messages and
+fields with their numbers, types, cardinality, presence, and annotations, enum
+values with their numbers, and oneofs with their members and invariants. Its
+job is staleness, not compatibility: regenerating it and finding the tree unchanged is what proves a
 schema edit arrived with its generated output.
 
 Wire compatibility is not source compatibility: adding a field regenerates a

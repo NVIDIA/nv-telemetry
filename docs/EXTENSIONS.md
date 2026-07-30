@@ -11,7 +11,6 @@ uses.
 | 52001  | `FieldOptions`   | `nv.telemetry.options.v1.field_invariant`   |
 | 52002  | `MessageOptions` | `nv.telemetry.options.v1.message_invariant` |
 | 52003  | `OneofOptions`   | `nv.telemetry.options.v1.oneof_invariant`   |
-| 52004  | `EnumOptions`    | `nv.telemetry.options.v1.enum_invariant`    |
 
 `nv-telemetry` claims 52000–52099 for every extendee.
 
@@ -49,6 +48,9 @@ first loads both — typically a reflection client, a language binding, or a
 service owned by neither team.
 
 ## Adding one
+
+For a new extension number, all five steps; for a new field inside an existing
+option message, steps 3–5.
 
 1. Add a row above, naming the extendee.
 2. Declare the `extend` block in
