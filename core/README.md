@@ -17,16 +17,18 @@ batch carries:
 
 Failures are emitted separately as `AcquisitionStatus`; they never manufacture
 device observations. Empty complete, empty partial, failed, and stale data are
-distinct states.
+distinct states. `AcquisitionOutcome::retryable` answers in `Retryable`, so a
+success reports `Retryable::No` rather than a bare `false`.
 
 The implementation is split into `status.rs` and these model modules:
 
 ```text
-attributes  batch  collection  context  inventory  log  name
-number      property  reading  resource  state      time
+attributes  batch     collection  context  inventory  log
+name        number    property    reading  resource   state
+time        value
 ```
 
-Common types are re-exported from the crate root.
+Every public type is re-exported from the crate root.
 
 ## Typed construction
 
@@ -36,17 +38,20 @@ compile:
 - `Subject::new(SubjectKind, SubjectId)`;
 - `Origin::new(Provider, RequestClass)`;
 - `SignalDescriptor::new(Subject, Metric, Instance, ReadingKind, Unit, Timestamp)`;
-- `ResourceRelation::new(Subject, RelationKind, Subject)`.
+- `ResourceRelation::new(Subject, RelationKind, Subject)`;
+- `StateObservation::new(StateName, impl Into<AttrValue>)`;
+- `LogRecord::new(Severity, impl Into<Arc<str>>)`.
 
 String vocabulary types accept owned or static strings through `From` and
 `from_static`. Invariant-bearing types use checked constructors:
 
 - `Finite::new` rejects `NaN` and infinities;
 - `Timestamp::new` and `DurationValue::new` validate nanoseconds;
-- `ObservationWindow::new` rejects reversed windows and
-  `checked_duration` derives a checked span;
+- `ObservationWindow::new` rejects reversed windows and `duration` derives
+  the span it covers;
 - `ValueRange::empty`, `at_least`, and `at_most` are infallible, while
-  `ValueRange::between` rejects inverted bounds;
+  `ValueRange::between` rejects inverted bounds; each names the edges it is
+  given, so there is no constructor taking two same-typed optional edges;
 - `PropertyValue::array` rejects recursive values beyond the property-depth
   limit;
 - `ResourceGraph::new` and `with_limits` validate complete graph input.
@@ -126,6 +131,9 @@ encodes `Retryable::{Yes, No}` as booleans. Invariant-bearing values
 deserialize through the same checks used by constructors, so an inverted
 `ValueRange` is rejected. Readings encode a descriptor table and index rows
 into it, preserving descriptor sharing after deserialization.
+
+Decoding is strict in both directions: an absent field is not defaulted, and
+every record rejects a field it does not declare.
 
 Serde validates the current core model; it is not a version-negotiating
 envelope. Systems that persist or exchange observations should carry an

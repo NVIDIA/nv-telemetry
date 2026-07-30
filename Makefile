@@ -24,6 +24,7 @@ define build-and-test
 	cargo build --workspace $1
 	cargo test --workspace -- --no-capture
 	cargo test --workspace $1 -- --no-capture
+	cargo doc --workspace --no-deps
 	cargo doc --workspace --no-deps $1
 
 endef

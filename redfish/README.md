@@ -8,11 +8,15 @@ scheduling, endpoint identity, and batch assembly.
 
 ```text
 src/
-├── lib.rs           public API and crate documentation
-├── projection.rs    the projection trait, field values, and issue reporting
-├── sensor.rs        Sensor metadata, sample, and resource projections
-├── signal.rs        signal identity, catalog, and sample resolution
-└── uri.rs           URI canonicalization and parent-scope extraction
+├── lib.rs              public API and crate documentation
+├── projection.rs       the projection trait, field values, and issue reporting
+├── sensor/
+│   ├── mod.rs          Sensor metadata, sample, and resource projections
+│   ├── source.rs       source location, Sensor id, and subject construction
+│   ├── threshold.rs    the ten threshold slots as resource properties
+│   └── vocabulary.rs   Redfish enumerations and leaves in model vocabulary
+├── signal.rs           signal identity, catalog, and sample resolution
+└── uri.rs              URI canonicalization and Sensor path parsing
 ```
 
 ## Projection contract
@@ -85,10 +89,16 @@ slots are represented:
 - upper/lower caution-user and critical-user.
 
 Each present slot is a nested object containing `reading`, `activation`,
-`dwell_time`, `hysteresis_reading`, and `hysteresis_duration`. Missing fields
-inside a present slot are explicit nulls. Invalid optional values are reported
-as issues and omitted; they do not discard the resource or manufacture a null.
-If the whole `Thresholds` object is absent, no threshold properties are emitted.
+`dwell_time`, `hysteresis_reading`, and `hysteresis_duration`. A leaf the device
+left unset is stated as null, which is the claim that it configures nothing
+there. A leaf it sent unusably is left out of the slot instead, and reported as
+an invalid field: the resource is partial, so an absent property carries no
+information, and no information is what a rejected value leaves. Stating it as
+null would instead hand a consumer that keeps the resource a rejected critical
+threshold that reads as an unconfigured one, and core has nowhere to carry the
+issue list alongside a resource, so the issues cannot be relied on to restore
+the difference. An invalid leaf discards neither the slot nor the resource. If
+the whole `Thresholds` object is absent, no threshold properties are emitted.
 
 ## Identity and URI handling
 
@@ -106,10 +116,50 @@ parent subject uses kind `power_distribution` and retains the normalized
 collection in its ID. A Sensor outside a supported parent collection is
 rejected instead of being assigned a guessed identity.
 
-Absolute and relative URIs, authorities, query strings, fragments, and trailing
-slashes canonicalize to the same endpoint-local path. `SignalKey` applies this
-normalization at construction so Sensor, EnvironmentMetrics, and MetricReport
-routes can join.
+Absolute and relative URIs, authorities, query strings, fragments, trailing
+slashes, empty path segments, and escapes of characters RFC 3986 treats as
+unreserved canonicalize to the same endpoint-local path. Case and dot segments
+are left as the device wrote them, and Redfish resource names are
+case-sensitive.
+
+An escape is decoded only when it spells an unreserved character. Every other
+escape stays escaped, because `%2F` denotes a character inside a segment rather
+than a segment boundary, but its hexadecimal digits are normalized to upper
+case: `%2f` canonicalizes to `%2F`. That includes the sub-delimiters and `:` and
+`@`, which RFC 3986 does permit unescaped in a segment, so a sensor addressed as
+`A+B` and one addressed as `A%2BB` are two keys rather than one. A `%` that
+does not introduce two hexadecimal digits is not an escape, and is re-escaped
+as `%25` so that the result is always a well-formed URI path — `100%` becomes
+`100%25`. Canonicalizing a canonical path therefore returns it unchanged, which
+is what lets a caller re-key a projected source key and still resolve it.
+
+An authority is only recognized after a scheme, so a leading `//` on a
+scheme-less reference is an empty leading segment like any other:
+`//redfish/v1/Chassis/1/Sensors/CPU0Temp`, which is what a device concatenating
+a base and a rooted path emits, names the same sensor as
+`/redfish/v1/Chassis/1/Sensors/CPU0Temp`.
+
+A Sensor scope is read only from a path under the service root, since DSP0266
+gives every `@odata.id` as an absolute path below `/redfish/v1`. A URI that
+names a collection without that prefix is rejected with an invalid
+`Sensor.@odata.id` issue: `//Chassis/1/Sensors/CPU0Temp` canonicalizes to
+`/Chassis/1/Sensors/CPU0Temp`, and taking a scope from that would give it the
+subject of the sensor at `/redfish/v1/Chassis/1/Sensors/CPU0Temp` under a source
+key of its own, leaving one subject claimed twice and a graph holding both
+rejected whole.
+
+A path holding a `.` or `..` segment names no Sensor scope and is rejected with
+an invalid `Sensor.@odata.id` issue. Since escapes of unreserved characters are
+decoded, `%2E%2E` and a literal `..` are the same path, and refusing both keeps
+an escaped spelling from reaching a subject id as a traversal.
+
+`SignalKey` applies this normalization at construction, so any route that
+addresses the sensor resource joins to the same signal: a Sensor read, and a
+MetricReport whose `MetricProperty` names the sensor resource. A reading
+addressed through a different resource, such as
+`/redfish/v1/Chassis/1/EnvironmentMetrics#/TemperatureCelsius`, canonicalizes to
+that resource's path and therefore has its own signal identity; it does not
+resolve against a Sensor descriptor.
 
 ## Signal catalog
 

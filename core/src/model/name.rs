@@ -178,17 +178,28 @@ impl<'de> serde::Deserialize<'de> for Name {
     }
 }
 
-/// Implements the conversions shared by every newtype wrapping a [`Name`].
+/// Defines a newtype wrapping a [`Name`] and everything the family shares.
 ///
 /// Each wrapper exists to keep one vocabulary from being passed where another
-/// is expected, so each still declares its own doc comment and derives;
-/// `Severity` omits `Ord` because alphabetical severity means nothing. Only
-/// the mechanical part lives here.
+/// is expected. The struct, its derives, and its wire representation are
+/// emitted from a single arm, so a member cannot differ from the family by a
+/// mistyped derive; only the doc comment and the ordering vary. A vocabulary
+/// that must not be ordered is declared with the `unordered` marker and gets
+/// no `PartialOrd` or `Ord`.
+///
+/// [`Name`] is named by full path, so a call site imports only what its own
+/// text uses.
 macro_rules! name_newtype {
-    ($newtype:ident) => {
+    (@define [$($ordering:ident),*] $(#[$attribute:meta])* $newtype:ident) => {
+        $(#[$attribute])*
+        #[derive(Clone, Debug, PartialEq, Eq, Hash $(, $ordering)*)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(transparent))]
+        pub struct $newtype(crate::model::Name);
+
         impl $newtype {
             pub const fn from_static(value: &'static str) -> Self {
-                Self(Name::from_static(value))
+                Self(crate::model::Name::from_static(value))
             }
 
             pub fn as_str(&self) -> &str {
@@ -196,14 +207,33 @@ macro_rules! name_newtype {
             }
         }
 
-        impl From<Name> for $newtype {
-            fn from(value: Name) -> Self {
+        impl From<crate::model::Name> for $newtype {
+            fn from(value: crate::model::Name) -> Self {
                 Self(value)
+            }
+        }
+
+        /// Recovers the inner name, keeping a static one allocation-free.
+        impl From<$newtype> for crate::model::Name {
+            fn from(value: $newtype) -> Self {
+                value.0
             }
         }
 
         impl From<String> for $newtype {
             fn from(value: String) -> Self {
+                Self(value.into())
+            }
+        }
+
+        impl From<Box<str>> for $newtype {
+            fn from(value: Box<str>) -> Self {
+                Self(value.into())
+            }
+        }
+
+        impl From<std::sync::Arc<str>> for $newtype {
+            fn from(value: std::sync::Arc<str>) -> Self {
                 Self(value.into())
             }
         }
@@ -214,11 +244,37 @@ macro_rules! name_newtype {
             }
         }
 
+        impl AsRef<str> for $newtype {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl std::borrow::Borrow<str> for $newtype {
+            fn borrow(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl std::str::FromStr for $newtype {
+            type Err = std::convert::Infallible;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Ok(Self::from(value))
+            }
+        }
+
         impl std::fmt::Display for $newtype {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 std::fmt::Display::fmt(&self.0, formatter)
             }
         }
+    };
+    ($(#[$attribute:meta])* $newtype:ident) => {
+        name_newtype!(@define [PartialOrd, Ord] $(#[$attribute])* $newtype);
+    };
+    ($(#[$attribute:meta])* $newtype:ident, unordered) => {
+        name_newtype!(@define [] $(#[$attribute])* $newtype);
     };
 }
 

@@ -1,6 +1,8 @@
 [workspace]
 members = ["core", "redfish"]
-resolver = "2"
+# No lockfile is committed, so a graph is selected from scratch on every build
+# and only an MSRV-aware resolver keeps `rust-version` below meaningful.
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"

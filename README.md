@@ -12,8 +12,8 @@ Rust libraries for collecting and modeling bare-metal telemetry.
 
 The minimum supported Rust version (MSRV) is Rust 1.89. As a library workspace,
 the repository does not commit `Cargo.lock`; dependency versions are resolved
-from the manifest ranges. Applications embedding these crates should commit
-their own lockfile.
+from the manifest ranges, narrowed to what the MSRV supports. Applications
+embedding these crates should commit their own lockfile.
 
 ## Development
 

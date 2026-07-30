@@ -1,225 +1,177 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use nv_redfish::core::EdmDuration;
-use nv_redfish::schema::sensor::Sensor;
 use nv_redfish::schema::sensor::Threshold;
 use nv_redfish::schema::sensor::Thresholds;
-use nv_telemetry_core::DurationValue;
+use nv_telemetry_core::Name;
 use nv_telemetry_core::Property;
 use nv_telemetry_core::PropertyMap;
-use nv_telemetry_core::PropertyMapError;
 use nv_telemetry_core::PropertyValue;
 
-use super::finite_value;
 use super::vocabulary::project_optional;
 use super::vocabulary::ProjectedThresholdActivation;
 use crate::FieldValue;
 use crate::Fields;
 
-/// Names the configuration lifted onto the resource, in model vocabulary.
+/// Names the thresholds lifted onto the resource, in model vocabulary.
 ///
-/// A device that omits `Thresholds` entirely does not implement them, and
-/// gets no threshold properties. One that reports the object implements them,
-/// so each threshold it leaves out is stated as null.
-pub(super) fn project_sensor_properties(
-    sensor: &Sensor,
-    fields: &mut Fields,
-) -> Result<Vec<Property>, PropertyMapError> {
-    let mut properties = vec![Property::new(
-        "name",
-        PropertyValue::String(sensor.base.name.as_str().into()),
-    )];
-    if let Some(thresholds) = sensor.thresholds.as_ref() {
-        properties.extend(project_threshold_properties(thresholds, fields)?);
-    }
-    Ok(properties)
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ThresholdFieldPaths {
-    reading: &'static str,
-    activation: &'static str,
-    dwell_time: &'static str,
-    hysteresis_reading: &'static str,
-    hysteresis_duration: &'static str,
-}
-
-macro_rules! threshold_field_paths {
-    ($threshold:literal) => {
-        ThresholdFieldPaths {
-            reading: concat!($threshold, ".Reading"),
-            activation: concat!($threshold, ".Activation"),
-            dwell_time: concat!($threshold, ".DwellTime"),
-            hysteresis_reading: concat!($threshold, ".HysteresisReading"),
-            hysteresis_duration: concat!($threshold, ".HysteresisDuration"),
-        }
-    };
-}
-
-#[derive(Debug)]
-struct ThresholdSlot<'a> {
-    property_name: &'static str,
-    paths: ThresholdFieldPaths,
-    threshold: Option<&'a Threshold>,
-}
-
-fn project_threshold_properties(
+/// A device that reports the `Thresholds` object implements thresholds, so
+/// each slot it leaves out is stated as null.
+pub(super) fn project_threshold_properties(
     thresholds: &Thresholds,
     fields: &mut Fields,
-) -> Result<Vec<Property>, PropertyMapError> {
+) -> Vec<Property> {
     let slots = [
-        ThresholdSlot {
-            property_name: "upper_caution",
-            paths: threshold_field_paths!("Sensor.Thresholds.UpperCaution"),
-            threshold: thresholds.upper_caution.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "upper_critical",
-            paths: threshold_field_paths!("Sensor.Thresholds.UpperCritical"),
-            threshold: thresholds.upper_critical.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "upper_fatal",
-            paths: threshold_field_paths!("Sensor.Thresholds.UpperFatal"),
-            threshold: thresholds.upper_fatal.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "lower_caution",
-            paths: threshold_field_paths!("Sensor.Thresholds.LowerCaution"),
-            threshold: thresholds.lower_caution.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "lower_critical",
-            paths: threshold_field_paths!("Sensor.Thresholds.LowerCritical"),
-            threshold: thresholds.lower_critical.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "lower_fatal",
-            paths: threshold_field_paths!("Sensor.Thresholds.LowerFatal"),
-            threshold: thresholds.lower_fatal.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "upper_caution_user",
-            paths: threshold_field_paths!("Sensor.Thresholds.UpperCautionUser"),
-            threshold: thresholds.upper_caution_user.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "upper_critical_user",
-            paths: threshold_field_paths!("Sensor.Thresholds.UpperCriticalUser"),
-            threshold: thresholds.upper_critical_user.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "lower_caution_user",
-            paths: threshold_field_paths!("Sensor.Thresholds.LowerCautionUser"),
-            threshold: thresholds.lower_caution_user.as_ref(),
-        },
-        ThresholdSlot {
-            property_name: "lower_critical_user",
-            paths: threshold_field_paths!("Sensor.Thresholds.LowerCriticalUser"),
-            threshold: thresholds.lower_critical_user.as_ref(),
-        },
+        ("upper_caution", "UpperCaution", &thresholds.upper_caution),
+        (
+            "upper_critical",
+            "UpperCritical",
+            &thresholds.upper_critical,
+        ),
+        ("upper_fatal", "UpperFatal", &thresholds.upper_fatal),
+        ("lower_caution", "LowerCaution", &thresholds.lower_caution),
+        (
+            "lower_critical",
+            "LowerCritical",
+            &thresholds.lower_critical,
+        ),
+        ("lower_fatal", "LowerFatal", &thresholds.lower_fatal),
+        (
+            "upper_caution_user",
+            "UpperCautionUser",
+            &thresholds.upper_caution_user,
+        ),
+        (
+            "upper_critical_user",
+            "UpperCriticalUser",
+            &thresholds.upper_critical_user,
+        ),
+        (
+            "lower_caution_user",
+            "LowerCautionUser",
+            &thresholds.lower_caution_user,
+        ),
+        (
+            "lower_critical_user",
+            "LowerCriticalUser",
+            &thresholds.lower_critical_user,
+        ),
     ];
     slots
         .into_iter()
-        .map(|slot| {
-            let value = slot
-                .threshold
-                .map_or(Ok(PropertyValue::Null), |threshold| {
-                    ThresholdProjectionContext::new(slot.paths, fields).project(threshold)
-                })?;
-            Ok(Property::new(slot.property_name, value))
+        .filter_map(|(property_name, redfish_name, threshold)| {
+            let value = match threshold.as_ref() {
+                Some(threshold) => {
+                    ThresholdProjection::new(redfish_name, fields).project(threshold)?
+                }
+                None => PropertyValue::Null,
+            };
+            Some(Property::new(Name::from_static(property_name), value))
         })
         .collect()
 }
 
-/// Carries the matching diagnostic paths and issue collector together while
-/// one threshold object is projected.
+/// Carries the Redfish object under projection and the issue collector while
+/// one threshold's leaves are read.
+///
+/// The object's name composes the diagnostic path of every leaf, so a leaf
+/// cannot be reported against the wrong slot.
 #[derive(Debug)]
-struct ThresholdProjectionContext<'a> {
-    paths: ThresholdFieldPaths,
+struct ThresholdProjection<'a> {
+    redfish_name: &'static str,
     fields: &'a mut Fields,
 }
 
-impl<'a> ThresholdProjectionContext<'a> {
-    fn new(paths: ThresholdFieldPaths, fields: &'a mut Fields) -> Self {
-        Self { paths, fields }
+impl<'a> ThresholdProjection<'a> {
+    fn new(redfish_name: &'static str, fields: &'a mut Fields) -> Self {
+        Self {
+            redfish_name,
+            fields,
+        }
     }
 
-    fn project(mut self, threshold: &Threshold) -> Result<PropertyValue, PropertyMapError> {
+    /// Projects one threshold object into a nested property value.
+    ///
+    /// The five leaf names are distinct literals nesting one level, so a
+    /// rejected map is a mistake in this function rather than something the
+    /// device sent, and is reported as one before the slot is dropped.
+    fn project(mut self, threshold: &Threshold) -> Option<PropertyValue> {
         let mut properties = Vec::with_capacity(5);
         self.add_field(
             &mut properties,
-            self.paths.reading,
+            "Reading",
             "reading",
-            finite_value(threshold.reading.flatten()),
+            project_optional(threshold.reading.flatten()),
             PropertyValue::F64,
         );
         self.add_field(
             &mut properties,
-            self.paths.activation,
+            "Activation",
             "activation",
             project_optional(threshold.activation.flatten()),
             ProjectedThresholdActivation::into_property_value,
         );
         self.add_field(
             &mut properties,
-            self.paths.dwell_time,
+            "DwellTime",
             "dwell_time",
-            duration_value(threshold.dwell_time.flatten()),
+            project_optional(threshold.dwell_time.flatten()),
             PropertyValue::Duration,
         );
         self.add_field(
             &mut properties,
-            self.paths.hysteresis_reading,
+            "HysteresisReading",
             "hysteresis_reading",
-            finite_value(threshold.hysteresis_reading.flatten()),
+            project_optional(threshold.hysteresis_reading.flatten()),
             PropertyValue::F64,
         );
         self.add_field(
             &mut properties,
-            self.paths.hysteresis_duration,
+            "HysteresisDuration",
             "hysteresis_duration",
-            duration_value(threshold.hysteresis_duration.flatten()),
+            project_optional(threshold.hysteresis_duration.flatten()),
             PropertyValue::Duration,
         );
-        PropertyMap::new(properties).map(PropertyValue::Object)
+        let Ok(properties) = PropertyMap::new(properties) else {
+            self.fields.invalid_projection(
+                format!("Sensor.Thresholds.{}", self.redfish_name),
+                "threshold leaves do not form a property map",
+            );
+            return None;
+        };
+        Some(PropertyValue::Object(properties))
     }
 
+    /// Reads one leaf into the slot, recording an unusable one as an issue.
+    ///
+    /// A leaf the device left unset is stated as null, which is the claim that
+    /// it configures nothing there. A leaf it sent unusably is left out
+    /// instead: absence in a [`partial`] resource carries no information, and
+    /// no information is what a rejected value leaves. Stating it as null
+    /// would put a claim the device never made in front of a consumer that
+    /// keeps the resource and not the issues, which would then read a rejected
+    /// critical threshold as an unconfigured one.
+    ///
+    /// [`partial`]: nv_telemetry_core::ResourceCompleteness::Partial
     fn add_field<T>(
         &mut self,
         properties: &mut Vec<Property>,
-        path: &'static str,
+        source_name: &str,
         property_name: &'static str,
         value: FieldValue<T>,
         into_property_value: impl FnOnce(T) -> PropertyValue,
     ) {
-        match value {
-            FieldValue::Present(value) => {
-                properties.push(Property::new(property_name, into_property_value(value)));
-            }
-            FieldValue::Missing => {
-                properties.push(Property::new(property_name, PropertyValue::Null));
-            }
+        let value = match value {
+            FieldValue::Present(value) => into_property_value(value),
+            FieldValue::Missing => PropertyValue::Null,
             FieldValue::Invalid(detail) => {
-                let _: Option<T> = self.fields.optional(path, FieldValue::invalid(detail));
+                self.fields.invalid(
+                    format!("Sensor.Thresholds.{}.{source_name}", self.redfish_name),
+                    detail,
+                );
+                return;
             }
-        }
+        };
+        properties.push(Property::new(Name::from_static(property_name), value));
     }
-}
-
-/// Projects an ISO 8601 duration leaf without inventing a wrapper type.
-fn duration_value(value: Option<EdmDuration>) -> FieldValue<DurationValue> {
-    let Some(value) = value else {
-        return FieldValue::missing();
-    };
-    let duration = match std::time::Duration::try_from(value) {
-        Ok(value) => value,
-        Err(error) => return FieldValue::invalid(error.to_string()),
-    };
-    let seconds = match i64::try_from(duration.as_secs()) {
-        Ok(value) => value,
-        Err(error) => return FieldValue::invalid(error.to_string()),
-    };
-    FieldValue::from_result(DurationValue::new(seconds, duration.subsec_nanos()))
 }

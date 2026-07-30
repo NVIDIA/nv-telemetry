@@ -3,12 +3,17 @@
 
 //! Instruction-count benchmarks for Redfish projection and signal lookup.
 //!
-//! Each setup deserializes the integration-test Sensor fixture before
-//! Callgrind starts, so measurements cover projection or catalog work rather
-//! than JSON decoding. Inputs and outputs are returned to keep their drops
-//! outside the measured region.
+//! Each setup deserializes the integration-test Sensor fixture and builds the
+//! projection context before Callgrind starts, so measurements cover
+//! projection or catalog work rather than JSON decoding or timestamp
+//! validation. Inputs and outputs are returned to keep their drops outside the
+//! measured region.
 
 #![allow(unused_qualifications)]
+
+#[cfg(unix)]
+#[path = "../tests/common/mod.rs"]
+mod common;
 
 #[cfg(unix)]
 mod unix {
@@ -17,7 +22,6 @@ mod unix {
     use gungraun::library_benchmark;
     use nv_redfish::schema::sensor::Sensor;
     use nv_telemetry_core::Reading;
-    use nv_telemetry_core::Timestamp;
     use nv_telemetry_redfish::Project;
     use nv_telemetry_redfish::ProjectionResult;
     use nv_telemetry_redfish::SensorMetadataProjection;
@@ -30,35 +34,19 @@ mod unix {
     use nv_telemetry_redfish::SignalSample;
     use nv_telemetry_redfish::SignalUpdate;
 
-    fn fixture() -> Sensor {
-        serde_json::from_str(include_str!("../tests/fixtures/sensor.json"))
-            .expect("valid nv-redfish Sensor fixture")
-    }
+    use crate::common::context;
+    use crate::common::fixture;
+    use crate::common::project;
 
-    fn context() -> SensorProjectionContext {
-        SensorProjectionContext::new(
-            Timestamp::new(1_721_000_000, 0).expect("valid fixture timestamp"),
-        )
-    }
-
-    fn projected<P>(sensor: &Sensor) -> P::Output
-    where
-        P: Project<Sensor, SensorProjectionContext>,
-    {
-        let result = P::project(sensor, &context());
-        assert!(
-            result.issues().is_empty(),
-            "fixture projection issues: {:?}",
-            result.issues()
-        );
-        result.into_parts().0.expect("fixture projection output")
+    fn projection_input() -> (Sensor, SensorProjectionContext) {
+        (fixture(), context())
     }
 
     fn upsert_input() -> (SignalCatalog, SignalDescriptorRecord) {
         let sensor = fixture();
         (
             SignalCatalog::new(),
-            projected::<SensorMetadataProjection>(&sensor),
+            project::<SensorMetadataProjection>(&sensor),
         )
     }
 
@@ -66,29 +54,35 @@ mod unix {
         let sensor = fixture();
         let mut catalog = SignalCatalog::new();
         catalog
-            .upsert(projected::<SensorMetadataProjection>(&sensor))
+            .upsert(project::<SensorMetadataProjection>(&sensor))
             .expect("catalog capacity");
-        (catalog, projected::<SensorSampleProjection>(&sensor))
+        (catalog, project::<SensorSampleProjection>(&sensor))
     }
 
     #[library_benchmark]
-    #[bench::fixture(fixture())]
-    fn sensor_metadata(sensor: Sensor) -> (Sensor, ProjectionResult<SignalDescriptorRecord>) {
-        let result = black_box(SensorMetadataProjection::project(&sensor, &context()));
+    #[bench::fixture(projection_input())]
+    fn sensor_metadata(
+        (sensor, context): (Sensor, SensorProjectionContext),
+    ) -> (Sensor, ProjectionResult<SignalDescriptorRecord>) {
+        let result = black_box(SensorMetadataProjection::project(&sensor, &context));
         (sensor, result)
     }
 
     #[library_benchmark]
-    #[bench::fixture(fixture())]
-    fn sensor_sample(sensor: Sensor) -> (Sensor, ProjectionResult<SignalSample>) {
-        let result = black_box(SensorSampleProjection::project(&sensor, &context()));
+    #[bench::fixture(projection_input())]
+    fn sensor_sample(
+        (sensor, context): (Sensor, SensorProjectionContext),
+    ) -> (Sensor, ProjectionResult<SignalSample>) {
+        let result = black_box(SensorSampleProjection::project(&sensor, &context));
         (sensor, result)
     }
 
     #[library_benchmark]
-    #[bench::fixture(fixture())]
-    fn sensor_resource(sensor: Sensor) -> (Sensor, ProjectionResult<SensorResourceRecord>) {
-        let result = black_box(SensorResourceProjection::project(&sensor, &context()));
+    #[bench::fixture(projection_input())]
+    fn sensor_resource(
+        (sensor, context): (Sensor, SensorProjectionContext),
+    ) -> (Sensor, ProjectionResult<SensorResourceRecord>) {
+        let result = black_box(SensorResourceProjection::project(&sensor, &context));
         (sensor, result)
     }
 

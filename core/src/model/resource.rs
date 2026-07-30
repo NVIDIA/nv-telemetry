@@ -61,6 +61,7 @@ impl ResourceCompleteness {
 /// tags into one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct ObservedResource {
     pub subject: Subject,
@@ -130,13 +131,10 @@ impl ObservedResource {
     }
 }
 
-/// Vocabulary identifying the meaning of a resource-graph edge.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct RelationKind(Name);
-
-name_newtype!(RelationKind);
+name_newtype!(
+    /// Vocabulary identifying the meaning of a resource-graph edge.
+    RelationKind
+);
 
 /// One directed, typed relationship in an observed resource graph.
 ///
@@ -164,6 +162,7 @@ name_newtype!(RelationKind);
 /// [`ResourceReference::subject`]: super::ResourceReference::subject
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct ResourceRelation {
     pub source: Subject,
@@ -210,14 +209,16 @@ pub struct ResourceGraph {
 /// A malfunctioning or hostile endpoint can advertise an unbounded topology.
 /// The check happens once the input is collected, so it bounds what a graph
 /// can hold rather than what a caller can allocate on the way there; a source
-/// reading an endpoint incrementally should stop before filling its input
-/// vectors and only then learning the limit from [`ResourceGraph::with_limits`].
+/// reading an endpoint incrementally should consult
+/// [`max_resources`](Self::max_resources) and
+/// [`max_relations`](Self::max_relations) and stop before overfilling its
+/// input vectors.
 ///
 /// Limits only ever tighten [`DEFAULT`](Self::DEFAULT). Deserialization has no
 /// caller to take them from and so applies the default, and a graph built past
 /// it would encode into a payload this crate then refuses to read. A bound
-/// above the default is clamped rather than honoured, so whatever the model
-/// accepts, it can also read back.
+/// above the default is pulled back by the setter that takes it, so what the
+/// accessors report is what assembly enforces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GraphLimits {
@@ -242,15 +243,27 @@ impl GraphLimits {
         self.max_relations
     }
 
+    /// Tightens the resource bound, pulling anything looser back to
+    /// [`DEFAULT`](Self::DEFAULT).
     #[must_use]
     pub const fn with_max_resources(mut self, max_resources: usize) -> Self {
-        self.max_resources = max_resources;
+        self.max_resources = if max_resources > Self::DEFAULT.max_resources {
+            Self::DEFAULT.max_resources
+        } else {
+            max_resources
+        };
         self
     }
 
+    /// Tightens the relation bound, pulling anything looser back to
+    /// [`DEFAULT`](Self::DEFAULT).
     #[must_use]
     pub const fn with_max_relations(mut self, max_relations: usize) -> Self {
-        self.max_relations = max_relations;
+        self.max_relations = if max_relations > Self::DEFAULT.max_relations {
+            Self::DEFAULT.max_relations
+        } else {
+            max_relations
+        };
         self
     }
 
@@ -276,22 +289,6 @@ impl GraphLimits {
             });
         }
         Ok(())
-    }
-
-    /// Returns these limits with anything looser than the default pulled back.
-    const fn clamped(self) -> Self {
-        Self {
-            max_resources: if self.max_resources > Self::DEFAULT.max_resources {
-                Self::DEFAULT.max_resources
-            } else {
-                self.max_resources
-            },
-            max_relations: if self.max_relations > Self::DEFAULT.max_relations {
-                Self::DEFAULT.max_relations
-            } else {
-                self.max_relations
-            },
-        }
     }
 }
 
@@ -330,7 +327,7 @@ impl ResourceGraph {
         relations: Vec<ResourceRelation>,
         limits: GraphLimits,
     ) -> Result<Self, ResourceGraphError> {
-        limits.clamped().check_sizes(&resources, &relations)?;
+        limits.check_sizes(&resources, &relations)?;
 
         let resources = SortedResources::new(resources)?;
         let relations = SortedRelations::sourced_in(relations, &resources)?;
@@ -404,7 +401,6 @@ impl ResourceGraph {
     /// Scope validation asks the question about graphs an endpoint controls,
     /// and asks it only when the graph is being rejected, so the answer has to
     /// cost the same as the traversal itself.
-    ///
     pub fn reachability_from(&self, root: &Subject) -> Reachability<'_> {
         let Some(root) = self.index_of(root) else {
             return Reachability::MissingRoot;
@@ -462,6 +458,7 @@ impl ResourceGraph {
 /// Outcome of checking whether a graph is wholly reachable from one subject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
+#[non_exhaustive]
 pub enum Reachability<'graph> {
     MissingRoot,
     FullyReachable,
@@ -703,8 +700,12 @@ impl fmt::Display for ResourceGraphError {
 impl Error for ResourceGraphError {}
 
 /// The unvalidated parts a [`ResourceGraph`] is assembled from.
+///
+/// Every field of the graph must appear here; `deny_unknown_fields` keeps the
+/// two in step, as described on `BatchParts`.
 #[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GraphParts {
     resources: Vec<ObservedResource>,
     relations: Vec<ResourceRelation>,

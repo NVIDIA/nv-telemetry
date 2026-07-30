@@ -32,8 +32,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.MSRV }}
-      # Benchmark-only dependencies need CI_RUST; library users do not.
-      - run: cargo check --workspace --all-features --lib
+      - run: cargo check --workspace --all-features --all-targets
+      # The READMEs are compiled as doctests, which `--all-targets` does not
+      # cover, and are what a consumer at the MSRV copies.
+      - run: cargo test --workspace --all-features --doc
 
   build-and-test:
     strategy:
@@ -101,8 +103,13 @@ jobs:
                 | [$package, .name] | @tsv'
           }
           rm -f Cargo.lock
-          mapfile -t BENCHES < <(discover_benches)
+          # `pipefail` does not reach into a process substitution, so a
+          # metadata or jq failure inside one is indistinguishable from having
+          # no bench targets; discovery runs as a command of its own instead.
+          discover_benches > "$RUNNER_TEMP/base-targets.tsv"
+          mapfile -t BENCHES < "$RUNNER_TEMP/base-targets.tsv"
           : > "$RUNNER_TEMP/baseline-benches.tsv"
+          echo "BASE_BENCH_COUNT=${#BENCHES[@]}" >> "$GITHUB_ENV"
           VERSION=$(cargo metadata --format-version=1 \
             | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
           if [ "${#BENCHES[@]}" = "0" ]; then
@@ -135,20 +142,21 @@ jobs:
                 | .targets[] | select(.kind == ["bench"])
                 | [$package, .name] | @tsv'
           }
+          # The base step resolved the graph at its own revision, so the
+          # lockfile it left behind pins those versions.
           rm -f Cargo.lock
-          mapfile -t BENCHES < <(discover_benches)
+          discover_benches > "$RUNNER_TEMP/head-targets.tsv"
+          mapfile -t BENCHES < "$RUNNER_TEMP/head-targets.tsv"
+          # This workspace has benchmark targets, so discovering none at head
+          # is a stale jq filter or a dropped `[[bench]]` section rather than a
+          # workspace without benchmarks, and it would turn the gate off. Zero
+          # at the merge-base is legitimate: the targets can be new here.
           if [ "${#BENCHES[@]}" = "0" ]; then
-            echo "no benchmark targets at head"
-            exit 0
-          fi
-          VERSION=$(cargo metadata --format-version=1 \
-            | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
-          if [ -z "$VERSION" ]; then
-            echo "benchmark targets exist but gungraun is not resolved"
+            echo "no benchmark targets discovered at head"
             exit 1
           fi
-          echo "head gungraun $VERSION"
-          cargo install gungraun-runner --version "$VERSION" --locked
+          COMPARABLE=()
+          MATCHED=0
           for target in "${BENCHES[@]}"; do
             IFS=$'\t' read -r package bench <<< "$target"
             compare=0
@@ -158,7 +166,27 @@ jobs:
                 break
               fi
             done < "$RUNNER_TEMP/baseline-benches.tsv"
-            if [ "$compare" = "1" ]; then
+            COMPARABLE+=("$compare")
+            MATCHED=$((MATCHED + compare))
+          done
+          # A renamed target among others still runs unbaselined, but matching
+          # none of the baselines the base revision recorded means the
+          # comparison is gone, not that every target is new.
+          if [ "$MATCHED" = "0" ] && [ "${BASE_BENCH_COUNT:-0}" != "0" ]; then
+            echo "base had $BASE_BENCH_COUNT benchmark target(s), none matching a head target"
+            exit 1
+          fi
+          VERSION=$(cargo metadata --format-version=1 \
+            | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
+          if [ -z "$VERSION" ]; then
+            echo "benchmark targets exist but gungraun is not resolved"
+            exit 1
+          fi
+          echo "head gungraun $VERSION"
+          cargo install gungraun-runner --version "$VERSION" --locked
+          for index in "${!BENCHES[@]}"; do
+            IFS=$'\t' read -r package bench <<< "${BENCHES[$index]}"
+            if [ "${COMPARABLE[$index]}" = "1" ]; then
               cargo bench -p "$package" --all-features --bench "$bench" -- \
                 --baseline=base \
                 --callgrind-limits='ir=2%'

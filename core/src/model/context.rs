@@ -15,19 +15,16 @@
 
 use super::name::name_newtype;
 use super::Attributes;
-use super::Name;
 
-/// Stable identity of an endpoint.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct EndpointId(Name);
-
-name_newtype!(EndpointId);
+name_newtype!(
+    /// Stable identity of an endpoint.
+    EndpointId
+);
 
 /// Immutable endpoint identity and non-secret static attributes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct EndpointContext {
     pub id: EndpointId,
@@ -43,21 +40,15 @@ impl EndpointContext {
     }
 }
 
-/// What kind of thing a subject names, such as `sensor`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct SubjectKind(Name);
+name_newtype!(
+    /// What kind of thing a subject names, such as `sensor`.
+    SubjectKind
+);
 
-name_newtype!(SubjectKind);
-
-/// Which thing of that kind a subject names, unique within its kind.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct SubjectId(Name);
-
-name_newtype!(SubjectId);
+name_newtype!(
+    /// Which thing of that kind a subject names, unique within its kind.
+    SubjectId
+);
 
 /// Stable, protocol-neutral identity of a resource inside an endpoint.
 ///
@@ -76,7 +67,8 @@ name_newtype!(SubjectId);
 /// assert_eq!(id.as_str(), "CPU0Temp");
 /// ```
 ///
-/// The two components use distinct types, so swapping variables is rejected:
+/// The two components use distinct types, so a swapped pair does not compile,
+/// whether it is written inline or held in variables first:
 ///
 /// ```compile_fail
 /// use nv_telemetry_core::{Subject, SubjectId, SubjectKind};
@@ -87,6 +79,7 @@ name_newtype!(SubjectId);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct Subject {
     pub kind: SubjectKind,
@@ -99,18 +92,16 @@ impl Subject {
     }
 }
 
-/// A protocol-specific location from which an observation was obtained.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct SourceKey(Name);
-
-name_newtype!(SourceKey);
+name_newtype!(
+    /// A protocol-specific location from which an observation was obtained.
+    SourceKey
+);
 
 /// The resource set for which completeness is asserted.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
 pub enum ObservationScope {
     Endpoint,
     Subject(Subject),
@@ -120,6 +111,7 @@ pub enum ObservationScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
 pub enum Completeness {
     Complete,
     Partial {
@@ -141,6 +133,7 @@ impl Completeness {
 /// Scope-relative completeness of an observation batch.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct Coverage {
     pub scope: ObservationScope,
@@ -164,22 +157,16 @@ impl Coverage {
     }
 }
 
-/// Which acquisition source produced an observation, such as `redfish`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Provider(Name);
+name_newtype!(
+    /// Which acquisition source produced an observation, such as `redfish`.
+    Provider
+);
 
-name_newtype!(Provider);
-
-/// Which category of request produced an observation, as the caller's
-/// scheduling and rate policy names it.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct RequestClass(Name);
-
-name_newtype!(RequestClass);
+name_newtype!(
+    /// Which category of request produced an observation, as the caller's
+    /// scheduling and rate policy names it.
+    RequestClass
+);
 
 /// Provenance of an acquisition.
 ///
@@ -195,6 +182,7 @@ name_newtype!(RequestClass);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct Origin {
     pub provider: Provider,

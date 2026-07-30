@@ -178,11 +178,14 @@ mod unix {
         attributes
     }
 
-    // Static vocabulary is allocation-free; device-supplied text is not.
+    // Static vocabulary is allocation-free; device-supplied text is not. The
+    // input is what is hidden from the optimizer: black-boxing the result of a
+    // `const fn` over a literal would leave the call itself foldable, and the
+    // pair below would not be comparable.
     #[library_benchmark]
     #[bench::from_static()]
     fn name_from_static() -> Name {
-        black_box(Name::from_static("temperature"))
+        Name::from_static(black_box("temperature"))
     }
 
     #[library_benchmark]

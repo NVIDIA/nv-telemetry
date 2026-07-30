@@ -82,26 +82,22 @@ mod unix {
     /// table holds a single entry however many rows there are.
     fn shared_descriptor(count: usize) -> Box<[Reading]> {
         let signal = Arc::new(descriptor(0));
-        rows(count, |index| (index, Arc::clone(&signal)))
+        rows(count, |_| Arc::clone(&signal))
     }
 
     /// A sensor walk: every row is its own signal, so the table is as
     /// long as the payload and hoisting buys nothing.
     fn distinct_descriptors(count: usize) -> Box<[Reading]> {
-        rows(count, |index| (index, Arc::new(descriptor(index))))
+        rows(count, |index| Arc::new(descriptor(index)))
     }
 
-    fn rows(
-        count: usize,
-        signal: impl Fn(usize) -> (usize, Arc<SignalDescriptor>),
-    ) -> Box<[Reading]> {
+    fn rows(count: usize, signal: impl Fn(usize) -> Arc<SignalDescriptor>) -> Box<[Reading]> {
         let attributes = attributes(LABELS);
         (0..count)
             .map(|index| {
-                let (index, signal) = signal(index);
                 Reading::new(
                     format!("/redfish/v1/Chassis/1/Sensors/CPU{index}Temp").into(),
-                    signal,
+                    signal(index),
                     Finite::new(42.5).unwrap(),
                 )
                 .with_observed_at(timestamp())

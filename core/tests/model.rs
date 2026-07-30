@@ -13,19 +13,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hash;
-use std::hash::Hasher;
+mod common;
+
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
+use common::endpoint;
+use common::hash_of;
+use common::timestamp;
 use nv_telemetry_core::AcquisitionOutcome;
 use nv_telemetry_core::AcquisitionStatus;
 use nv_telemetry_core::AttrValue;
 use nv_telemetry_core::Attribute;
 use nv_telemetry_core::Attributes;
 use nv_telemetry_core::AttributesError;
+use nv_telemetry_core::BatchError;
 use nv_telemetry_core::Completeness;
 use nv_telemetry_core::Coverage;
 use nv_telemetry_core::DurationValue;
@@ -35,6 +39,7 @@ use nv_telemetry_core::Finite;
 use nv_telemetry_core::Health;
 use nv_telemetry_core::InventoryItem;
 use nv_telemetry_core::LogRecord;
+use nv_telemetry_core::Metric;
 use nv_telemetry_core::Name;
 use nv_telemetry_core::NumericValue;
 use nv_telemetry_core::ObservationBatch;
@@ -54,27 +59,13 @@ use nv_telemetry_core::ResourceGraph;
 use nv_telemetry_core::Retryable;
 use nv_telemetry_core::Severity;
 use nv_telemetry_core::SignalDescriptor;
+use nv_telemetry_core::StateName;
 use nv_telemetry_core::StateObservation;
 use nv_telemetry_core::Subject;
 use nv_telemetry_core::TimeError;
 use nv_telemetry_core::Timestamp;
 use nv_telemetry_core::Unit;
 use nv_telemetry_core::ValueRange;
-
-fn timestamp(seconds: i64) -> Timestamp {
-    Timestamp::new(seconds, 0).expect("valid timestamp")
-}
-
-fn endpoint() -> Arc<EndpointContext> {
-    Arc::new(EndpointContext::new(
-        "bmc-00:11:22:33:44:55",
-        Attributes::new(vec![
-            Attribute::new("device_class", "compute_node"),
-            Attribute::new("rack", "rack-1"),
-        ])
-        .expect("unique attributes"),
-    ))
-}
 
 fn origin() -> Origin {
     Origin::new("redfish-sensor-odata".into(), "redfish-sensor-odata".into())
@@ -89,12 +80,6 @@ fn sensor_subject() -> Subject {
         "sensor".into(),
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
     )
-}
-
-fn hash_of<T: Hash>(value: &T) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn descriptor() -> SignalDescriptor {
@@ -136,12 +121,43 @@ fn static_and_shared_names_compare_and_hash_by_content() {
     assert!(static_name.is_static());
     assert!(!shared_name.is_static());
     assert_eq!(static_name, shared_name);
+    assert_eq!(hash_of(&static_name), hash_of(&shared_name));
+}
 
-    let mut static_hasher = DefaultHasher::new();
-    static_name.hash(&mut static_hasher);
-    let mut shared_hasher = DefaultHasher::new();
-    shared_name.hash(&mut shared_hasher);
-    assert_eq!(static_hasher.finish(), shared_hasher.finish());
+/// The vocabulary newtypes carry a whole trait family, none of it exercised
+/// by the model types that merely hold them.
+///
+/// `Borrow<str>` exists so a newtype can key a map a `&str` can search, which
+/// only holds while `Borrow`, `Hash`, and `Eq` agree on what the key is.
+#[test]
+fn a_name_newtype_parses_prints_and_keys_a_map_by_string() {
+    let parsed: Metric = "temperature".parse().expect("parsing a name cannot fail");
+    assert_eq!(parsed, Metric::from_static("temperature"));
+    assert_eq!(parsed.to_string(), "temperature");
+
+    assert_eq!(Metric::from(Box::<str>::from("power")).as_str(), "power");
+    assert_eq!(Metric::from(Arc::<str>::from("power")).as_str(), "power");
+
+    // Recovering the inner name keeps a static one allocation-free.
+    assert!(Name::from(Metric::from_static("temperature")).is_static());
+
+    let mut by_metric = HashMap::new();
+    by_metric.insert(parsed, 42_u64);
+    assert_eq!(by_metric.get("temperature"), Some(&42));
+    assert_eq!(by_metric.get("humidity"), None);
+}
+
+/// Both value enums refuse a non-finite float through every door.
+#[test]
+fn value_enums_reject_non_finite_floats_through_the_trait_conversion() {
+    assert!(PropertyValue::try_from(f64::NAN).is_err());
+    assert!(PropertyValue::try_from(f64::INFINITY).is_err());
+    assert!(AttrValue::try_from(f64::NEG_INFINITY).is_err());
+    assert!(NumericValue::try_from(f64::NAN).is_err());
+    assert_eq!(
+        PropertyValue::try_from(1.5),
+        Ok(PropertyValue::F64(Finite::new(1.5).expect("finite")))
+    );
 }
 
 /// Plain records expose their fields; invariant carriers keep theirs private.
@@ -204,8 +220,11 @@ fn equal_attributes_hash_equally_however_they_were_built() {
     assert_ne!(sorted, different);
     assert_ne!(hash_of(&sorted), hash_of(&different));
 
-    assert_eq!(Attributes::empty(), Attributes::empty());
-    assert_eq!(hash_of(&Attributes::empty()), hash_of(&Attributes::empty()));
+    // The shared empty allocation caches one digest, so it has to be compared
+    // against a separately built empty collection rather than against itself.
+    let built_empty = Attributes::new(Vec::new()).expect("no attributes to repeat");
+    assert_eq!(Attributes::empty(), built_empty);
+    assert_eq!(hash_of(&Attributes::empty()), hash_of(&built_empty));
 }
 
 #[test]
@@ -231,22 +250,27 @@ fn timestamps_validate_and_round_trip_before_the_epoch() {
     );
 
     let later = Timestamp::new(1, 250_000_000).expect("valid timestamp");
-    let earlier = Timestamp::new(-1, 750_000_000).expect("valid timestamp");
+    let origin = Timestamp::new(-1, 750_000_000).expect("valid timestamp");
     assert_eq!(
         later
-            .checked_duration_since(earlier)
+            .signed_duration_since(origin)
             .expect("difference is representable")
             .as_nanos(),
         1_500_000_000
     );
+    // An origin after the subject is a negative span, not an error.
     assert_eq!(
-        window().checked_duration().unwrap().as_nanos(),
-        1_000_000_000
+        origin
+            .signed_duration_since(later)
+            .expect("difference is representable")
+            .as_nanos(),
+        -1_500_000_000
     );
+    assert_eq!(window().duration().unwrap().as_nanos(), 1_000_000_000);
     assert_eq!(
         Timestamp::new(i64::MAX, 0)
             .unwrap()
-            .checked_duration_since(Timestamp::new(i64::MIN, 0).unwrap()),
+            .signed_duration_since(Timestamp::new(i64::MIN, 0).unwrap()),
         Err(TimeError::OutOfRange)
     );
 }
@@ -276,9 +300,11 @@ fn all_payload_domains_build_as_immutable_slices() {
             .with_subject(sensor_subject()),
     ];
 
-    let states = vec![StateObservation::new("power_state", "on")
-        .with_instance("system-1")
-        .with_subject(Subject::new("computer_system".into(), "system-1".into()))];
+    let states = vec![
+        StateObservation::new(StateName::from_static("power_state"), "on")
+            .with_instance("system-1")
+            .with_subject(Subject::new("computer_system".into(), "system-1".into())),
+    ];
 
     let inventory = vec![InventoryItem::new(sensor_subject(), Attributes::empty())];
 
@@ -292,6 +318,8 @@ fn all_payload_domains_build_as_immutable_slices() {
     )
     .expect("valid resource graph");
 
+    // Each row has to land in the domain it was built for, so the assertion
+    // names the variant as well as the count.
     let payloads = [
         Payload::Readings(readings.into()),
         Payload::Logs(logs.into()),
@@ -300,6 +328,14 @@ fn all_payload_domains_build_as_immutable_slices() {
         Payload::Resources(resources),
     ];
     assert!(payloads.iter().all(|payload| payload.len() == 1));
+    assert!(matches!(&payloads[0], Payload::Readings(rows) if rows.len() == 1));
+    assert!(matches!(&payloads[1], Payload::Logs(rows) if rows.len() == 1));
+    assert!(matches!(&payloads[2], Payload::States(rows) if rows.len() == 1));
+    assert!(matches!(&payloads[3], Payload::Inventory(rows) if rows.len() == 1));
+    assert!(matches!(
+        &payloads[4],
+        Payload::Resources(graph) if graph.resource_count() == 1 && graph.relation_count() == 0
+    ));
 }
 
 #[test]
@@ -368,17 +404,31 @@ fn every_payload_domain_is_scope_checked_the_same_way() {
             .into_boxed_slice(),
         )
     };
+    // Every domain has to be rejected with the same error, not merely
+    // rejected: a wrong variant would mean the row was refused for another
+    // reason.
+    let outside_scope = |payload| {
+        matches!(
+            scoped(payload),
+            Err(BatchError::SubjectOutsideScope { expected, actual })
+                if expected == sensor_subject() && actual == Subject::new("sensor".into(), "other".into())
+        )
+    };
+
     assert!(scoped(log(sensor.clone())).is_ok());
-    assert!(scoped(log(other.clone())).is_err());
+    assert!(outside_scope(log(other.clone())));
 
     let state = |subject: Subject| {
         Payload::States(
-            vec![StateObservation::new("power_state", "on").with_subject(subject)]
-                .into_boxed_slice(),
+            vec![
+                StateObservation::new(StateName::from_static("power_state"), "on")
+                    .with_subject(subject),
+            ]
+            .into_boxed_slice(),
         )
     };
     assert!(scoped(state(sensor.clone())).is_ok());
-    assert!(scoped(state(other.clone())).is_err());
+    assert!(outside_scope(state(other.clone())));
 
     let item = |subject: Subject| {
         Payload::Inventory(
@@ -386,7 +436,7 @@ fn every_payload_domain_is_scope_checked_the_same_way() {
         )
     };
     assert!(scoped(item(sensor.clone())).is_ok());
-    assert!(scoped(item(other)).is_err());
+    assert!(outside_scope(item(other)));
 }
 
 #[test]
@@ -510,19 +560,12 @@ fn complete_empty_inventory_snapshot_is_valid_and_shareable() {
 
 #[test]
 fn empty_shared_collections_compare_and_hash_by_content() {
-    let first = PropertyMap::empty();
-    let second = PropertyMap::empty();
-    assert_eq!(first, second);
-    assert_eq!(hash_of(&first), hash_of(&second));
-
-    let payloads = [
-        Payload::Readings(Box::new([])),
-        Payload::Logs(Box::new([])),
-        Payload::States(Box::new([])),
-        Payload::Inventory(Box::new([])),
-        Payload::Resources(ResourceGraph::empty()),
-    ];
-    assert!(payloads.iter().all(Payload::is_empty));
+    // The shared allocation caches one digest, so comparing it with itself
+    // would read that digest twice rather than deriving two from content.
+    let shared = PropertyMap::empty();
+    let built = PropertyMap::new(Vec::new()).expect("no properties to repeat");
+    assert_eq!(shared, built);
+    assert_eq!(hash_of(&shared), hash_of(&built));
 }
 
 #[test]
@@ -697,6 +740,9 @@ fn reported_ranges_are_valid_by_construction() {
         ValueRange::at_least(Finite::new(-5.0).unwrap()).lower(),
         Some(Finite::new(-5.0).unwrap())
     );
+    let ceiling = ValueRange::at_most(Finite::new(100.0).unwrap());
+    assert_eq!(ceiling.upper(), Some(Finite::new(100.0).unwrap()));
+    assert!(ceiling.lower().is_none());
     assert!(ValueRange::empty().is_empty());
 }
 
@@ -739,7 +785,7 @@ fn acquisition_failure_is_status_not_an_observation() {
         AcquisitionOutcome::failed(FailureClass::Timeout, Retryable::Yes),
     );
 
-    assert!(status.outcome.is_retryable());
+    assert_eq!(status.outcome.retryable(), Retryable::Yes);
     assert!(matches!(
         status.outcome,
         AcquisitionOutcome::Failed {
@@ -747,6 +793,9 @@ fn acquisition_failure_is_status_not_an_observation() {
             retryable: Retryable::Yes
         }
     ));
+
+    // A success has nothing to retry, and says so in the same vocabulary.
+    assert_eq!(AcquisitionOutcome::succeeded(1).retryable(), Retryable::No);
 }
 
 /// `Retryable` is a named type at the API boundary and a boolean in the

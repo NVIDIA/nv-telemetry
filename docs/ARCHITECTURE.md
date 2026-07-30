@@ -100,8 +100,9 @@ resources joined by relations.
 Redfish projections are written against compiled schema types. `Fields`
 collects all required failures and reports invalid optional fields without
 discarding otherwise valid output. Finalization never panics on source data:
-required failures suppress output, while inconsistent projection control flow
-is returned as an `InvalidProjection` issue.
+required failures suppress output, and both inconsistent projection control
+flow and a projection that discards part of its own output are reported as
+`InvalidProjection` issues.
 
 `Project<Input, Context>` is static and generic. Runtime dispatch uses typed
 function pointers such as `P::project`, or an embedder-owned object-safe
@@ -120,8 +121,17 @@ definitions while allowing a consumer to join both by subject.
 
 Sensor identity is scoped by the parent collection encoded in the URI.
 Chassis and all supported PowerDistribution collections produce distinct
-subjects even when `Sensor.Id` repeats. Absolute/relative URIs, query strings,
-fragments, and trailing separators canonicalize to one endpoint-local key.
+subjects even when `Sensor.Id` repeats. Absolute and relative URIs, query
+strings, fragments, empty and trailing separators, and escapes of characters
+RFC 3986 treats as unreserved canonicalize to one endpoint-local key, and
+canonicalizing that key again returns it unchanged. Case is significant, every
+other escape stays escaped, and a path holding a dot segment is left unresolved
+and has no sensor scope.
+
+A scope is read only from a path under the `/redfish/v1` service root, which is
+where DSP0266 puts every `@odata.id`. A URI that names a collection without that
+prefix has no scope, so a malformed id cannot reach the subject of the sensor
+rooted properly at the same collection and claim it a second time.
 
 `ReadingTime` is the sample timestamp. Poll time is the projection context and
 belongs to metadata/resource observation and the eventual batch window.
@@ -129,9 +139,11 @@ belongs to metadata/resource observation and the eventual batch window.
 
 All ten Redfish threshold slots are resource properties. A present slot is a
 nested object containing reading, activation, dwell time, hysteresis reading,
-and hysteresis duration. A missing field in a present slot is explicit null; an
-invalid optional value is an issue and is omitted. If `Thresholds` is absent,
-the partial resource makes no threshold claim.
+and hysteresis duration. A field the device left unset in a present slot is
+explicit null, which claims it configures nothing there. A field it sent
+unusably is an issue and is left out of the slot, because absence in a partial
+resource carries no information and a rejected value leaves none. If
+`Thresholds` is absent, the partial resource makes no threshold claim.
 
 `SensorResourceRecord` keeps the projected Sensor and its parent relation
 together. The parent resource remains caller-owned, but the fragment contains
@@ -163,7 +175,8 @@ schema/version boundary.
 The workspace MSRV is Rust 1.89. Both packages inherit it, docs.rs builds all
 features, and the Redfish package gives its path dependency a publishable
 version. As a library workspace, the repository does not commit `Cargo.lock`;
-development, CI, and benchmarks resolve the semver ranges that consumers see.
+development, CI, and benchmarks resolve the semver ranges that consumers see,
+restricted by the MSRV-aware resolver to versions that build at 1.89.
 
 ## Deliberate non-goals
 

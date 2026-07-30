@@ -33,6 +33,7 @@ mod reading;
 mod resource;
 mod state;
 mod time;
+mod value;
 
 pub use attributes::AttrKey;
 pub use attributes::AttrValue;
@@ -88,6 +89,7 @@ pub use resource::ResourceCompleteness;
 pub use resource::ResourceGraph;
 pub use resource::ResourceGraphError;
 pub use resource::ResourceRelation;
+pub use state::StateName;
 pub use state::StateObservation;
 pub use time::DurationValue;
 pub use time::ObservationWindow;

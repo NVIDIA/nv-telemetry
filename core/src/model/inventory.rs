@@ -19,6 +19,7 @@ use super::Subject;
 /// One resource in an inventory snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct InventoryItem {
     pub subject: Subject,

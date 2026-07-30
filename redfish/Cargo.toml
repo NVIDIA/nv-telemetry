@@ -17,7 +17,6 @@ nv-telemetry-core = { version = "0.1.0", path = "../core" }
 time = { version = "0.3.54", default-features = false }
 
 [dev-dependencies]
-serde.workspace = true
 serde_json.workspace = true
 
 # Compiles only on unix: the runner library it pulls in uses

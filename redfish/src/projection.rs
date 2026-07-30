@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::fmt;
 
 /// Converts one typed source value into one telemetry value.
@@ -45,19 +46,30 @@ impl fmt::Display for ProjectionIssueKind {
 }
 
 /// A source field that was missing or unusable during projection.
+///
+/// A path is a source-schema location, so it is normally a static literal. It
+/// is owned only where a projection composes one from a repeated source
+/// structure, such as a threshold slot's five leaves.
+///
+/// A path names every field the issue is about, comma-separated, which is more
+/// than one where two properties contradict each other and neither alone is
+/// the field a consumer should go and read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectionIssue {
-    path: &'static str,
+    path: Cow<'static, str>,
     kind: ProjectionIssueKind,
 }
 
 impl ProjectionIssue {
-    pub const fn new(path: &'static str, kind: ProjectionIssueKind) -> Self {
-        Self { path, kind }
+    pub fn new(path: impl Into<Cow<'static, str>>, kind: ProjectionIssueKind) -> Self {
+        Self {
+            path: path.into(),
+            kind,
+        }
     }
 
-    pub const fn path(&self) -> &'static str {
-        self.path
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     pub const fn kind(&self) -> &ProjectionIssueKind {
@@ -111,6 +123,7 @@ impl<T> ProjectionResult<T> {
 /// A field is *missing* when the device said nothing and *invalid* when it
 /// answered unusably. A consumer needs the difference: a `NaN` reading is a
 /// device reporting garbage, not a device staying quiet.
+#[must_use = "discarding a field value discards why the source field was unusable"]
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum FieldValue<T> {
@@ -136,10 +149,6 @@ impl<T> FieldValue<T> {
         value.map_or(Self::Missing, Self::Present)
     }
 
-    pub fn from_nested_option(value: Option<Option<T>>) -> Self {
-        Self::from_option(value.flatten())
-    }
-
     pub fn from_result<E>(value: Result<T, E>) -> Self
     where
         E: fmt::Display,
@@ -147,6 +156,21 @@ impl<T> FieldValue<T> {
         match value {
             Ok(value) => Self::Present(value),
             Err(error) => Self::Invalid(error.to_string()),
+        }
+    }
+
+    /// Retypes a present value, preserving why an absent one is absent.
+    pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> FieldValue<U> {
+        self.and_then(|value| FieldValue::Present(transform(value)))
+    }
+
+    /// Continues judging a present value, preserving why an absent one is
+    /// absent.
+    pub fn and_then<U>(self, transform: impl FnOnce(T) -> FieldValue<U>) -> FieldValue<U> {
+        match self {
+            Self::Present(value) => transform(value),
+            Self::Missing => FieldValue::Missing,
+            Self::Invalid(detail) => FieldValue::Invalid(detail),
         }
     }
 }
@@ -173,7 +197,11 @@ impl Fields {
     ///
     /// `path` names the source field in its own schema's terms, so a consumer
     /// reading the issue can look it up against the device's documentation.
-    pub fn require<T>(&mut self, path: &'static str, value: FieldValue<T>) -> Option<T> {
+    pub fn require<T>(
+        &mut self,
+        path: impl Into<Cow<'static, str>>,
+        value: FieldValue<T>,
+    ) -> Option<T> {
         match value {
             FieldValue::Present(value) => Some(value),
             FieldValue::Missing => {
@@ -201,7 +229,11 @@ impl Fields {
     /// Missing optional fields are expected and produce no issue. Invalid
     /// optional fields are reported so callers can distinguish absent source
     /// data from unusable source data while still receiving projected output.
-    pub fn optional<T>(&mut self, path: &'static str, value: FieldValue<T>) -> Option<T> {
+    pub fn optional<T>(
+        &mut self,
+        path: impl Into<Cow<'static, str>>,
+        value: FieldValue<T>,
+    ) -> Option<T> {
         match value {
             FieldValue::Present(value) => Some(value),
             FieldValue::Missing => None,
@@ -213,6 +245,36 @@ impl Fields {
                 None
             }
         }
+    }
+
+    /// Records that a source field was unusable without yielding a value for
+    /// it.
+    ///
+    /// [`optional`](Self::optional) reports the same issue while unwrapping the
+    /// value, and is what a projection that has a value to unwrap should use.
+    /// This is for a projection that has already decided what it will state in
+    /// place of the field and only needs the reason recorded.
+    pub fn invalid(&mut self, path: impl Into<Cow<'static, str>>, detail: impl Into<String>) {
+        self.issues.push(ProjectionIssue::new(
+            path,
+            ProjectionIssueKind::Invalid {
+                detail: detail.into(),
+            },
+        ));
+    }
+
+    /// Records that the projection itself broke an invariant it documents,
+    /// without failing a required field.
+    ///
+    /// A projection that discards part of its own output has to say so, the
+    /// same way [`incomplete`](Self::incomplete) does for a whole one. The
+    /// detail is a static literal because the projection, not the device,
+    /// chooses it.
+    pub fn invalid_projection(&mut self, path: impl Into<Cow<'static, str>>, detail: &'static str) {
+        self.issues.push(ProjectionIssue::new(
+            path,
+            ProjectionIssueKind::InvalidProjection { detail },
+        ));
     }
 
     /// Finishes with the projected value and any optional-field issues.
@@ -313,7 +375,7 @@ mod tests {
     #[test]
     fn optional_missing_field_is_not_an_issue() {
         let mut fields = Fields::new();
-        let value = fields.optional::<u64>("Source.Optional", FieldValue::missing());
+        let value: Option<u64> = fields.optional("Source.Optional", FieldValue::missing());
 
         assert_eq!(value, None);
         let result = fields.complete("output");
@@ -324,7 +386,7 @@ mod tests {
     #[test]
     fn optional_invalid_field_is_reported_without_blocking_output() {
         let mut fields = Fields::new();
-        let value = fields.optional::<u64>(
+        let value: Option<u64> = fields.optional(
             "Source.Optional",
             FieldValue::invalid("not a finite number"),
         );
@@ -344,7 +406,7 @@ mod tests {
     #[test]
     fn required_failure_discards_completed_output() {
         let mut fields = Fields::new();
-        let _ = fields.require::<u64>("Source.Value", FieldValue::missing());
+        let _: Option<u64> = fields.require("Source.Value", FieldValue::missing());
 
         let result = fields.complete("invalid output");
 
@@ -357,9 +419,44 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_field_can_be_reported_without_a_value_to_unwrap() {
+        let mut fields = Fields::new();
+        fields.invalid("Source.Optional", "not a finite number");
+
+        let result = fields.complete("output");
+
+        assert_eq!(result.output(), Some(&"output"));
+        assert_eq!(result.issues().len(), 1);
+        assert_eq!(result.issues()[0].path(), "Source.Optional");
+        assert_eq!(
+            result.issues()[0].kind(),
+            &ProjectionIssueKind::Invalid {
+                detail: "not a finite number".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_partial_discard_is_reported_without_blocking_output() {
+        let mut fields = Fields::new();
+        fields.invalid_projection("Source.Nested", "nested leaves do not form a map");
+
+        let result = fields.complete("output");
+
+        assert_eq!(result.output(), Some(&"output"));
+        assert_eq!(result.issues().len(), 1);
+        assert_eq!(
+            result.issues()[0].kind(),
+            &ProjectionIssueKind::InvalidProjection {
+                detail: "nested leaves do not form a map",
+            }
+        );
+    }
+
+    #[test]
     fn incomplete_without_required_failure_reports_projection_issue() {
         let mut fields = Fields::new();
-        let _ = fields.optional::<u64>("Source.Optional", FieldValue::invalid("invalid"));
+        let _: Option<u64> = fields.optional("Source.Optional", FieldValue::invalid("invalid"));
 
         let result: ProjectionResult<()> = fields.incomplete();
 

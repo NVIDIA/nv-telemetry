@@ -35,8 +35,8 @@ pub(super) fn sort_and_find_duplicate<T>(
 /// Implements the read surface of a key-sorted, duplicate-free collection.
 ///
 /// The wrapped slice is sorted by `$key`, so lookup is a binary search. Each
-/// collection keeps its own `new`, since what makes an entry invalid differs;
-/// everything below is identical once that holds.
+/// collection keeps its own `new`, since what makes an entry invalid beyond a
+/// repeated key differs; everything below is identical once that holds.
 ///
 /// The entries live in an [`Arc`](std::sync::Arc) because these are attached
 /// to rows in bulk: one projection reattaches the same labels to every sample
@@ -48,19 +48,63 @@ pub(super) fn sort_and_find_duplicate<T>(
 /// the cached fingerprint sits inside the shared allocation rather than beside
 /// it. A copy per clone would be recomputed by every row.
 ///
+/// `$key` names the string-backed key field of `$item`, whose other field is
+/// a `value` of type `$value`.
+///
 /// `$error` is what `new` rejects with, which also makes the collection a
 /// `TryFrom<Vec<_>>`. Decoding is declared in terms of that conversion, so a
 /// decoded collection is admitted by the constructor a caller uses rather
 /// than by a second copy of the rule.
 macro_rules! sorted_collection {
-    ($collection:ident, $entries:ident, $item:ty, $key:ident, $value:ty, $error:ty) => {
+    (
+        $collection:ident,
+        $entries:ident,
+        $item:ty,
+        $key:ident,
+        $value:ty,
+        $error:ty
+    ) => {
         #[derive(Debug, Default)]
-        pub(super) struct $entries {
+        struct $entries {
             items: Box<[$item]>,
             fingerprint: std::sync::OnceLock<u64>,
         }
 
         impl $collection {
+            /// Orders one entry against a bare key.
+            ///
+            /// Every ordering decision this collection makes goes through
+            /// here: the sort and duplicate check in
+            /// [`sorted_unique`](Self::sorted_unique) and the binary search in
+            /// [`get`](Self::get). A key type that grew its own `Ord` would
+            /// otherwise leave the search looking for entries where the sort
+            /// did not put them.
+            fn compare_key(entry: &$item, $key: &str) -> std::cmp::Ordering {
+                entry.$key.as_str().cmp($key)
+            }
+
+            fn compare_entries(left: &$item, right: &$item) -> std::cmp::Ordering {
+                Self::compare_key(left, right.$key.as_str())
+            }
+
+            /// Puts items in key order, rejecting a repeated key through
+            /// `duplicate`.
+            ///
+            /// Each collection names its own error for that, which is the
+            /// only part of the check that differs.
+            fn sorted_unique(
+                mut items: Vec<$item>,
+                duplicate: impl FnOnce(&$item) -> $error,
+            ) -> Result<Vec<$item>, $error> {
+                match crate::model::collection::sort_and_find_duplicate(
+                    &mut items,
+                    Self::compare_entries,
+                ) {
+                    Some(repeated) => Err(duplicate(repeated)),
+                    None => Ok(items),
+                }
+            }
+
             /// Takes ownership of items already sorted and validated by
             /// [`new`](Self::new).
             fn from_sorted(items: Vec<$item>) -> Self {
@@ -87,7 +131,7 @@ macro_rules! sorted_collection {
             pub fn get(&self, $key: &str) -> Option<&$value> {
                 let items = self.as_slice();
                 items
-                    .binary_search_by(|entry| entry.$key.as_str().cmp($key))
+                    .binary_search_by(|entry| Self::compare_key(entry, $key))
                     .ok()
                     .map(|index| &items[index].value)
             }

@@ -65,7 +65,7 @@ impl From<Retryable> for bool {
 }
 
 /// Operational result of one acquisition attempt.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -88,10 +88,13 @@ impl AcquisitionOutcome {
         Self::Failed { class, retryable }
     }
 
-    pub const fn is_retryable(&self) -> bool {
+    /// Returns whether repeating this acquisition could answer differently.
+    ///
+    /// A success has nothing to retry, so it reports [`Retryable::No`].
+    pub const fn retryable(self) -> Retryable {
         match self {
-            Self::Succeeded { .. } => false,
-            Self::Failed { retryable, .. } => matches!(retryable, Retryable::Yes),
+            Self::Succeeded { .. } => Retryable::No,
+            Self::Failed { retryable, .. } => retryable,
         }
     }
 }
@@ -99,6 +102,7 @@ impl AcquisitionOutcome {
 /// Operational status emitted separately from device observations.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct AcquisitionStatus {
     pub endpoint: Arc<EndpointContext>,

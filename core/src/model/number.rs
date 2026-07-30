@@ -27,7 +27,7 @@ use std::hash::Hasher;
 /// implementing `Eq` and `Hash`.
 ///
 /// An unmeasurable quantity is expressed as absence, never a sentinel float.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "f64", try_from = "f64"))]
 pub struct Finite(f64);
@@ -42,11 +42,7 @@ impl Finite {
     /// Returns [`NonFiniteError`] if the value is `NaN` or an infinity.
     pub const fn new(value: f64) -> Result<Self, NonFiniteError> {
         if value.is_finite() {
-            // Collapse negative zero so that equality and hashing agree.
-            if value == 0.0 {
-                return Ok(Self::ZERO);
-            }
-            return Ok(Self(value));
+            return Ok(Self::normalized(value));
         }
         if value.is_nan() {
             Err(NonFiniteError::NaN)
@@ -57,8 +53,52 @@ impl Finite {
         }
     }
 
+    /// The one way a computed finite value becomes a `Finite`.
+    ///
+    /// The sole exception is [`ZERO`](Self::ZERO), the literal this returns
+    /// for zero and therefore already in normal form; routing it back through
+    /// here would recurse in const evaluation.
+    ///
+    /// Collapsing negative zero here is what makes it the same value as
+    /// positive zero. Everything below reads the bits, so an uncollapsed
+    /// `-0.0` would compare, order, and hash as a distinct value, and a
+    /// device reporting one and then the other would look changed.
+    const fn normalized(value: f64) -> Self {
+        if value == 0.0 {
+            return Self::ZERO;
+        }
+        Self(value)
+    }
+
     pub const fn get(self) -> f64 {
         self.0
+    }
+
+    /// The single key equality, ordering, and hashing all read.
+    ///
+    /// This is the IEEE 754 `totalOrder` key that [`f64::total_cmp`]
+    /// compares: a negative value keeps its negative key so that it sorts
+    /// below every non-negative one, and its remaining bits are inverted so
+    /// that a larger magnitude sorts lower.
+    ///
+    /// Reading one key is what makes the three agree. Hashing the bits
+    /// separately would agree only for as long as the two kept calling the
+    /// same values equal, which nothing states or checks.
+    const fn total_order_key(self) -> i64 {
+        let bits = i64::from_ne_bytes(self.0.to_ne_bytes());
+        if bits < 0 {
+            bits ^ i64::MAX
+        } else {
+            bits
+        }
+    }
+}
+
+/// Defined as the ordering rather than derived, so that equality cannot
+/// disagree with it.
+impl PartialEq for Finite {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
     }
 }
 
@@ -72,14 +112,13 @@ impl PartialOrd for Finite {
 
 impl Ord for Finite {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Total: both operands are finite and negative zero is normalized.
-        self.0.partial_cmp(&other.0).unwrap_or(Ordering::Equal)
+        self.total_order_key().cmp(&other.total_order_key())
     }
 }
 
 impl Hash for Finite {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.to_bits().hash(state);
+        self.total_order_key().hash(state);
     }
 }
 
@@ -105,18 +144,18 @@ impl From<Finite> for f64 {
 
 impl From<i32> for Finite {
     fn from(value: i32) -> Self {
-        Self(f64::from(value))
+        Self::normalized(f64::from(value))
     }
 }
 
 impl From<u32> for Finite {
     fn from(value: u32) -> Self {
-        Self(f64::from(value))
+        Self::normalized(f64::from(value))
     }
 }
 
+/// The three ways an `f64` can fail to be finite, which is all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum NonFiniteError {
     NaN,
     PositiveInfinity,
@@ -157,6 +196,62 @@ mod tests {
         let negative = Finite::new(-0.0).unwrap();
         assert_eq!(negative, Finite::ZERO);
         assert!(negative.get().is_sign_positive());
+    }
+
+    #[test]
+    fn equality_ordering_and_hashing_agree() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hash as _;
+        use std::hash::Hasher as _;
+
+        let digest = |value: Finite| {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        for pair in [
+            (Finite::new(-0.0).unwrap(), Finite::from(0_i32)),
+            (Finite::from(0_u32), Finite::ZERO),
+            (Finite::from(-1_i32), Finite::new(-1.0).unwrap()),
+        ] {
+            assert_eq!(pair.0, pair.1);
+            assert!(pair.0.cmp(&pair.1).is_eq());
+            assert_eq!(digest(pair.0), digest(pair.1));
+        }
+    }
+
+    /// The sort key must order values exactly as the standard library does.
+    ///
+    /// It is written out here rather than delegated to `total_cmp` so that
+    /// hashing can read the same key; this pins the two together.
+    #[test]
+    fn the_sort_key_orders_as_total_cmp_does() {
+        let values = [
+            f64::MIN,
+            -1e300,
+            -1.5,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            0.0,
+            f64::MIN_POSITIVE,
+            1.0,
+            1.5,
+            1e300,
+            f64::MAX,
+        ];
+
+        for left in values {
+            for right in values {
+                let left = Finite::new(left).unwrap();
+                let right = Finite::new(right).unwrap();
+                assert_eq!(
+                    left.cmp(&right),
+                    left.get().total_cmp(&right.get()),
+                    "{left} vs {right}"
+                );
+            }
+        }
     }
 
     #[test]

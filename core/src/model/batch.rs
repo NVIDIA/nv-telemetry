@@ -250,6 +250,7 @@ mod readings_table {
     }
 
     #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Row {
         source_key: SourceKey,
         signal: usize,
@@ -260,6 +261,7 @@ mod readings_table {
     }
 
     #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Table {
         signals: Vec<Arc<SignalDescriptor>>,
         rows: Vec<Row>,
@@ -338,8 +340,14 @@ mod readings_table {
 }
 
 /// The unvalidated fields an [`ObservationBatch`] is assembled from.
+///
+/// Every field of the batch must appear here. `deny_unknown_fields` is what
+/// keeps the two in step: a field added there and not here is written by the
+/// derive and then refused on the way back, by name in a named format and by
+/// length in a positional one, rather than decoding as absent.
 #[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BatchParts {
     endpoint: Arc<EndpointContext>,
     origin: Origin,

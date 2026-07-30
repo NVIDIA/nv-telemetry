@@ -13,15 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
+mod common;
 
-use nv_telemetry_core::Attributes;
+use common::endpoint;
+use common::hash_of;
+use common::timestamp;
 use nv_telemetry_core::BatchError;
 use nv_telemetry_core::Coverage;
 use nv_telemetry_core::DurationValue;
-use nv_telemetry_core::EndpointContext;
 use nv_telemetry_core::GraphLimits;
 use nv_telemetry_core::ObservationBatch;
 use nv_telemetry_core::ObservationScope;
@@ -30,6 +29,7 @@ use nv_telemetry_core::ObservedResource;
 use nv_telemetry_core::Origin;
 use nv_telemetry_core::Payload;
 use nv_telemetry_core::Property;
+use nv_telemetry_core::PropertyArray;
 use nv_telemetry_core::PropertyArrayError;
 use nv_telemetry_core::PropertyMap;
 use nv_telemetry_core::PropertyMapError;
@@ -45,15 +45,9 @@ use nv_telemetry_core::SourceKey;
 use nv_telemetry_core::Subject;
 use nv_telemetry_core::SubjectId;
 use nv_telemetry_core::SubjectKind;
-use nv_telemetry_core::Timestamp;
 
-fn timestamp() -> Timestamp {
-    Timestamp::new(1_721_000_000, 0).expect("valid timestamp")
-}
-
-fn endpoint() -> Arc<EndpointContext> {
-    Arc::new(EndpointContext::new("bmc-1", Attributes::empty()))
-}
+/// The Unix second the fixtures are taken to have been observed at.
+const OBSERVED_AT: i64 = 1_721_000_000;
 
 fn subject(kind: impl Into<SubjectKind>, id: impl Into<SubjectId>) -> Subject {
     Subject::new(kind.into(), id.into())
@@ -112,7 +106,7 @@ fn host_resource() -> ObservedResource {
     )
     .with_schema("#ComputerSystem.v1_20_0.ComputerSystem")
     .with_version("W/\"etag-7\"")
-    .with_observed_at(timestamp())
+    .with_observed_at(timestamp(OBSERVED_AT))
 }
 
 fn dpu_resource() -> ObservedResource {
@@ -147,6 +141,61 @@ fn property_maps_preserve_nested_values_and_nulls() {
         Some(PropertyValue::Object(_))
     ));
     assert!(matches!(map.get("network"), Some(PropertyValue::Object(_))));
+
+    // A stored array is read back through the same surface a consumer walking
+    // a device's list-valued property has: the wrapper is a slice everywhere
+    // it can be, and only the depth check stands between a `Vec` and one.
+    let addresses = match nested(&map, "network").get("addresses") {
+        Some(PropertyValue::Array(addresses)) => addresses.clone(),
+        other => panic!("expected an array of addresses, got {other:?}"),
+    };
+    let expected = [
+        PropertyValue::from("192.0.2.10"),
+        PropertyValue::from("2001:db8::10"),
+    ];
+
+    assert_eq!(addresses.len(), 2);
+    assert!(!addresses.is_empty());
+    assert_eq!(addresses.as_slice(), expected);
+    assert_eq!(addresses.as_ref(), expected, "AsRef agrees with as_slice");
+    assert!(addresses
+        .iter()
+        .all(|address| matches!(address, PropertyValue::String(_))));
+
+    let mut borrowed = Vec::new();
+    for address in &addresses {
+        borrowed.push(address.clone());
+    }
+    assert_eq!(borrowed.as_slice(), expected, "a borrowed array iterates");
+
+    // Handing the values back out keeps their order, and a caller's own `Vec`
+    // is admitted by the depth rule the stored array was built under.
+    let recovered = addresses.into_vec();
+    assert_eq!(recovered.as_slice(), expected);
+    assert!(PropertyArray::try_from(Vec::new())
+        .expect("no values to nest")
+        .is_empty());
+    assert_eq!(
+        PropertyValue::from(PropertyArray::try_from(recovered).expect("a shallow array")),
+        PropertyValue::array(Vec::from(expected)).expect("a shallow array"),
+        "the conversion decoding goes through admits what the constructor does"
+    );
+    assert_eq!(
+        PropertyArray::try_from(vec![
+            nested_array(PropertyMap::MAX_DEPTH).expect("arrays at the limit")
+        ]),
+        Err(PropertyArrayError::DepthExceeded {
+            limit: PropertyMap::MAX_DEPTH,
+        })
+    );
+}
+
+/// Reads a nested object out of a map, failing rather than reading as absent.
+fn nested<'map>(map: &'map PropertyMap, name: &str) -> &'map PropertyMap {
+    match map.get(name) {
+        Some(PropertyValue::Object(nested)) => nested,
+        other => panic!("expected a nested object at {name}, got {other:?}"),
+    }
 }
 
 #[test]
@@ -164,19 +213,31 @@ fn property_maps_reject_duplicate_names() {
 
 #[test]
 fn property_nesting_is_bounded() {
-    assert!(nest_arrays(PropertyMap::MAX_DEPTH - 1).is_ok());
-    assert!(nest_arrays(PropertyMap::MAX_DEPTH).is_ok());
+    // A bare value may nest through the whole budget, whichever container
+    // spends it.
+    assert!(nested_array(PropertyMap::MAX_DEPTH).is_ok());
     assert_eq!(
         nested_array(PropertyMap::MAX_DEPTH + 1),
         Err(PropertyArrayError::DepthExceeded {
             limit: PropertyMap::MAX_DEPTH,
         })
     );
-
-    // Objects count against the same budget, one level per map.
-    assert!(nest_objects(PropertyMap::MAX_DEPTH).is_ok());
+    assert!(nested_object(PropertyMap::MAX_DEPTH).is_ok());
     assert!(matches!(
-        nest_objects(PropertyMap::MAX_DEPTH + 1),
+        nested_object(PropertyMap::MAX_DEPTH + 1),
+        Err(PropertyMapError::DepthExceeded { name, .. }) if name.as_str() == "n"
+    ));
+
+    // The map a value is stored in spends one of those levels itself, so what
+    // it accepts is one shallower.
+    assert!(nest_arrays(PropertyMap::MAX_DEPTH - 1).is_ok());
+    assert!(matches!(
+        nest_arrays(PropertyMap::MAX_DEPTH),
+        Err(PropertyMapError::DepthExceeded { name, .. }) if name.as_str() == "oem"
+    ));
+    assert!(nest_objects(PropertyMap::MAX_DEPTH - 1).is_ok());
+    assert!(matches!(
+        nest_objects(PropertyMap::MAX_DEPTH),
         Err(PropertyMapError::DepthExceeded { name, .. }) if name.as_str() == "oem"
     ));
 
@@ -214,14 +275,53 @@ fn nested_array_from(
     Ok(value)
 }
 
+fn nest_objects(depth: u32) -> Result<PropertyMap, PropertyMapError> {
+    let value = nested_object(depth).expect("requested depth is within the property limit");
+    PropertyMap::new(vec![Property::new("oem", value)])
+}
+
 /// Each level is its own map, so every level but the outermost is validated on
 /// the way up and only the last can report the whole chain as too deep.
-fn nest_objects(depth: u32) -> Result<PropertyMap, PropertyMapError> {
+fn nested_object(depth: u32) -> Result<PropertyValue, PropertyMapError> {
     let mut value = PropertyValue::from("leaf");
     for _ in 0..depth {
         value = PropertyValue::Object(PropertyMap::new(vec![Property::new("n", value)])?);
     }
-    PropertyMap::new(vec![Property::new("oem", value)])
+    Ok(value)
+}
+
+/// Every value the constructors accept has to decode with nothing around it.
+///
+/// `PropertyValue` and `PropertyMap` admit a value without reference to what
+/// encloses it, so the decoder has to admit it with nothing enclosing it
+/// either. Checking only the in-a-graph case hides an off-by-one between
+/// construction and decoding behind the levels the graph itself spends.
+#[cfg(feature = "serde")]
+#[test]
+fn the_deepest_accepted_value_survives_a_standalone_round_trip() {
+    for deepest in [
+        nested_array(PropertyMap::MAX_DEPTH).expect("arrays at the limit"),
+        nested_object(PropertyMap::MAX_DEPTH).expect("objects at the limit"),
+    ] {
+        let json = serde_json::to_string(&deepest).expect("encodes as json");
+        assert_eq!(
+            serde_json::from_str::<PropertyValue>(&json).expect("decodes from json"),
+            deepest
+        );
+
+        let mut cbor = Vec::new();
+        ciborium::into_writer(&deepest, &mut cbor).expect("encodes as cbor");
+        assert_eq!(
+            ciborium::from_reader::<PropertyValue, _>(cbor.as_slice()).expect("decodes from cbor"),
+            deepest
+        );
+
+        let messagepack = rmp_serde::to_vec(&deepest).expect("encodes as messagepack");
+        assert_eq!(
+            rmp_serde::from_slice::<PropertyValue>(&messagepack).expect("decodes from messagepack"),
+            deepest
+        );
+    }
 }
 
 /// The depth limit is only worth having if what it admits can be read back.
@@ -234,8 +334,8 @@ fn nest_objects(depth: u32) -> Result<PropertyMap, PropertyMapError> {
 #[test]
 fn the_deepest_accepted_property_survives_every_supported_format() {
     for deepest in [
-        nest_arrays(PropertyMap::MAX_DEPTH).expect("arrays at the limit"),
-        nest_objects(PropertyMap::MAX_DEPTH).expect("objects at the limit"),
+        nest_arrays(PropertyMap::MAX_DEPTH - 1).expect("arrays at the limit"),
+        nest_objects(PropertyMap::MAX_DEPTH - 1).expect("objects at the limit"),
     ] {
         let batch = graph_batch(
             ObservationScope::Subject(host_subject()),
@@ -304,10 +404,19 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
     .is_ok());
 
     // A limit looser than the default is clamped to it, so the model cannot
-    // build a graph that its own deserialization would then reject.
+    // build a graph that its own deserialization would then reject. The
+    // clamped value is what the accessors report, too.
     let beyond_default = GraphLimits::default()
         .with_max_resources(usize::MAX)
         .with_max_relations(usize::MAX);
+    assert_eq!(
+        beyond_default.max_resources(),
+        GraphLimits::DEFAULT.max_resources()
+    );
+    assert_eq!(
+        beyond_default.max_relations(),
+        GraphLimits::DEFAULT.max_relations()
+    );
     assert!(ResourceGraph::with_limits(
         vec![host_resource(), dpu_resource()],
         Vec::new(),
@@ -328,6 +437,19 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
         ),
         Err(ResourceGraphError::TooManyResources { limit, .. })
             if limit == GraphLimits::DEFAULT.max_resources()
+    ));
+
+    // The relation ceiling is clamped the same way. Size is checked before
+    // anything is sorted, so the edges need not be distinct or resolvable.
+    let edge = relation(host_subject(), "contains", dpu_subject());
+    assert!(matches!(
+        ResourceGraph::with_limits(
+            vec![host_resource(), dpu_resource()],
+            vec![edge; GraphLimits::DEFAULT.max_relations() + 1],
+            beyond_default,
+        ),
+        Err(ResourceGraphError::TooManyRelations { limit, .. })
+            if limit == GraphLimits::DEFAULT.max_relations()
     ));
 }
 
@@ -505,16 +627,6 @@ fn identical_graphs_compare_and_hash_equally_regardless_of_insertion_order() {
     assert_eq!(hash_of(&forward), hash_of(&reversed));
 }
 
-fn hash_of(graph: &ResourceGraph) -> u64 {
-    use std::hash::DefaultHasher;
-    use std::hash::Hash;
-    use std::hash::Hasher;
-
-    let mut hasher = DefaultHasher::new();
-    graph.hash(&mut hasher);
-    hasher.finish()
-}
-
 #[test]
 fn completeness_records_whether_a_missing_property_is_meaningful() {
     let complete = host_resource();
@@ -592,7 +704,7 @@ fn graph_batch(
     ObservationBatch::new(
         endpoint(),
         Origin::new("redfish".into(), "resource-graph".into()),
-        ObservationWindow::point(timestamp()),
+        ObservationWindow::point(timestamp(OBSERVED_AT)),
         Coverage::new(scope, nv_telemetry_core::Completeness::Complete),
         Payload::Resources(graph),
     )
@@ -639,15 +751,13 @@ fn subject_scope_rejects_resources_outside_the_rooted_subtree() {
     ));
 }
 
-/// Rejection has to cost what the traversal costs, not a scan per resource.
+/// Rejection has to name the resource that fell outside the scope, however
+/// large the graph is.
 ///
-/// `ObservationBatch::new` runs this on the way in from `Deserialize`, so an
-/// endpoint chooses how often it happens and picks the graph it happens on.
-/// Naming the unreachable resource by searching the reachable set for a
-/// resource it omits is quadratic, which at the default limit of 100,000
-/// resources takes tens of seconds per rejected batch.
+/// What that costs is gated separately by the `reject_scope` benchmark, whose
+/// instruction counts do not depend on machine load.
 #[test]
-fn rejecting_a_large_graph_costs_what_the_traversal_costs() {
+fn rejecting_a_large_graph_names_the_unreachable_resource() {
     const RESOURCES: usize = 20_000;
 
     let root = subject("chassis", "root");
@@ -671,23 +781,11 @@ fn rejecting_a_large_graph_costs_what_the_traversal_costs() {
     }
     let graph = ResourceGraph::new(resources, relations).expect("a valid graph");
 
-    let started = Instant::now();
-    let rejected = graph_batch(ObservationScope::Subject(root), graph);
-    let elapsed = started.elapsed();
-
     assert!(matches!(
-        rejected,
+        graph_batch(ObservationScope::Subject(root), graph),
         Err(BatchError::UnreachableFromScopeRoot { subject, .. })
             if subject == node(RESOURCES - 1)
     ));
-    // Linear rejection lands in milliseconds even unoptimized, and the
-    // quadratic form takes minutes, so the bound only has to separate those
-    // two rather than measure anything.
-    assert!(
-        elapsed < Duration::from_secs(30),
-        "rejecting {RESOURCES} resources took {elapsed:?}, which suggests the \
-         scan-per-resource form is back"
-    );
 }
 
 /// A link the collector cannot yet name is a property, not an edge.
@@ -1007,6 +1105,55 @@ fn standalone_property_deserialization_enforces_the_depth_budget() {
     );
 }
 
+/// A `value` read before its `type` decodes as the same value.
+///
+/// The two orders take different paths: a tag already read decodes the payload
+/// straight into its variant, while a tag still to come leaves the payload
+/// buffered and replayed. The container tags are covered by the content-first
+/// depth tests and `bytes` and `string` by the hex tests, which leaves the
+/// remaining leaves to pin here. Each needs both paths held to the same value,
+/// or one of them can drift into reading the same bytes differently.
+#[cfg(feature = "serde")]
+#[test]
+fn content_first_json_decodes_each_leaf_tag_as_its_tag_first_spelling() {
+    let reference = ResourceReference::new(source_key("/redfish/v1/Managers/BMC"));
+    for value in [
+        PropertyValue::Null,
+        PropertyValue::Bool(true),
+        PropertyValue::I64(-7),
+        PropertyValue::U64(7),
+        PropertyValue::f64(1.5).expect("a finite value"),
+        PropertyValue::Timestamp(timestamp(OBSERVED_AT)),
+        PropertyValue::Duration(DurationValue::new(-3, 500).expect("a valid duration")),
+        PropertyValue::Reference(reference.clone()),
+        PropertyValue::Reference(reference.clone().with_subject(subject("manager", "bmc"))),
+    ] {
+        // The payload comes from the encoder rather than being spelled out, so
+        // the two orders cannot be compared against a stale hand-written shape.
+        let encoded = serde_json::to_value(&value).expect("serialize property value");
+        let tag = encoded["type"].as_str().expect("an encoded tag");
+        // A unit variant carries no content, and `null` is what a format
+        // writes for the payload it does have.
+        let content = encoded
+            .get("value")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let content = serde_json::to_string(&content).expect("serialize the content");
+
+        for spelling in [
+            format!(r#"{{"type":"{tag}","value":{content}}}"#),
+            format!(r#"{{"value":{content},"type":"{tag}"}}"#),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<PropertyValue>(&spelling)
+                    .unwrap_or_else(|error| panic!("{spelling} was rejected: {error}")),
+                value,
+                "{spelling}"
+            );
+        }
+    }
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn content_first_json_obeys_the_same_property_depth_budget() {
@@ -1167,4 +1314,21 @@ fn serde_rejects_invalid_resource_graph_and_nested_property_values() {
 
     let non_finite = serde_json::json!({"type": "f64", "value": null});
     assert!(serde_json::from_value::<PropertyValue>(non_finite).is_err());
+}
+
+/// A property value is as strict about its fields as every other record.
+#[cfg(feature = "serde")]
+#[test]
+fn serde_rejects_an_undeclared_field_beside_a_property_value() {
+    for stray in [
+        serde_json::json!({"type": "i64", "value": 1, "unit": "Cel"}),
+        serde_json::json!({"unit": "Cel", "type": "i64", "value": 1}),
+    ] {
+        let error = serde_json::from_value::<PropertyValue>(stray)
+            .expect_err("an undeclared field must be rejected");
+        assert!(
+            error.to_string().contains("unknown field `unit`"),
+            "the field was accepted and discarded instead: {error}"
+        );
+    }
 }

@@ -18,15 +18,19 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::name::name_newtype;
+use super::value::value_conversions;
 use super::Attributes;
 use super::Finite;
-use super::Name;
-use super::NonFiniteError;
 use super::SourceKey;
 use super::Subject;
 use super::Timestamp;
 
 /// Numeric reading value without forcing all integer data through `f64`.
+///
+/// The variant is part of the value's identity: `I64(1)`, `U64(1)`, and
+/// `F64(1.0)` are unequal to each other and hash differently. A producer must
+/// therefore choose one variant per signal and keep it, or a consumer diffing
+/// successive observations reads a variant change as a value change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -37,45 +41,7 @@ pub enum NumericValue {
     F64(Finite),
 }
 
-impl NumericValue {
-    /// Builds a floating point reading, rejecting non-finite input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NonFiniteError`] if the value is `NaN` or an infinity.
-    pub const fn f64(value: f64) -> Result<Self, NonFiniteError> {
-        match Finite::new(value) {
-            Ok(value) => Ok(Self::F64(value)),
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl From<i64> for NumericValue {
-    fn from(value: i64) -> Self {
-        Self::I64(value)
-    }
-}
-
-impl From<u64> for NumericValue {
-    fn from(value: u64) -> Self {
-        Self::U64(value)
-    }
-}
-
-impl From<Finite> for NumericValue {
-    fn from(value: Finite) -> Self {
-        Self::F64(value)
-    }
-}
-
-impl TryFrom<f64> for NumericValue {
-    type Error = NonFiniteError;
-
-    fn try_from(value: f64) -> Result<Self, Self::Error> {
-        Self::f64(value)
-    }
-}
+value_conversions!(numeric NumericValue);
 
 /// How a reading's value evolves over time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -87,50 +53,57 @@ pub enum ReadingKind {
     Counter,
 }
 
-/// Source-reported unit vocabulary.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Unit(Name);
+name_newtype!(
+    /// Source-reported unit vocabulary.
+    Unit
+);
 
-name_newtype!(Unit);
+name_newtype!(
+    /// What is being measured, such as `temperature`.
+    Metric
+);
 
-/// What is being measured, such as `temperature`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Metric(Name);
+name_newtype!(
+    /// Which occurrence of a repeated observation this is, such as `CPU0Temp`.
+    ///
+    /// It distinguishes readings of one [`Metric`] and states of one
+    /// [`StateName`](super::StateName) on the same subject; it never names
+    /// what is being observed.
+    Instance
+);
 
-name_newtype!(Metric);
+name_newtype!(
+    /// The source's own word for whether a subject is operating, such as
+    /// `enabled` or `absent`.
+    ///
+    /// Deliberately not ordered, for the reason given on
+    /// [`Severity`](super::Severity): the vocabulary is the source's, so a
+    /// derived comparison would rank these alphabetically while reading as
+    /// though it ranked availability.
+    OperatingState,
+    unordered
+);
 
-/// Which occurrence of a metric this is, such as `CPU0Temp`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Instance(Name);
-
-name_newtype!(Instance);
-
-/// The source's own word for whether a subject is operating, such as
-/// `enabled` or `absent`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct OperatingState(Name);
-
-name_newtype!(OperatingState);
-
-/// The source's own judgement of a subject's condition, such as `ok`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Health(Name);
-
-name_newtype!(Health);
+name_newtype!(
+    /// The source's own judgement of a subject's condition, such as `ok`.
+    ///
+    /// Deliberately not ordered, for the reason given on
+    /// [`Severity`](super::Severity). Redfish reports exactly `ok`,
+    /// `warning`, and `critical`, so a derived comparison would put
+    /// `critical` below `ok` below `warning` while reading as though it
+    /// compared condition. Consumers needing a ranking map these onto their
+    /// own scale.
+    Health,
+    unordered
+);
 
 /// State and health values reported by the device itself.
+///
+/// Both halves are optional and independent: a source may report either, both,
+/// or neither, and there is no ordering between them to validate.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct ReportedState {
     pub state: Option<OperatingState>,
@@ -141,6 +114,11 @@ impl ReportedState {
     pub fn new(state: Option<OperatingState>, health: Option<Health>) -> Self {
         Self { state, health }
     }
+
+    /// Returns whether the source reported neither half.
+    pub const fn is_empty(&self) -> bool {
+        self.state.is_none() && self.health.is_none()
+    }
 }
 
 /// An optional lower and upper limit on a reading's value.
@@ -150,13 +128,39 @@ impl ReportedState {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "ValueRangeParts"))]
-#[non_exhaustive]
 pub struct ValueRange {
     lower: Option<Finite>,
     upper: Option<Finite>,
 }
 
 impl ValueRange {
+    /// Builds a range from two independently optional edges.
+    ///
+    /// Not public: the two arguments have the same type, so `new(Some(x),
+    /// None)` and `new(None, Some(x))` both succeed and mean opposite things.
+    /// [`between`](Self::between), [`at_least`](Self::at_least),
+    /// [`at_most`](Self::at_most), and [`empty`](Self::empty) cover every
+    /// combination and each name which edge it is given. This exists only for
+    /// the decoding path below, where the edges arrive as named fields, and is
+    /// compiled only with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RangeOrderError`] when both edges are present and `lower`
+    /// exceeds `upper`.
+    #[cfg(feature = "serde")]
+    pub(crate) fn new(
+        lower: Option<Finite>,
+        upper: Option<Finite>,
+    ) -> Result<Self, RangeOrderError> {
+        match (lower, upper) {
+            (Some(lower), Some(upper)) => Self::between(lower, upper),
+            (Some(lower), None) => Ok(Self::at_least(lower)),
+            (None, Some(upper)) => Ok(Self::at_most(upper)),
+            (None, None) => Ok(Self::empty()),
+        }
+    }
+
     pub const fn empty() -> Self {
         Self {
             lower: None,
@@ -206,8 +210,10 @@ impl ValueRange {
     }
 }
 
+/// The unvalidated edge pair a [`ValueRange`] is built from.
 #[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ValueRangeParts {
     lower: Option<Finite>,
     upper: Option<Finite>,
@@ -218,12 +224,7 @@ impl TryFrom<ValueRangeParts> for ValueRange {
     type Error = RangeOrderError;
 
     fn try_from(value: ValueRangeParts) -> Result<Self, Self::Error> {
-        match (value.lower, value.upper) {
-            (Some(lower), Some(upper)) => Self::between(lower, upper),
-            (Some(lower), None) => Ok(Self::at_least(lower)),
-            (None, Some(upper)) => Ok(Self::at_most(upper)),
-            (None, None) => Ok(Self::empty()),
-        }
+        Self::new(value.lower, value.upper)
     }
 }
 
@@ -253,9 +254,9 @@ impl Error for RangeOrderError {}
 /// `revision` counts how many times it has changed. Neither advances on a
 /// refresh reporting identical content; see [`matches_definition`].
 ///
-/// A signal is a [`Metric`] at an [`Instance`], and those are separate types
-/// so that the pair cannot be given in the wrong order. Either accepts a
-/// string, so the guard costs an ordinary call site nothing:
+/// A signal is a [`Metric`] at an [`Instance`], and [`new`](Self::new) takes
+/// each concretely so that the pair cannot be given in the wrong order. Each
+/// is built from a string in the same expression that passes it:
 ///
 /// ```
 /// use nv_telemetry_core::{
@@ -274,8 +275,8 @@ impl Error for RangeOrderError {}
 /// assert_eq!(descriptor.metric.as_str(), "temperature");
 /// ```
 ///
-/// Once either side is held in a variable, swapping the two stops compiling
-/// rather than producing a signal that joins to the wrong readings:
+/// Swapping the two stops compiling, inline or through variables, rather than
+/// producing a signal that joins to the wrong readings:
 ///
 /// ```compile_fail
 /// use nv_telemetry_core::{
@@ -298,6 +299,7 @@ impl Error for RangeOrderError {}
 /// [`matches_definition`]: SignalDescriptor::matches_definition
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct SignalDescriptor {
     pub subject: Subject,
@@ -385,6 +387,7 @@ impl SignalDescriptor {
 /// One numeric observation associated with a shared signal descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct Reading {
     pub source_key: SourceKey,
@@ -444,5 +447,39 @@ impl Reading {
     pub fn with_reported_state(mut self, reported_state: ReportedState) -> Self {
         self.reported_state = Some(reported_state);
         self
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::Finite;
+    use super::ValueRange;
+
+    /// The decoding constructor must agree with the named public ones.
+    ///
+    /// It is the only caller that supplies the edges as a same-typed pair, so
+    /// nothing outside this module can get them the wrong way round.
+    #[test]
+    fn the_optional_edge_pair_agrees_with_the_named_constructors() {
+        let lower = Finite::new(-5.0).expect("finite");
+        let upper = Finite::new(100.0).expect("finite");
+
+        assert_eq!(
+            ValueRange::new(Some(lower), Some(upper)).expect("ordered edges"),
+            ValueRange::between(lower, upper).expect("ordered edges")
+        );
+        assert_eq!(
+            ValueRange::new(Some(lower), None).expect("one edge"),
+            ValueRange::at_least(lower)
+        );
+        assert_eq!(
+            ValueRange::new(None, Some(upper)).expect("one edge"),
+            ValueRange::at_most(upper)
+        );
+        assert_eq!(
+            ValueRange::new(None, None).expect("no edges"),
+            ValueRange::empty()
+        );
+        assert!(ValueRange::new(Some(upper), Some(lower)).is_err());
     }
 }

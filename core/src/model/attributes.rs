@@ -17,20 +17,16 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use super::collection::sort_and_find_duplicate;
 use super::collection::sorted_collection;
 use super::name::name_newtype;
+use super::value::value_conversions;
 use super::Finite;
 use super::Name;
-use super::NonFiniteError;
 
-/// An attribute key, distinct from its value at the type level.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct AttrKey(Name);
-
-name_newtype!(AttrKey);
+name_newtype!(
+    /// An attribute key, distinct from its value at the type level.
+    AttrKey
+);
 
 /// A typed scalar attribute value.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -45,73 +41,12 @@ pub enum AttrValue {
     F64(Finite),
 }
 
-impl AttrValue {
-    /// Builds a floating point attribute, rejecting non-finite input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NonFiniteError`] if the value is `NaN` or an infinity.
-    pub const fn f64(value: f64) -> Result<Self, NonFiniteError> {
-        match Finite::new(value) {
-            Ok(value) => Ok(Self::F64(value)),
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl From<Name> for AttrValue {
-    fn from(value: Name) -> Self {
-        Self::String(value)
-    }
-}
-
-impl From<String> for AttrValue {
-    fn from(value: String) -> Self {
-        Self::String(value.into())
-    }
-}
-
-impl From<&str> for AttrValue {
-    fn from(value: &str) -> Self {
-        Self::String(value.into())
-    }
-}
-
-impl From<bool> for AttrValue {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
-
-impl From<i64> for AttrValue {
-    fn from(value: i64) -> Self {
-        Self::I64(value)
-    }
-}
-
-impl From<u64> for AttrValue {
-    fn from(value: u64) -> Self {
-        Self::U64(value)
-    }
-}
-
-impl From<Finite> for AttrValue {
-    fn from(value: Finite) -> Self {
-        Self::F64(value)
-    }
-}
-
-impl TryFrom<f64> for AttrValue {
-    type Error = NonFiniteError;
-
-    fn try_from(value: f64) -> Result<Self, Self::Error> {
-        Self::f64(value)
-    }
-}
+value_conversions!(scalar AttrValue);
 
 /// One key-value attribute.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct Attribute {
     pub key: AttrKey,
@@ -139,13 +74,11 @@ impl Attributes {
     /// # Errors
     ///
     /// Returns [`AttributesError::DuplicateKey`] if two attributes share a key.
-    pub fn new(mut attributes: Vec<Attribute>) -> Result<Self, AttributesError> {
-        if let Some(duplicate) =
-            sort_and_find_duplicate(&mut attributes, |left, right| left.key.cmp(&right.key))
-        {
-            return Err(AttributesError::DuplicateKey(duplicate.key.clone()));
-        }
-        Ok(Self::from_sorted(attributes))
+    pub fn new(attributes: Vec<Attribute>) -> Result<Self, AttributesError> {
+        Self::sorted_unique(attributes, |duplicate| {
+            AttributesError::DuplicateKey(duplicate.key.clone())
+        })
+        .map(Self::from_sorted)
     }
 }
 

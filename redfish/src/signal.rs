@@ -36,38 +36,29 @@ impl SignalKey {
     pub(crate) const fn from_canonical_source(value: SourceKey) -> Self {
         Self(value)
     }
-
-    fn from_owned(value: String) -> Self {
-        let replacement = {
-            let canonical = canonical(&value);
-            (canonical.as_ref() != value).then(|| canonical.into_owned())
-        };
-        Self(SourceKey::from(replacement.unwrap_or(value)))
-    }
 }
 
 impl From<SourceKey> for SignalKey {
+    /// Reuses the key's allocation when it is already canonical, since a
+    /// [`SourceKey`] owns a shared buffer this can move rather than copy.
     fn from(value: SourceKey) -> Self {
         let replacement = {
             let canonical = canonical(value.as_str());
-            (canonical.as_ref() != value.as_str()).then(|| canonical.into_owned())
+            (canonical.as_ref() != value.as_str()).then(|| SourceKey::from(canonical.as_ref()))
         };
-        replacement.map_or_else(|| Self(value), |value| Self(SourceKey::from(value)))
+        replacement.map_or_else(|| Self(value), Self)
     }
 }
 
 impl From<String> for SignalKey {
     fn from(value: String) -> Self {
-        Self::from_owned(value)
+        Self(SourceKey::from(canonical(&value).as_ref()))
     }
 }
 
 impl From<&str> for SignalKey {
     fn from(value: &str) -> Self {
-        Self(match canonical(value) {
-            std::borrow::Cow::Borrowed(value) => SourceKey::from(value),
-            std::borrow::Cow::Owned(value) => SourceKey::from(value),
-        })
+        Self(SourceKey::from(canonical(value).as_ref()))
     }
 }
 
@@ -197,17 +188,26 @@ impl SignalSample {
 
 /// Outcome of installing a metadata projection into a [`SignalCatalog`].
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum SignalUpdate {
     /// The signal was not previously known.
     Added(Arc<SignalDescriptor>),
     /// The definition changed and was replaced at a new revision.
+    #[non_exhaustive]
     Revised {
         descriptor: Arc<SignalDescriptor>,
         previous: Arc<SignalDescriptor>,
     },
     /// The refresh reported the same definition, so the existing one is kept.
     Unchanged(Arc<SignalDescriptor>),
-    /// Metadata older than the installed confirmation was ignored.
+    /// Metadata was ignored in favour of the installed definition.
+    ///
+    /// The update either predates the installed confirmation, or shares its
+    /// confirmation time while disagreeing about the definition. Device clocks
+    /// commonly report whole seconds, so the tie is not a rare case: two
+    /// definitions confirmed in the same second cannot be ordered, and the
+    /// installed one keeps its place.
+    #[non_exhaustive]
     Stale {
         descriptor: Arc<SignalDescriptor>,
         rejected: SignalDescriptor,

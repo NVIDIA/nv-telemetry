@@ -21,22 +21,30 @@ use super::Name;
 use super::Subject;
 use super::Timestamp;
 
-/// Source-reported log severity.
-///
-/// Deliberately not ordered: the value is whatever vocabulary the source uses,
-/// so a derived comparison would sort `critical` below `warning` while reading
-/// as though it compared urgency. Consumers needing a ranking map these onto
-/// their own scale.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Severity(Name);
-
-name_newtype!(Severity);
+name_newtype!(
+    /// Source-reported log severity.
+    ///
+    /// Deliberately not ordered: the value is whatever vocabulary the source
+    /// uses, so a derived comparison would sort `critical` below `warning`
+    /// while reading as though it compared urgency. Consumers needing a
+    /// ranking map these onto their own scale.
+    Severity,
+    unordered
+);
 
 /// One source log record.
+///
+/// [`new`](Self::new) takes the severity concretely, so it cannot trade places
+/// with the message, which accepts a string of its own:
+///
+/// ```compile_fail
+/// use nv_telemetry_core::LogRecord;
+///
+/// let record = LogRecord::new("fan degraded", "warning");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct LogRecord {
     pub record_id: Option<Name>,
@@ -48,11 +56,11 @@ pub struct LogRecord {
 }
 
 impl LogRecord {
-    pub fn new(severity: impl Into<Severity>, message: impl Into<Arc<str>>) -> Self {
+    pub fn new(severity: Severity, message: impl Into<Arc<str>>) -> Self {
         Self {
             record_id: None,
             subject: None,
-            severity: severity.into(),
+            severity,
             message: message.into(),
             observed_at: None,
             attributes: Attributes::empty(),

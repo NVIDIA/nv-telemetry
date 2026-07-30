@@ -17,12 +17,11 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use super::collection::sort_and_find_duplicate;
 use super::collection::sorted_collection;
+use super::value::value_conversions;
 use super::DurationValue;
 use super::Finite;
 use super::Name;
-use super::NonFiniteError;
 use super::SourceKey;
 use super::Subject;
 use super::Timestamp;
@@ -30,6 +29,7 @@ use super::Timestamp;
 /// A source reference that may or may not resolve to a canonical subject.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct ResourceReference {
     pub source_key: SourceKey,
@@ -58,9 +58,10 @@ impl ResourceReference {
 /// [`ResourceCompleteness::Complete`] resource means the device does not
 /// implement the property; absence in a partial resource means nothing.
 ///
-/// The encoding is adjacently tagged so every variant has the same shape, so
-/// decoding needs a self-describing format. JSON, CBOR and `MessagePack`
-/// qualify; bincode can write this type but not read it back.
+/// The encoding is adjacently tagged so every variant has the same shape.
+/// Decoding accepts that pair however a format presents it: as a two-entry map
+/// keyed by `type` and `value`, in either order, as JSON and CBOR write it, or
+/// as a two-element sequence, as a format that writes structs compactly does.
 ///
 /// [`ResourceCompleteness::Complete`]: super::ResourceCompleteness::Complete
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -76,7 +77,7 @@ pub enum PropertyValue {
     I64(i64),
     U64(u64),
     F64(Finite),
-    String(Arc<str>),
+    String(Name),
     #[cfg_attr(feature = "serde", serde(with = "hex_bytes"))]
     Bytes(Arc<[u8]>),
     Timestamp(Timestamp),
@@ -86,19 +87,9 @@ pub enum PropertyValue {
     Object(PropertyMap),
 }
 
-impl PropertyValue {
-    /// Builds a floating point property, rejecting non-finite input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NonFiniteError`] if the value is `NaN` or an infinity.
-    pub const fn f64(value: f64) -> Result<Self, NonFiniteError> {
-        match Finite::new(value) {
-            Ok(value) => Ok(Self::F64(value)),
-            Err(error) => Err(error),
-        }
-    }
+value_conversions!(scalar PropertyValue);
 
+impl PropertyValue {
     /// Builds an array property, rejecting excessive nesting.
     ///
     /// # Errors
@@ -243,44 +234,6 @@ impl<'de> serde::Deserialize<'de> for PropertyValue {
     }
 }
 
-/// Internal adjacent-tag representation, kept separate so recursive fields
-/// re-enter the depth budget through [`PropertyValue`].
-#[cfg(feature = "serde")]
-enum PropertyValueRepr {
-    Null,
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    F64(Finite),
-    String(Arc<str>),
-    Bytes(Arc<[u8]>),
-    Timestamp(Timestamp),
-    Duration(DurationValue),
-    Reference(ResourceReference),
-    Array(PropertyArray),
-    Object(PropertyMap),
-}
-
-#[cfg(feature = "serde")]
-impl From<PropertyValueRepr> for PropertyValue {
-    fn from(value: PropertyValueRepr) -> Self {
-        match value {
-            PropertyValueRepr::Null => Self::Null,
-            PropertyValueRepr::Bool(value) => Self::Bool(value),
-            PropertyValueRepr::I64(value) => Self::I64(value),
-            PropertyValueRepr::U64(value) => Self::U64(value),
-            PropertyValueRepr::F64(value) => Self::F64(value),
-            PropertyValueRepr::String(value) => Self::String(value),
-            PropertyValueRepr::Bytes(value) => Self::Bytes(value),
-            PropertyValueRepr::Timestamp(value) => Self::Timestamp(value),
-            PropertyValueRepr::Duration(value) => Self::Duration(value),
-            PropertyValueRepr::Reference(value) => Self::Reference(value),
-            PropertyValueRepr::Array(value) => Self::Array(value),
-            PropertyValueRepr::Object(value) => Self::Object(value),
-        }
-    }
-}
-
 #[cfg(feature = "serde")]
 mod property_value_depth {
     use std::cell::Cell;
@@ -292,7 +245,6 @@ mod property_value_depth {
     use super::PropertyArray;
     use super::PropertyMap;
     use super::PropertyValue;
-    use super::PropertyValueRepr;
 
     // When an adjacent tag follows its content, Serde has to buffer the
     // untyped content before it can select a variant. One recursive property
@@ -324,7 +276,12 @@ mod property_value_depth {
 
             depth.set(current + 1);
             let _restore = RestoreDepth { depth, current };
-            deserialize_repr(deserializer).map(PropertyValue::from)
+            let human_readable = deserializer.is_human_readable();
+            deserializer.deserialize_struct(
+                "PropertyValue",
+                &["type", "value"],
+                PropertyValueVisitor { human_readable },
+            )
         })
     }
 
@@ -339,20 +296,115 @@ mod property_value_depth {
         }
     }
 
-    #[derive(Clone, Copy)]
-    enum PropertyTag {
-        Null,
-        Bool,
-        I64,
-        U64,
-        F64,
-        String,
-        Bytes,
-        Timestamp,
-        Duration,
-        Reference,
-        Array,
-        Object,
+    /// Declares each wire tag with the variant it names and the type its
+    /// payload decodes as.
+    ///
+    /// Every table the decoder needs is generated from this one: the tag type,
+    /// the names an unrecognised tag is reported against, and the three places
+    /// a payload is read from. A variant added to [`PropertyValue`] without an
+    /// entry here fails to compile in `PropertyTag::of`, which is compiled in
+    /// ordinary builds and not only test ones for exactly that reason; the
+    /// tests below use it to tie the table to the tags the encoder derives.
+    macro_rules! property_tags {
+        ($($tag:literal => $variant:ident: $payload:ty => $build:expr),+ $(,)?) => {
+            #[derive(Clone, Copy)]
+            enum PropertyTag {
+                $($variant,)+
+            }
+
+            impl PropertyTag {
+                const NAMES: &'static [&'static str] = &[$($tag,)+];
+
+                fn parse<E>(value: &str) -> Result<Self, E>
+                where
+                    E: serde::de::Error,
+                {
+                    match value {
+                        $($tag => Ok(Self::$variant),)+
+                        _ => Err(E::unknown_variant(value, Self::NAMES)),
+                    }
+                }
+
+                /// Names the tag a value encodes under.
+                ///
+                /// The match is what makes a variant added to
+                /// `PropertyValue` without a table entry a compile error, so
+                /// it is compiled even though only the tests call it. Behind
+                /// `cfg(test)` the check would not run for `cargo build` or
+                /// `cargo publish`, leaving both to accept an encoder that
+                /// emits a tag its own decoder rejects.
+                #[allow(dead_code)]
+                fn of(value: &PropertyValue) -> Self {
+                    match value {
+                        $(PropertyValue::$variant { .. } => Self::$variant,)+
+                    }
+                }
+
+                #[cfg(test)]
+                const fn name(self) -> &'static str {
+                    match self {
+                        $(Self::$variant => $tag,)+
+                    }
+                }
+            }
+
+            fn deserialize_tagged_value<'de, A>(
+                tag: PropertyTag,
+                map: &mut A,
+            ) -> Result<PropertyValue, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                match tag {
+                    $(PropertyTag::$variant => map.next_value::<$payload>().map($build),)+
+                }
+            }
+
+            fn deserialize_tagged_element<'de, A>(
+                tag: PropertyTag,
+                sequence: &mut A,
+            ) -> Result<Option<PropertyValue>, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                match tag {
+                    $(PropertyTag::$variant => Ok(
+                        sequence.next_element::<$payload>()?.map($build)
+                    ),)+
+                }
+            }
+
+            fn deserialize_buffered<E>(
+                tag: PropertyTag,
+                buffered: BufferedValue,
+                human_readable: bool,
+            ) -> Result<PropertyValue, E>
+            where
+                E: serde::de::Error,
+            {
+                let deserializer = BufferedDeserializer::<E>::new(buffered, human_readable);
+                match tag {
+                    $(PropertyTag::$variant => {
+                        <$payload>::deserialize(deserializer).map($build)
+                    })+
+                }
+            }
+        };
+    }
+
+    property_tags! {
+        "null" => Null: () => |()| PropertyValue::Null,
+        "bool" => Bool: bool => PropertyValue::Bool,
+        "i64" => I64: i64 => PropertyValue::I64,
+        "u64" => U64: u64 => PropertyValue::U64,
+        "f64" => F64: super::Finite => PropertyValue::F64,
+        "string" => String: super::Name => PropertyValue::String,
+        "bytes" => Bytes: BytesValue => |value: BytesValue| PropertyValue::Bytes(value.0),
+        "timestamp" => Timestamp: super::Timestamp => PropertyValue::Timestamp,
+        "duration" => Duration: super::DurationValue => PropertyValue::Duration,
+        "reference" => Reference: super::ResourceReference => PropertyValue::Reference,
+        "array" => Array: PropertyArray => PropertyValue::Array,
+        "object" => Object: PropertyMap => PropertyValue::Object,
     }
 
     impl<'de> serde::Deserialize<'de> for PropertyTag {
@@ -373,37 +425,7 @@ mod property_value_depth {
                 where
                     E: serde::de::Error,
                 {
-                    match value {
-                        "null" => Ok(PropertyTag::Null),
-                        "bool" => Ok(PropertyTag::Bool),
-                        "i64" => Ok(PropertyTag::I64),
-                        "u64" => Ok(PropertyTag::U64),
-                        "f64" => Ok(PropertyTag::F64),
-                        "string" => Ok(PropertyTag::String),
-                        "bytes" => Ok(PropertyTag::Bytes),
-                        "timestamp" => Ok(PropertyTag::Timestamp),
-                        "duration" => Ok(PropertyTag::Duration),
-                        "reference" => Ok(PropertyTag::Reference),
-                        "array" => Ok(PropertyTag::Array),
-                        "object" => Ok(PropertyTag::Object),
-                        _ => Err(E::unknown_variant(
-                            value,
-                            &[
-                                "null",
-                                "bool",
-                                "i64",
-                                "u64",
-                                "f64",
-                                "string",
-                                "bytes",
-                                "timestamp",
-                                "duration",
-                                "reference",
-                                "array",
-                                "object",
-                            ],
-                        )),
-                    }
+                    PropertyTag::parse(value)
                 }
             }
 
@@ -416,24 +438,20 @@ mod property_value_depth {
     enum PropertyField {
         Type,
         Value,
-        #[serde(other)]
-        Other,
     }
 
     #[derive(serde::Deserialize)]
     #[serde(transparent)]
     struct BytesValue(#[serde(with = "super::hex_bytes")] std::sync::Arc<[u8]>);
 
-    fn deserialize_repr<'de, D>(deserializer: D) -> Result<PropertyValueRepr, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let human_readable = deserializer.is_human_readable();
-        deserializer.deserialize_struct(
-            "PropertyValue",
-            &["type", "value"],
-            PropertyValueVisitor { human_readable },
-        )
+    /// The `value` field, whose shape the tag's position decides.
+    ///
+    /// A tag already read admits the typed value straight away; a tag still to
+    /// come leaves only the untyped buffer. One field cannot be both, which is
+    /// why they share a slot.
+    enum Content {
+        Decoded(PropertyValue),
+        Buffered(BufferedValue),
     }
 
     struct PropertyValueVisitor {
@@ -441,7 +459,7 @@ mod property_value_depth {
     }
 
     impl<'de> serde::de::Visitor<'de> for PropertyValueVisitor {
-        type Value = PropertyValueRepr;
+        type Value = PropertyValue;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("an adjacently tagged property value")
@@ -452,8 +470,7 @@ mod property_value_depth {
             A: serde::de::MapAccess<'de>,
         {
             let mut tag = None;
-            let mut value = None;
-            let mut buffered = None;
+            let mut content = None;
 
             while let Some(field) = map.next_key::<PropertyField>()? {
                 match field {
@@ -464,32 +481,25 @@ mod property_value_depth {
                         tag = Some(map.next_value::<PropertyTag>()?);
                     }
                     PropertyField::Value => {
-                        if value.is_some() || buffered.is_some() {
+                        if content.is_some() {
                             return Err(serde::de::Error::duplicate_field("value"));
                         }
-                        if let Some(tag) = tag {
-                            value = Some(deserialize_tagged_value(tag, &mut map)?);
-                        } else {
-                            buffered = Some(map.next_value_seed(BufferSeed::root())?);
-                        }
-                    }
-                    PropertyField::Other => {
-                        let _ = map.next_value_seed(BufferSeed::root())?;
+                        content = Some(match tag {
+                            Some(tag) => Content::Decoded(deserialize_tagged_value(tag, &mut map)?),
+                            None => Content::Buffered(map.next_value_seed(BufferSeed::root())?),
+                        });
                     }
                 }
             }
 
             let tag = tag.ok_or_else(|| serde::de::Error::missing_field("type"))?;
-            match (tag, value, buffered) {
-                (PropertyTag::Null, None, None) => Ok(PropertyValueRepr::Null),
-                (_, Some(value), None) => Ok(value),
-                (_, None, Some(buffered)) => {
+            match content {
+                Some(Content::Decoded(value)) => Ok(value),
+                Some(Content::Buffered(buffered)) => {
                     deserialize_buffered(tag, buffered, self.human_readable)
                 }
-                (_, None, None) => Err(serde::de::Error::missing_field("value")),
-                (_, Some(_), Some(_)) => {
-                    Err(serde::de::Error::custom("property value was decoded twice"))
-                }
+                None if matches!(tag, PropertyTag::Null) => Ok(PropertyValue::Null),
+                None => Err(serde::de::Error::missing_field("value")),
             }
         }
 
@@ -502,106 +512,9 @@ mod property_value_depth {
                 .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
             match deserialize_tagged_element(tag, &mut sequence)? {
                 Some(value) => Ok(value),
-                None if matches!(tag, PropertyTag::Null) => Ok(PropertyValueRepr::Null),
+                None if matches!(tag, PropertyTag::Null) => Ok(PropertyValue::Null),
                 None => Err(serde::de::Error::invalid_length(1, &self)),
             }
-        }
-    }
-
-    fn deserialize_tagged_value<'de, A>(
-        tag: PropertyTag,
-        map: &mut A,
-    ) -> Result<PropertyValueRepr, A::Error>
-    where
-        A: serde::de::MapAccess<'de>,
-    {
-        match tag {
-            PropertyTag::Null => map.next_value::<()>().map(|()| PropertyValueRepr::Null),
-            PropertyTag::Bool => map.next_value().map(PropertyValueRepr::Bool),
-            PropertyTag::I64 => map.next_value().map(PropertyValueRepr::I64),
-            PropertyTag::U64 => map.next_value().map(PropertyValueRepr::U64),
-            PropertyTag::F64 => map.next_value().map(PropertyValueRepr::F64),
-            PropertyTag::String => map.next_value().map(PropertyValueRepr::String),
-            PropertyTag::Bytes => map
-                .next_value::<BytesValue>()
-                .map(|value| PropertyValueRepr::Bytes(value.0)),
-            PropertyTag::Timestamp => map.next_value().map(PropertyValueRepr::Timestamp),
-            PropertyTag::Duration => map.next_value().map(PropertyValueRepr::Duration),
-            PropertyTag::Reference => map.next_value().map(PropertyValueRepr::Reference),
-            PropertyTag::Array => map.next_value().map(PropertyValueRepr::Array),
-            PropertyTag::Object => map.next_value().map(PropertyValueRepr::Object),
-        }
-    }
-
-    fn deserialize_tagged_element<'de, A>(
-        tag: PropertyTag,
-        sequence: &mut A,
-    ) -> Result<Option<PropertyValueRepr>, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        macro_rules! next {
-            ($type:ty, $variant:ident) => {
-                sequence
-                    .next_element::<$type>()
-                    .map(|value| value.map(PropertyValueRepr::$variant))
-            };
-        }
-
-        match tag {
-            PropertyTag::Null => sequence
-                .next_element::<()>()
-                .map(|value| value.map(|()| PropertyValueRepr::Null)),
-            PropertyTag::Bool => next!(bool, Bool),
-            PropertyTag::I64 => next!(i64, I64),
-            PropertyTag::U64 => next!(u64, U64),
-            PropertyTag::F64 => next!(super::Finite, F64),
-            PropertyTag::String => next!(std::sync::Arc<str>, String),
-            PropertyTag::Bytes => sequence
-                .next_element::<BytesValue>()
-                .map(|value| value.map(|value| PropertyValueRepr::Bytes(value.0))),
-            PropertyTag::Timestamp => next!(super::Timestamp, Timestamp),
-            PropertyTag::Duration => next!(super::DurationValue, Duration),
-            PropertyTag::Reference => next!(super::ResourceReference, Reference),
-            PropertyTag::Array => next!(PropertyArray, Array),
-            PropertyTag::Object => next!(PropertyMap, Object),
-        }
-    }
-
-    fn deserialize_buffered<E>(
-        tag: PropertyTag,
-        buffered: BufferedValue,
-        human_readable: bool,
-    ) -> Result<PropertyValueRepr, E>
-    where
-        E: serde::de::Error,
-    {
-        macro_rules! decode {
-            ($type:ty, $variant:ident) => {
-                <$type>::deserialize(BufferedDeserializer::<E>::new(buffered, human_readable))
-                    .map(PropertyValueRepr::$variant)
-            };
-        }
-
-        match tag {
-            PropertyTag::Null => {
-                <()>::deserialize(BufferedDeserializer::<E>::new(buffered, human_readable))
-                    .map(|()| PropertyValueRepr::Null)
-            }
-            PropertyTag::Bool => decode!(bool, Bool),
-            PropertyTag::I64 => decode!(i64, I64),
-            PropertyTag::U64 => decode!(u64, U64),
-            PropertyTag::F64 => decode!(super::Finite, F64),
-            PropertyTag::String => decode!(std::sync::Arc<str>, String),
-            PropertyTag::Bytes => {
-                BytesValue::deserialize(BufferedDeserializer::<E>::new(buffered, human_readable))
-                    .map(|value| PropertyValueRepr::Bytes(value.0))
-            }
-            PropertyTag::Timestamp => decode!(super::Timestamp, Timestamp),
-            PropertyTag::Duration => decode!(super::DurationValue, Duration),
-            PropertyTag::Reference => decode!(super::ResourceReference, Reference),
-            PropertyTag::Array => decode!(PropertyArray, Array),
-            PropertyTag::Object => decode!(PropertyMap, Object),
         }
     }
 
@@ -1012,49 +925,45 @@ mod property_value_depth {
             Some(self.entries.len())
         }
     }
-}
 
-impl From<bool> for PropertyValue {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
+    #[cfg(test)]
+    mod tests {
+        use super::PropertyTag;
+        use super::PropertyValue;
 
-impl From<i64> for PropertyValue {
-    fn from(value: i64) -> Self {
-        Self::I64(value)
-    }
-}
+        /// The tag table and the derived encoder must agree on every name.
+        ///
+        /// The encoder derives its tags from the variant names; the decoder
+        /// reads them from the table. Nothing but this makes the two spellings
+        /// the same string.
+        #[test]
+        fn every_variant_encodes_under_the_tag_the_table_decodes() {
+            let samples = [
+                PropertyValue::Null,
+                PropertyValue::Bool(true),
+                PropertyValue::I64(-1),
+                PropertyValue::U64(1),
+                PropertyValue::f64(1.5).expect("finite"),
+                PropertyValue::from("text"),
+                PropertyValue::Bytes(std::sync::Arc::from([0_u8].as_slice())),
+                PropertyValue::Timestamp(super::super::Timestamp::new(0, 0).expect("valid")),
+                PropertyValue::Duration(super::super::DurationValue::new(0, 0).expect("valid")),
+                PropertyValue::Reference(super::super::ResourceReference::new(
+                    super::super::SourceKey::from_static("/x"),
+                )),
+                PropertyValue::array(Vec::new()).expect("empty array"),
+                PropertyValue::Object(super::PropertyMap::empty()),
+            ];
 
-impl From<u64> for PropertyValue {
-    fn from(value: u64) -> Self {
-        Self::U64(value)
-    }
-}
-
-impl From<Finite> for PropertyValue {
-    fn from(value: Finite) -> Self {
-        Self::F64(value)
-    }
-}
-
-impl TryFrom<f64> for PropertyValue {
-    type Error = NonFiniteError;
-
-    fn try_from(value: f64) -> Result<Self, Self::Error> {
-        Self::f64(value)
-    }
-}
-
-impl From<String> for PropertyValue {
-    fn from(value: String) -> Self {
-        Self::String(value.into())
-    }
-}
-
-impl From<&str> for PropertyValue {
-    fn from(value: &str) -> Self {
-        Self::String(value.into())
+            for sample in samples {
+                let encoded = serde_json::to_value(&sample).expect("encodes");
+                assert_eq!(
+                    encoded["type"].as_str(),
+                    Some(PropertyTag::of(&sample).name()),
+                    "{sample:?}"
+                );
+            }
+        }
     }
 }
 
@@ -1091,6 +1000,7 @@ impl From<PropertyArray> for PropertyValue {
 /// One named resource property.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[non_exhaustive]
 pub struct Property {
     pub name: Name,
@@ -1117,7 +1027,13 @@ impl Property {
 pub struct PropertyMap(Arc<PropertyEntries>);
 
 impl PropertyMap {
-    /// Maximum number of nesting levels allowed below a property map.
+    /// Maximum number of levels a property value may nest through.
+    ///
+    /// A leaf nests through none and each enclosing array or object costs one,
+    /// including the map a property is stored in. [`PropertyArray::new`] and
+    /// [`new`](Self::new) hold what they produce to that bound and the decoder
+    /// admits exactly that much, so a value this crate builds is one it can
+    /// also read back.
     ///
     /// Property values are recursive, so an unbounded structure would overflow
     /// the stack when walked. Every value reachable from a stored map is
@@ -1136,33 +1052,29 @@ impl PropertyMap {
 
     /// Sorts properties by name and rejects duplicates and excessive nesting.
     ///
-    /// Rejected input is dismantled without recursion, so handing this an
-    /// arbitrarily deep value returns an error rather than overflowing the
-    /// stack as the value is released.
+    /// Input is already bounded before it arrives: an array carries
+    /// [`PropertyArray`]'s check and an object carries a validated map, so the
+    /// deepest value this can be handed is one level past what it accepts.
+    /// Releasing a rejected one therefore recurses one level further than a
+    /// stored one does, which is still bounded.
     ///
     /// # Errors
     ///
     /// Returns [`PropertyMapError::DuplicateName`] if two properties share a
     /// name, or [`PropertyMapError::DepthExceeded`] if one nests deeper than
     /// [`MAX_DEPTH`](Self::MAX_DEPTH).
-    pub fn new(mut properties: Vec<Property>) -> Result<Self, PropertyMapError> {
-        if let Some(duplicate) =
-            sort_and_find_duplicate(&mut properties, |left, right| left.name.cmp(&right.name))
-        {
-            let error = PropertyMapError::DuplicateName(duplicate.name.clone());
-            dismantle(properties);
-            return Err(error);
-        }
+    pub fn new(properties: Vec<Property>) -> Result<Self, PropertyMapError> {
+        let properties = Self::sorted_unique(properties, |duplicate| {
+            PropertyMapError::DuplicateName(duplicate.name.clone())
+        })?;
         if let Some(deep) = properties
             .iter()
-            .find(|property| !property.value.within_depth(Self::MAX_DEPTH))
+            .find(|property| !property.value.within_depth(Self::MAX_DEPTH - 1))
         {
-            let error = PropertyMapError::DepthExceeded {
+            return Err(PropertyMapError::DepthExceeded {
                 name: deep.name.clone(),
                 limit: Self::MAX_DEPTH,
-            };
-            dismantle(properties);
-            return Err(error);
+            });
         }
         Ok(Self::from_sorted(properties))
     }
@@ -1176,43 +1088,6 @@ sorted_collection!(
     PropertyValue,
     PropertyMapError
 );
-
-/// Releases rejected properties without recursing through their nesting.
-///
-/// A value only reaches this after failing validation, so it can be deeper
-/// than [`PropertyMap::MAX_DEPTH`] and deep enough that the recursive drop
-/// glue would exhaust the stack. Moving each level onto a work list keeps the
-/// teardown flat.
-///
-/// The variants matched here are the recursive ones, and must stay in step
-/// with [`PropertyValue::within_depth`]: a variant one walks and the other
-/// skips is either
-/// unbounded nesting or an unbounded drop.
-fn dismantle(properties: Vec<Property>) {
-    let mut pending: Vec<PropertyValue> = properties
-        .into_iter()
-        .map(|property| property.value)
-        .collect();
-
-    while let Some(value) = pending.pop() {
-        match value {
-            // An `Object` holds a `PropertyMap`, which exists only by passing
-            // the depth check, so its own recursive drop is bounded.
-            PropertyValue::Array(items) => pending.extend(items.into_vec()),
-            PropertyValue::Object(_)
-            | PropertyValue::Null
-            | PropertyValue::Bool(_)
-            | PropertyValue::I64(_)
-            | PropertyValue::U64(_)
-            | PropertyValue::F64(_)
-            | PropertyValue::String(_)
-            | PropertyValue::Bytes(_)
-            | PropertyValue::Timestamp(_)
-            | PropertyValue::Duration(_)
-            | PropertyValue::Reference(_) => {}
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1266,8 +1141,8 @@ mod hex_bytes {
             ))
         })?;
         for byte in value.iter() {
-            encoded.push(DIGITS[usize::from(byte >> 4)] as char);
-            encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
+            encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
         }
         serializer.serialize_str(&encoded)
     }
@@ -1292,6 +1167,10 @@ mod hex_bytes {
         // Collected by hand rather than with `collect`, which cannot size the
         // output: a fallible iterator reports no lower bound, so the buffer
         // would grow from empty even though the length is known exactly.
+        //
+        // The reservation needs no cap of its own, unlike the ones taken from
+        // a size hint below: it is half of a string the decoder has already
+        // allocated in full.
         let bytes = encoded.as_bytes();
         let mut decoded = Vec::with_capacity(bytes.len() / 2);
         for pair in bytes.chunks_exact(2) {
@@ -1350,9 +1229,8 @@ mod hex_bytes {
             b'0'..=b'9' => Ok(digit - b'0'),
             b'a'..=b'f' => Ok(digit - b'a' + 10),
             b'A'..=b'F' => Ok(digit - b'A' + 10),
-            _ => Err(D::Error::custom(format!(
-                "invalid hex digit '{}'",
-                digit as char
+            _ => Err(D::Error::custom(format_args!(
+                "invalid hex digit {digit:#04x}"
             ))),
         }
     }

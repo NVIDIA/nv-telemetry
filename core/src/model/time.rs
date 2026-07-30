@@ -32,28 +32,11 @@ const NANOS_PER_SECOND: u32 = 1_000_000_000;
 /// the same constructor a caller uses, rather than by a second copy of the
 /// rule that could drift from it.
 #[cfg(feature = "serde")]
-#[derive(Clone, Copy, serde::Deserialize)]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SplitSeconds {
     seconds: i64,
     nanoseconds: u32,
-}
-
-#[cfg(feature = "serde")]
-impl TryFrom<SplitSeconds> for Timestamp {
-    type Error = TimeError;
-
-    fn try_from(value: SplitSeconds) -> Result<Self, Self::Error> {
-        Self::new(value.seconds, value.nanoseconds)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl TryFrom<SplitSeconds> for DurationValue {
-    type Error = TimeError;
-
-    fn try_from(value: SplitSeconds) -> Result<Self, Self::Error> {
-        Self::new(value.seconds, value.nanoseconds)
-    }
 }
 
 /// Rejects a sub-second remainder that is not below one second, which is the
@@ -69,6 +52,12 @@ const fn check_nanoseconds(nanoseconds: u32) -> Result<(), TimeError> {
 ///
 /// This is an instant, not a span: see [`DurationValue`], which shares the
 /// representation but is deliberately a separate type.
+///
+/// The nanosecond component is always a non-negative offset applied toward
+/// positive infinity. Half a second before the epoch is therefore
+/// `seconds = -1, nanoseconds = 500_000_000`, not `seconds = 0` with a
+/// negative remainder, and the derived ordering is chronological because of
+/// that convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "SplitSeconds"))]
@@ -81,6 +70,10 @@ impl Timestamp {
     pub const NANOS_PER_SECOND: u32 = NANOS_PER_SECOND;
 
     /// Builds a timestamp from a Unix second count and a sub-second offset.
+    ///
+    /// `nanoseconds` moves the instant toward positive infinity whatever the
+    /// sign of `seconds`, so `Timestamp::new(-1, 500_000_000)` is half a
+    /// second before the epoch rather than a second and a half.
     ///
     /// # Errors
     ///
@@ -104,22 +97,31 @@ impl Timestamp {
         self.nanoseconds
     }
 
-    /// Derives the signed duration from `earlier` to this timestamp.
+    /// Derives the signed duration from `origin` to this timestamp.
+    ///
+    /// An `origin` that is later yields a negative [`DurationValue`], where
+    /// [`SystemTime::duration_since`] reports an error.
     ///
     /// # Errors
     ///
     /// Returns [`TimeError::OutOfRange`] when the difference does not fit in a
     /// [`DurationValue`].
-    pub fn checked_duration_since(self, earlier: Self) -> Result<DurationValue, TimeError> {
-        let nanoseconds = (i128::from(self.seconds) - i128::from(earlier.seconds))
-            * i128::from(NANOS_PER_SECOND)
-            + i128::from(self.nanoseconds)
-            - i128::from(earlier.nanoseconds);
-        let seconds = nanoseconds.div_euclid(i128::from(NANOS_PER_SECOND));
-        let remainder = nanoseconds.rem_euclid(i128::from(NANOS_PER_SECOND));
+    pub fn signed_duration_since(self, origin: Self) -> Result<DurationValue, TimeError> {
+        let whole = i128::from(self.seconds) - i128::from(origin.seconds);
+        // Both remainders are already below one second, so borrowing at most
+        // one whole second normalises the difference without a conversion
+        // that could fail.
+        let (whole, remainder) = if self.nanoseconds >= origin.nanoseconds {
+            (whole, self.nanoseconds - origin.nanoseconds)
+        } else {
+            (
+                whole - 1,
+                NANOS_PER_SECOND - (origin.nanoseconds - self.nanoseconds),
+            )
+        };
         DurationValue::new(
-            i64::try_from(seconds).map_err(|_| TimeError::OutOfRange)?,
-            u32::try_from(remainder).map_err(|_| TimeError::OutOfRange)?,
+            i64::try_from(whole).map_err(|_| TimeError::OutOfRange)?,
+            remainder,
         )
     }
 
@@ -138,6 +140,11 @@ impl Timestamp {
 
     /// Converts to a system clock reading.
     ///
+    /// Not the exact inverse of [`from_system_time`](Self::from_system_time)
+    /// at the extremes: the platform's representable range and this type's are
+    /// different shapes, so a timestamp near either end of `i64` can convert
+    /// out and fail to convert back. Do not treat the pair as total.
+    ///
     /// # Errors
     ///
     /// Returns [`TimeError::OutOfRange`] if the instant is not
@@ -154,10 +161,9 @@ impl Timestamp {
         let duration = if self.nanoseconds == 0 {
             Duration::new(absolute_seconds, 0)
         } else {
-            let seconds = absolute_seconds
-                .checked_sub(1)
-                .ok_or(TimeError::OutOfRange)?;
-            Duration::new(seconds, NANOS_PER_SECOND - self.nanoseconds)
+            // The early return above leaves `self.seconds` negative, so the
+            // magnitude is at least one and cannot underflow.
+            Duration::new(absolute_seconds - 1, NANOS_PER_SECOND - self.nanoseconds)
         };
         UNIX_EPOCH
             .checked_sub(duration)
@@ -180,6 +186,15 @@ impl Timestamp {
     }
 }
 
+#[cfg(feature = "serde")]
+impl TryFrom<SplitSeconds> for Timestamp {
+    type Error = TimeError;
+
+    fn try_from(value: SplitSeconds) -> Result<Self, Self::Error> {
+        Self::new(value.seconds, value.nanoseconds)
+    }
+}
+
 /// A signed span of time with nanosecond precision.
 ///
 /// This shares [`Timestamp`]'s representation but not its meaning: one names
@@ -187,7 +202,7 @@ impl Timestamp {
 /// other.
 ///
 /// The nanosecond component is always a non-negative offset applied toward
-/// positive infinity, as on `Timestamp`. Minus half a second is therefore
+/// positive infinity, as on [`Timestamp`]. Minus half a second is therefore
 /// `seconds = -1, nanoseconds = 500_000_000`, and the derived ordering is
 /// chronological because of that convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -228,6 +243,15 @@ impl DurationValue {
     /// Returns the total signed duration in nanoseconds.
     pub const fn as_nanos(self) -> i128 {
         self.seconds as i128 * NANOS_PER_SECOND as i128 + self.nanoseconds as i128
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<SplitSeconds> for DurationValue {
+    type Error = TimeError;
+
+    fn try_from(value: SplitSeconds) -> Result<Self, Self::Error> {
+        Self::new(value.seconds, value.nanoseconds)
     }
 }
 
@@ -278,11 +302,30 @@ impl ObservationWindow {
     ///
     /// Returns [`TimeError::OutOfRange`] when the span does not fit in a
     /// [`DurationValue`].
-    pub fn checked_duration(self) -> Result<DurationValue, TimeError> {
-        self.completed_at.checked_duration_since(self.started_at)
+    pub fn duration(self) -> Result<DurationValue, TimeError> {
+        self.completed_at.signed_duration_since(self.started_at)
     }
 }
 
+/// The unvalidated field pair an [`ObservationWindow`] is built from.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Span {
+    started_at: Timestamp,
+    completed_at: Timestamp,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<Span> for ObservationWindow {
+    type Error = TimeError;
+
+    fn try_from(value: Span) -> Result<Self, Self::Error> {
+        Self::new(value.started_at, value.completed_at)
+    }
+}
+
+/// Compares two timestamps where `Ord::gt` is not callable from a `const fn`.
 const fn timestamp_after(left: Timestamp, right: Timestamp) -> bool {
     left.seconds > right.seconds
         || (left.seconds == right.seconds && left.nanoseconds > right.nanoseconds)
@@ -309,26 +352,9 @@ impl fmt::Display for TimeError {
             Self::WindowEndsBeforeStart => {
                 formatter.write_str("observation window ends before it starts")
             }
-            Self::OutOfRange => formatter.write_str("timestamp is outside the supported range"),
+            Self::OutOfRange => formatter.write_str("time value is outside the supported range"),
         }
     }
 }
 
 impl Error for TimeError {}
-
-/// The unvalidated field pair an [`ObservationWindow`] is built from.
-#[cfg(feature = "serde")]
-#[derive(Clone, Copy, serde::Deserialize)]
-struct Span {
-    started_at: Timestamp,
-    completed_at: Timestamp,
-}
-
-#[cfg(feature = "serde")]
-impl TryFrom<Span> for ObservationWindow {
-    type Error = TimeError;
-
-    fn try_from(value: Span) -> Result<Self, Self::Error> {
-        Self::new(value.started_at, value.completed_at)
-    }
-}

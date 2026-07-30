@@ -3,15 +3,23 @@
 
 use std::fmt;
 
+use nv_redfish::core::EdmDateTimeOffset;
+use nv_redfish::core::EdmDuration;
 use nv_redfish::schema::resource::Health as RedfishHealth;
 use nv_redfish::schema::resource::State as RedfishState;
 use nv_redfish::schema::sensor::ReadingType;
 use nv_redfish::schema::sensor::ThresholdActivation;
+use nv_telemetry_core::DurationValue;
+use nv_telemetry_core::Finite;
 use nv_telemetry_core::Health;
 use nv_telemetry_core::Metric;
+use nv_telemetry_core::Name;
+use nv_telemetry_core::NonFiniteError;
 use nv_telemetry_core::OperatingState;
 use nv_telemetry_core::PropertyValue;
 use nv_telemetry_core::ReadingKind;
+use nv_telemetry_core::TimeError;
+use nv_telemetry_core::Timestamp;
 
 use crate::FieldValue;
 
@@ -34,6 +42,35 @@ where
     value.map_or_else(FieldValue::missing, |value| {
         FieldValue::from_result(value.try_project_into())
     })
+}
+
+impl TryProjectInto<Finite> for f64 {
+    type Error = NonFiniteError;
+
+    fn try_project_into(self) -> Result<Finite, Self::Error> {
+        Finite::new(self)
+    }
+}
+
+impl TryProjectInto<Timestamp> for EdmDateTimeOffset {
+    type Error = TimeError;
+
+    fn try_project_into(self) -> Result<Timestamp, Self::Error> {
+        let value = time::OffsetDateTime::from(self);
+        Timestamp::new(value.unix_timestamp(), value.nanosecond())
+    }
+}
+
+impl TryProjectInto<DurationValue> for EdmDuration {
+    /// The three rejections a Redfish duration can meet have no common error
+    /// type, and a consumer reads the detail rather than matching on it.
+    type Error = String;
+
+    fn try_project_into(self) -> Result<DurationValue, Self::Error> {
+        let duration = std::time::Duration::try_from(self).map_err(|error| error.to_string())?;
+        let seconds = i64::try_from(duration.as_secs()).map_err(|error| error.to_string())?;
+        DurationValue::new(seconds, duration.subsec_nanos()).map_err(|error| error.to_string())
+    }
 }
 
 impl TryProjectInto<Health> for RedfishHealth {
@@ -138,7 +175,7 @@ pub(super) struct ProjectedThresholdActivation(&'static str);
 
 impl ProjectedThresholdActivation {
     pub(super) fn into_property_value(self) -> PropertyValue {
-        PropertyValue::String(self.0.into())
+        PropertyValue::String(Name::from_static(self.0))
     }
 }
 
