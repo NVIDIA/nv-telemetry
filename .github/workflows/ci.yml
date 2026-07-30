@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.MSRV }}
       # Benchmark-only dependencies need CI_RUST; library users do not.
@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CI_RUST }}
       - run: make ci
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CI_RUST }}
       - name: Dry-run core publish
@@ -70,7 +70,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CI_RUST }}
 
