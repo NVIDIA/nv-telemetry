@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Observation batch: shared endpoint context, provenance, the
+// observation window, completeness, and exactly one homogeneous payload
+// domain.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+option csharp_namespace = "Nvidia.NvTelemetry.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
+option java_package = "com.nvidia.nvtelemetry.v1";

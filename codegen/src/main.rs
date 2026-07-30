@@ -1,0 +1,78 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Command-line driver for the schema compiler, invoked by `make codegen` and
+//! `make check-codegen`.
+
+// A command-line tool reports on stdout and stderr; the workspace lint that
+// keeps printing out of library code does not apply to this target.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
+use std::process::ExitCode;
+
+use nv_telemetry_codegen::Mode;
+use nv_telemetry_codegen::Outcome;
+
+const USAGE: &str = "\
+usage: nv-telemetry-codegen <command>
+
+  generate    rewrite the generated trees
+  --check     report whether the generated trees are up to date
+";
+
+fn main() -> ExitCode {
+    let mut args = std::env::args_os().skip(1);
+
+    let mode = match args.next().as_deref().and_then(std::ffi::OsStr::to_str) {
+        Some("generate") => Mode::Generate,
+        Some("--check" | "check") => Mode::Check,
+        Some(other) => {
+            eprintln!("nv-telemetry-codegen: unknown argument `{other}`\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+        None => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if args.next().is_some() {
+        eprintln!("nv-telemetry-codegen: expected exactly one argument\n\n{USAGE}");
+        return ExitCode::from(2);
+    }
+
+    match nv_telemetry_codegen::run(mode) {
+        Ok(outcome) => report(mode, &outcome),
+        Err(error) => {
+            eprintln!("nv-telemetry-codegen: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
+    match mode {
+        Mode::Generate => {
+            println!(
+                "nv-telemetry-codegen: {} message(s) examined, {} file(s) written",
+                outcome.examined,
+                outcome.written.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Mode::Check if outcome.stale.is_empty() => {
+            println!(
+                "nv-telemetry-codegen: generated tree is up to date ({} message(s) examined)",
+                outcome.examined
+            );
+            ExitCode::SUCCESS
+        }
+        Mode::Check => {
+            eprintln!("nv-telemetry-codegen: generated tree is stale; run `make codegen`");
+            for path in &outcome.stale {
+                eprintln!("  {}", path.display());
+            }
+            ExitCode::FAILURE
+        }
+    }
+}

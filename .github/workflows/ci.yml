@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+# External contributions are mirrored onto pull-request/N branches by
+# copy-pr-bot, so the gate is on push rather than pull_request.
+on:
+  push:
+    branches:
+      - main
+      - "pull-request/[0-9]+"
+      - "release/v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # Full history: the schema's backward-compatibility check compares
+      # against origin/main, which a shallow clone would not contain.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+
+      # Cached because a cold build of the protobuf crates dominates the job.
+      # actions/cache rather than a third-party Rust cache action: NVIDIA's
+      # allowlist admits actions/*, and the caching this needs is a path list.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # buf checks the schema: style, formatting, and backward compatibility.
+      # Downloaded rather than installed through an action, because NVIDIA's
+      # allowlist admits only actions/* and a short list of others. Pinned to
+      # the version the Makefile checks for: a new lint rule landing in a buf
+      # release would otherwise fail a build that changed nothing.
+      - name: Install buf
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=1.72.0
+          case "$RUNNER_OS" in
+            Linux)   asset="buf-Linux-$(uname -m)"; binary=buf ;;
+            macOS)   asset="buf-Darwin-$(uname -m)"; binary=buf ;;
+            Windows) asset="buf-Windows-x86_64.exe"; binary=buf.exe ;;
+            *) echo "unsupported runner: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/buf/bin"
+          curl -fsSL --retry 3 \
+            "https://github.com/bufbuild/buf/releases/download/v$version/$asset" \
+            -o "$RUNNER_TEMP/buf/bin/$binary"
+          chmod +x "$RUNNER_TEMP/buf/bin/$binary"
+          echo "$RUNNER_TEMP/buf/bin" >> "$GITHUB_PATH"
+
+      # Recipes run under bash on all three legs. GNU Make on Windows otherwise
+      # dispatches to cmd.exe when sh is not on PATH, so a recipe using shell
+      # syntax would fail only there.
+      - run: make ci
+        shell: bash
+
+  bench-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+
+      # actions/cache rather than a third-party Rust cache action: NVIDIA's
+      # allowlist admits actions/*, and the caching this needs is a path list.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          valgrind --version
+
+      - name: Benchmark merge-base
+        # Installs the runner matching the *base* lockfile, so a PR that bumps
+        # gungraun still measures the base correctly. Only the specific "no
+        # bench target at base" case is tolerated; every other failure fails the
+        # job so the gate can never silently stop comparing.
+        #
+        # Package and bench names are both discovered, because a crate rename
+        # between base and head would otherwise match nothing and disable the
+        # comparison while still reporting success.
+        run: |
+          set -euo pipefail
+          BASE=$(git merge-base HEAD origin/main)
+          if [ "$BASE" = "$(git rev-parse HEAD)" ]; then
+            echo "HEAD is the merge-base; nothing to compare"
+            echo "SKIP_COMPARE=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "baseline commit: $BASE"
+          git checkout "$BASE"
+          VERSION=$(cargo metadata --format-version=1 \
+            | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
+          if [ -z "$VERSION" ]; then
+            echo "no gungraun at merge-base; head records the baselines instead"
+            echo "SAVE_AT_HEAD=1" >> "$GITHUB_ENV"
+            git checkout -f -
+            exit 0
+          fi
+          echo "base gungraun $VERSION"
+          # Assigned before use so that a metadata or jq failure trips set -e.
+          # A command substitution consumed directly by `for` discards its exit
+          # status, which is how a broken base manifest would silently skip the
+          # comparison.
+          PAIRS=$(cargo metadata --format-version=1 --no-deps \
+            | jq -r '.packages[] as $p | $p.targets[]
+              | select(.kind == ["bench"]) | "\($p.name) \(.name)"')
+          if [ -z "$PAIRS" ]; then
+            echo "no bench targets at merge-base; head records the baselines instead"
+            echo "SAVE_AT_HEAD=1" >> "$GITHUB_ENV"
+            git checkout -f -
+            exit 0
+          fi
+          cargo install gungraun-runner --version "$VERSION" --locked
+          while read -r pkg bench; do
+            cargo bench -p "$pkg" --all-features --bench "$bench" -- --save-baseline=base
+          done <<< "$PAIRS"
+          git checkout -f -
+
+      - name: Benchmark head against base
+        if: env.SKIP_COMPARE != '1'
+        # The runner version must match the head's library version; taken from
+        # the lockfile so they cannot drift.
+        run: |
+          set -euo pipefail
+          PAIRS=$(cargo metadata --format-version=1 --no-deps \
+            | jq -r '.packages[] as $p | $p.targets[]
+              | select(.kind == ["bench"]) | "\($p.name) \(.name)"')
+          if [ -z "$PAIRS" ]; then
+            echo "no bench targets at head; nothing to compare"
+            exit 0
+          fi
+          VERSION=$(cargo metadata --format-version=1 \
+            | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
+          if [ -z "$VERSION" ]; then
+            echo "bench targets exist at head but gungraun does not resolve" >&2
+            exit 1
+          fi
+          echo "head gungraun $VERSION"
+          cargo install gungraun-runner --version "$VERSION" --locked
+          # With no base baseline, record one rather than comparing against
+          # nothing, which would pass while measuring nothing.
+          if [ "${SAVE_AT_HEAD:-}" = "1" ]; then
+            while read -r pkg bench; do
+              cargo bench -p "$pkg" --all-features --bench "$bench" -- --save-baseline=base
+            done <<< "$PAIRS"
+            exit 0
+          fi
+          while read -r pkg bench; do
+            cargo bench -p "$pkg" --all-features --bench "$bench" -- \
+              --baseline=base \
+              --callgrind-limits='ir=2%'
+          done <<< "$PAIRS"

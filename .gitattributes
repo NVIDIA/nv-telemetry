@@ -1,0 +1,5 @@
+# `make check-codegen` compares generated and locked files byte for byte, so
+# their line endings must not depend on which platform checked them out.
+# Without this, the Windows leg reports every generated file stale forever
+# while nothing is actually wrong.
+* text=auto eol=lf

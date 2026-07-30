@@ -1,0 +1,24 @@
+[package]
+name = "nv-telemetry-codegen"
+description = "Schema compiler for nv-telemetry: validators, wrappers, hashing, and projections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A build-time tool. Nothing that consumes the data plane depends on this
+# crate, because generated code is checked in.
+[[bin]]
+name = "nv-telemetry-codegen"
+path = "src/main.rs"
+
+[dependencies]
+nv-telemetry-schema.workspace = true
+prost-reflect.workspace = true
+
+[dev-dependencies]
+# Fixture schemas for compiler tests are compiled in-process.
+protox.workspace = true
+
+[lints]
+workspace = true

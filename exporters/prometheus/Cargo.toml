@@ -1,0 +1,14 @@
+[package]
+name = "nv-telemetry-prometheus"
+description = "Prometheus exporter for nv-telemetry observation batches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nv-telemetry-model.workspace = true
+nv-telemetry-export.workspace = true
+
+[lints]
+workspace = true

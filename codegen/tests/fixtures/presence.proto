@@ -1,0 +1,50 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Fixture for the presence lint and the annotation reader. Compiled in-process
+// by the tests rather than shipped in the contract.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+
+message PresenceFixture {
+  // Explicit presence: absent and zero are different bytes.
+  optional double explicit = 1;
+
+  // Implicit presence, but the zero value is real data.
+  uint64 declared_zero = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    zero_is_meaningful: true
+  }];
+
+  // Implicit presence with nothing said about zero: the planted violation.
+  string implicit = 3;
+
+  // Repeated fields distinguish empty from absent by length.
+  repeated string listed = 4;
+
+  // A bound of zero is a real bound: "this must be empty". It only stays
+  // distinguishable from "no bound declared" because the annotation field has
+  // explicit presence.
+  repeated string must_be_empty = 6 [(nv.telemetry.options.v1.field_invariant) = {
+    max_items: 0
+  }];
+
+  // Carries an unrelated annotation, so a field with options but without
+  // zero_is_meaningful is still caught.
+  optional double annotated = 5 [(nv.telemetry.options.v1.field_invariant) = {
+    finite: true
+  }];
+}
+
+message WrapperFixture {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+    max_depth: 4
+  };
+
+  optional double value = 1;
+}

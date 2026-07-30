@@ -1,0 +1,68 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Fixture pinning which field shapes the presence lint reaches. Each of these
+// behaves differently, and the differences are easy to regress silently.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "google/protobuf/wrappers.proto";
+import "nv/telemetry/options/v1/annotations.proto";
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_WARN = 1;
+}
+
+message Edges {
+  message Nested {
+    // Nested types are real declarations, so the lint has to reach them.
+    string nested_implicit = 1;
+  }
+
+  optional Nested nested = 1;
+
+  // An enum's zero value is conventionally UNSPECIFIED, but proto3 cannot
+  // tell that apart from a value that was never set.
+  Severity severity = 2;
+
+  // Oneof members carry presence by construction.
+  oneof choice {
+    string chosen_string = 3;
+    double chosen_double = 4;
+  }
+
+  // A map synthesizes a hidden entry message. Its key and value cannot be
+  // annotated or made optional, and absence is expressed by the entry being
+  // missing from the map.
+  map<string, string> labels = 5;
+
+  // A message value type keeps absence expressible, so this one is allowed.
+  map<string, Edges.Nested> nested_by_name = 9;
+
+  // Message-valued, but the message is foreign: an empty entry value still
+  // decodes to Some(0.0), so the value type gets the same check a plain field
+  // would get.
+  map<string, google.protobuf.DoubleValue> wrapped_by_name = 12;
+
+  bytes blob = 6;
+
+  // Length distinguishes empty from absent.
+  repeated string listed = 7;
+
+  // Annotated and explicitly present: exempt for two independent reasons.
+  optional double reading = 8 [(nv.telemetry.options.v1.field_invariant) = {
+    finite: true
+  }];
+
+  // A wrapper type is the trap the foreign-type rule exists for: an empty one
+  // decodes to Some(0.0), so message presence says nothing about the scalar.
+  optional google.protobuf.DoubleValue wrapped = 10;
+
+  // `finite` cannot apply to a string, and would silently do nothing.
+  optional string misannotated = 11 [(nv.telemetry.options.v1.field_invariant) = {
+    finite: true
+  }];
+}

@@ -1,0 +1,148 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Annotation vocabulary for the nv-telemetry observation contract.
+//
+// These options state what a valid message is. Protocol knowledge is
+// deliberately absent: source mappings live in nv.telemetry.mapping.v1
+// manifests so that the core schema stays protocol-neutral and one field does
+// not accumulate one option per protocol.
+//
+// The vocabulary is deliberately ours rather than protovalidate's. The
+// compiler is a component this project owns and must own anyway, for wrappers,
+// canonical form, hashing, and projections; adding a second constraint
+// vocabulary with its own toolchain would split the invariants across two
+// systems that fail differently. See docs/EXTENSIONS.md for the numbering.
+
+syntax = "proto3";
+
+package nv.telemetry.options.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option csharp_namespace = "Nvidia.NvTelemetry.Options.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/options/v1;optionsv1";
+option java_package = "com.nvidia.nvtelemetry.options.v1";
+
+// Constraints on a single field.
+message FieldInvariant {
+  // The zero value is meaningful, exempting this field from the presence
+  // lint. Without either this or `optional`, an unset scalar and a scalar set
+  // to zero are the same bytes, which would let an absent reading decode as
+  // 0.0.
+  //
+  // A field declared this way is always hashed, because there is no "present"
+  // to test for. Adding one to a message that is already `hashable` therefore
+  // changes every existing hash. Nothing catches that automatically: `buf
+  // breaking` compares numbers, types, and cardinality, not the values of
+  // custom options. It is a review obligation.
+  bool zero_is_meaningful = 1;
+
+  // Floating-point values must be finite, for `double` and `float` alike.
+  // A non-finite source value is reported as an invalid field rather than
+  // a missing one.
+  bool finiteness = 2;
+
+  // Validators reject a message in which this field is absent. Distinct from
+  // presence, which only makes absence observable: this makes it invalid.
+  bool required = 5;
+
+  // The order of this repeated field is not semantic, so canonicalization
+  // sorts it. Declared per field rather than per message because a message
+  // routinely mixes both kinds — a list whose order is data alongside an
+  // attribute set whose order is not.
+  bool unordered = 6;
+
+  // Upper bound on the length of a repeated field. Explicitly present so
+  // that `max_items: 0`, meaning "must be empty", stays distinguishable
+  // from no bound at all.
+  optional uint32 max_items = 4;
+
+  // Upper bound on a string's length in bytes, or a bytes field's length.
+  // On a repeated field the bound is per element.
+  optional uint32 max_len = 7;
+
+  // Field 3 held a per-field `max_depth`. Recursion bounds moved to
+  // MessageInvariant: decoder recursion limits are a property of the parse,
+  // not of one field, so a per-field bound could never be enforced on the
+  // decode side.
+  reserved 3;
+  reserved "max_depth";
+}
+
+// Constraints on a message as a whole.
+message MessageInvariant {
+  // Emit a validated wrapper: a newtype holding this message privately,
+  // constructed only through generated builders or fallible conversion, both
+  // of which validate and canonicalize.
+  bool validated = 1;
+
+  // Emit logical content hashing: a traversal of present known fields
+  // labeled by field number. Encoded bytes are never hashed, because
+  // protobuf encoding is not canonical across implementations.
+  //
+  // Requires `validated`, because equal content only hashes equal once
+  // canonicalization has run.
+  bool hashable = 3;
+
+  // Recursion bound for a self-referential message such as Value. Stated on
+  // the type so that one decoder limit can be derived from it, which is the
+  // only granularity a decoder can enforce.
+  optional uint32 max_depth = 4;
+
+  // Field 2 held `canonical`. Replaced by FieldInvariant.unordered: a
+  // message-level flag cannot say which repeated fields have non-semantic
+  // order, and marking a message whose list order is data would corrupt it.
+  reserved 2;
+  reserved "canonical";
+}
+
+// Constraints on a oneof.
+//
+// Read by the validator generator rather than by the schema rules: whether a
+// case is set is a property of a message instance, not of the schema.
+message OneofInvariant {
+  // Validators reject a message in which no case is set. Without this, an
+  // empty Value is indistinguishable from an explicit null.
+  bool required = 1;
+}
+
+extend google.protobuf.FieldOptions {
+  FieldInvariant field_invariant = 52001;
+}
+
+extend google.protobuf.MessageOptions {
+  MessageInvariant message_invariant = 52002;
+}
+
+extend google.protobuf.OneofOptions {
+  OneofInvariant oneof_invariant = 52003;
+}
+
+// Self-test for the annotation pipeline.
+//
+// Custom options survive only on the encoding path that goes through
+// reflection; the obvious path drops them without an error, and every
+// invariant then reads as its default and silently switches off. The compiler
+// asserts these values read back exactly as declared, so that failure mode
+// cannot reach a build.
+message Canary {
+  option (message_invariant) = {
+    validated: true
+    hashable: true
+    max_depth: 8
+  };
+
+  optional double reading = 1 [(field_invariant) = {
+    finiteness: true
+    required: true
+  }];
+
+  repeated string labels = 2 [(field_invariant) = {
+    unordered: true
+    max_items: 4
+    max_len: 32
+  }];
+
+  uint64 revision = 3 [(field_invariant) = {zero_is_meaningful: true}];
+}

@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Signal identity and metadata: the canonical key that acquisition
+// routes agree on, and the descriptor carrying what a signal is — identity,
+// kind, unit, and the range the sensor can read.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+option csharp_namespace = "Nvidia.NvTelemetry.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
+option java_package = "com.nvidia.nvtelemetry.v1";

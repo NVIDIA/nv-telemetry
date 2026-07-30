@@ -1,0 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Imports the vocabulary without using any of it, so that a fixture can shadow
+// the vocabulary with a deliberately wrong shape and still compile. A fixture
+// that used an option would fail at parse time instead of at the resolution
+// step the test is about.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+
+message Minimal {
+  optional double value = 1;
+}

@@ -1,0 +1,78 @@
+[workspace]
+members = [
+    "schema",
+    "codegen",
+    "model",
+    "source",
+    "sources/redfish",
+    "sources/gnmi",
+    "orchestration",
+    "export",
+    "exporters/otlp",
+    "exporters/prometheus",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/NVIDIA/nv-telemetry"
+
+[workspace.dependencies]
+# Workspace members. Dependencies run in one direction: schema -> model ->
+# source -> protocol crates -> orchestration -> export -> exporters.
+nv-telemetry-schema = { path = "schema", version = "0.1.0" }
+nv-telemetry-model = { path = "model", version = "0.1.0" }
+nv-telemetry-source = { path = "source", version = "0.1.0" }
+nv-telemetry-export = { path = "export", version = "0.1.0" }
+
+# Protobuf runtime for the generated model. Because generated code is checked
+# in, `prost` is the only protobuf dependency a data-plane consumer acquires.
+prost = "0.14"
+prost-types = "0.14"
+
+# Build-time only. `protox` compiles the schema without a `protoc` binary, and
+# `prost-reflect` reads custom options as typed values rather than by number.
+protox = "0.9"
+prost-reflect = "0.16"
+
+# Code generation.
+prettyplease = "0.2"
+proc-macro2 = "1"
+quote = "1"
+syn = "2"
+
+# CI runs clippy with `-D warnings`, so everything below is effectively an
+# error. Lints live here rather than in the CI invocation so that an editor
+# reports exactly what the pipeline will.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+unimplemented = "warn"
+undocumented_unsafe_blocks = "warn"
+# Hand-written records in the model are #[non_exhaustive] and every invariant
+# carrier keeps its fields private, so this holds the line on that convention.
+# Generated wire types are exempt by a local allow: their exhaustive shape is
+# the point, and construction goes through generated builders anyway.
+exhaustive_structs = "warn"
+
+# Exact float comparison is the design of the finite-float type, not an
+# oversight: it exists so that observations can be diffed and hashed
+# bit-for-bit.
+float_cmp = "allow"
+# The model is almost entirely pure accessors, so this fires on nearly every
+# method and says nothing useful.
+must_use_candidate = "allow"

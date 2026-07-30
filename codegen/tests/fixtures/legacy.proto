@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// A proto2 contract file. `required` reports as having presence, but prost
+// generates a bare value with no way to express absence.
+
+syntax = "proto2";
+
+package nv.telemetry.v1;
+
+// Imported so the pool can resolve the vocabulary; proto2 may import proto3.
+import "nv/telemetry/options/v1/annotations.proto";
+
+message Legacy {
+  required double celsius = 1;
+}

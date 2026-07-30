@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// A contract file that does not import the annotation vocabulary at all.
+// Resolving the vocabulary against this pool must fail loudly rather than
+// report every field as unannotated.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+message Bare {
+  optional double value = 1;
+}

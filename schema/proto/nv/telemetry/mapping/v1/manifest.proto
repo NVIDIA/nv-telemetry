@@ -1,0 +1,198 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Schema for projection manifests.
+//
+// A manifest is a data file, not code: each source crate ships instances of
+// these messages under `manifests/`, and the compiler turns them into
+// projection code. Manifests name source *schema* paths rather than a source
+// crate's Rust shapes, so the projection backend can change without rewriting
+// a declaration.
+
+syntax = "proto3";
+
+package nv.telemetry.mapping.v1;
+
+option csharp_namespace = "Nvidia.NvTelemetry.Mapping.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/mapping/v1;mappingv1";
+option java_package = "com.nvidia.nvtelemetry.mapping.v1";
+
+// How the compiler resolves the source paths in a manifest.
+//
+// The compiler never resolves a path against a protocol directly. It resolves
+// against a backend-neutral schema index describing a source field: its path,
+// type, cardinality, presence, and the schema version range it exists in.
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+
+  // An index emitted by a source generator: nv-redfish's index over the DMTF
+  // bundle, or a YANG-derived index for gNMI.
+  //
+  // This is the normal case, including for gNMI. A gNMI descriptor pool
+  // describes the transport envelope — Notification, Update, Path, TypedValue
+  // — and not the data model. A path such as
+  // /interfaces/interface[name=eth0]/state/counters/in-octets is defined by a
+  // YANG module, and the value's type comes from YANG rather than from the
+  // proto, so gNMI needs a generated index exactly as Redfish does.
+  BACKEND_SCHEMA_INDEX = 1;
+
+  // A protobuf descriptor pool, for payloads that really are proto-described:
+  // gNMI subscriptions negotiated with PROTO encoding against generated
+  // messages, or a gRPC telemetry API whose responses are the data model.
+  // Only here is type checking total.
+  BACKEND_DESCRIPTOR_POOL = 2;
+}
+
+// How a source reports a value that is present but null.
+enum NullPolicy {
+  NULL_POLICY_UNSPECIFIED = 0;
+
+  // Treat null as though the property were absent.
+  NULL_POLICY_ABSENT = 1;
+
+  // Report null as an invalid field. The device answered and the answer
+  // cannot be represented, which is a different fact from silence.
+  NULL_POLICY_INVALID = 2;
+
+  // Carry null through as an explicit null, which the resource graph
+  // preserves.
+  NULL_POLICY_EXPLICIT_NULL = 3;
+}
+
+// How one source path relates to its target field.
+enum Cardinality {
+  CARDINALITY_UNSPECIFIED = 0;
+
+  // One source value, one target value.
+  CARDINALITY_SINGLE = 1;
+
+  // A repeated source value projected element by element into a repeated
+  // target. gNMI leaf-lists arrive this way.
+  CARDINALITY_ELEMENTWISE = 2;
+}
+
+message Manifest {
+  // Source identity, matching the provider vocabulary, such as "redfish".
+  string source = 1;
+
+  Backend backend = 2;
+
+  // Where the index lives, interpreted according to `backend`.
+  string index = 3;
+
+  repeated Projection projections = 4;
+}
+
+message Projection {
+  string name = 1;
+
+  // Path of the source message, in the source's own schema vocabulary.
+  string source_type = 2;
+
+  // Fully-qualified target message in nv.telemetry.v1.
+  string target_type = 3;
+
+  Subject subject = 4;
+
+  repeated FieldMapping fields = 5;
+
+  // Path of a collection that produces one target message per element, such
+  // as a Redfish Sensors collection or a gNMI Notification's updates. Field
+  // paths are then relative to the element. Absent means the source message
+  // projects once.
+  string iterate = 6;
+
+  // Source schema versions this projection is checked against. Empty means
+  // every version the index knows.
+  repeated VersionRange versions = 7;
+}
+
+// A version range for one source type, half-open at the upper end.
+message VersionRange {
+  // Source type the range applies to, such as "Sensor".
+  string type = 1;
+
+  // Inclusive lower bound, in the source's own version grammar.
+  string since = 2;
+
+  // Exclusive upper bound. Absent means unbounded.
+  string before = 3;
+}
+
+// How a projection derives the subject of what it produces.
+//
+// A subject names what a thing is, never where it was read from. Where an
+// identifier is unique only within a collection, the subject carries enough of
+// the containing scope to separate them. A location that does not yield the
+// scope is reported as an invalid field rather than guessed at, because a
+// wrong subject silently joins to the wrong resource.
+message Subject {
+  string kind = 1;
+
+  // What contributes the containing scope, outermost first.
+  repeated ScopeSource scope = 2;
+
+  // Path of the identifier within that scope.
+  string id_path = 3;
+}
+
+// One contributor to a subject's scope.
+message ScopeSource {
+  oneof from {
+    // A property of the payload.
+    string payload_path = 1;
+
+    // A capture from the resource's location, written as a template over the
+    // source's own location grammar, such as
+    // "/redfish/v1/Chassis/{chassis}/Sensors/{id}". The named capture used is
+    // given by `capture`.
+    string location_template = 2;
+
+    // A key on the addressing path, such as a gNMI PathElem key. gNMI carries
+    // these structurally, so no template is needed.
+    string path_key = 3;
+  }
+
+  // Which named capture of `location_template` to take.
+  string capture = 4;
+}
+
+message FieldMapping {
+  string source_path = 1;
+
+  // Target field, as a dotted path into the target message so that a nested
+  // field or a oneof case can be addressed, such as "range.min" or
+  // "value.double_value".
+  string target_field = 2;
+
+  // A missing required field prevents the projection from producing output
+  // and is reported as a projection issue; a missing optional field is not.
+  bool required = 3;
+
+  // Unit to record when the source does not carry one, in UCUM.
+  string unit = 4;
+
+  // For open enumerations, which project to strings: an unlisted value is
+  // reported rather than coerced.
+  repeated string known_values = 5;
+
+  // Path of a property carrying the unit per instance, which Redfish sensors
+  // do. Takes precedence over `unit`.
+  string unit_path = 6;
+
+  // What an explicitly null source value means.
+  NullPolicy null_policy = 7;
+
+  Cardinality cardinality = 8;
+
+  // Rewrites source values to contract values, for sources that spell the
+  // same fact differently. An unlisted value is reported as invalid unless
+  // the source enumeration is open.
+  repeated ValueMapping value_map = 9;
+}
+
+// One source value and the contract value it becomes.
+message ValueMapping {
+  string from = 1;
+  string to = 2;
+}

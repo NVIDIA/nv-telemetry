@@ -1,0 +1,31 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Fixture for the rules that are not about presence. Each is reachable only
+// from a declaration shape that is otherwise legal, so without this file they
+// could be deleted from the compiler with the suite staying green.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+
+message Hashed {
+  // Hashing without validation: canonicalization never runs, so equal content
+  // would not hash equal.
+  option (nv.telemetry.options.v1.message_invariant) = {
+    hashable: true
+  };
+
+  optional double value = 1;
+}
+
+message Extendable {
+  extensions 100 to 200;
+}
+
+// A declaration site the invariant rules do not reach.
+extend Extendable {
+  optional double sneaky = 100;
+}

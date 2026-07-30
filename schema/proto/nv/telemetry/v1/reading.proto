@@ -1,0 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Numeric and state readings, referencing their descriptor by
+// signal key so units and bounds are not repeated on every sample.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+option csharp_namespace = "Nvidia.NvTelemetry.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
+option java_package = "com.nvidia.nvtelemetry.v1";

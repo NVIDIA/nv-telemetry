@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# buf is a checker here, never a compiler. The descriptor set is built by
+# protox from `schema/build.rs`, so `cargo build` needs no external binary and
+# a consumer of the data plane pulls only `prost`. buf runs as a gate.
+version: v2
+
+modules:
+  # Only the shipped contract. Compiler test fixtures deliberately declare
+  # malformed schemas, so linting them would be checking that our own
+  # counter-examples are well-formed.
+  - path: schema/proto
+
+lint:
+  use:
+    - STANDARD
+
+breaking:
+  # PACKAGE rather than the default FILE. The contract is one package spread
+  # over several files, so FILE would report a message moving between them as
+  # a break when nothing about the wire format changed. PACKAGE still catches
+  # everything that strands a consumer, including FIELD_SAME_CARDINALITY,
+  # which is what makes a field quietly losing explicit presence an error.
+  use:
+    - PACKAGE
