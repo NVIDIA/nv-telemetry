@@ -4,12 +4,124 @@
 // Recursive property values: null, bool, signed and unsigned 64-bit
 // integers, finite double, string, bytes, timestamp, list, and key-sorted map.
 // Deliberately not google.protobuf.Struct, which collapses every number to
-// double and cannot represent bytes or timestamps.
+// double and cannot represent bytes or timestamps — and foreign types are
+// excluded from the contract anyway, because the invariant rules cannot see
+// inside them.
+//
+// This file also declares the contract's own Timestamp and the numeric union
+// readings use, for the same reason: google.protobuf.Timestamp is a foreign
+// type, and a gNMI counter is a uint64 that a double would silently truncate
+// above 2^53.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// An instant in time, UTC.
+message Timestamp {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // Seconds since the Unix epoch.
+  optional int64 seconds = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Nanoseconds within the second. Required rather than defaulted so one
+  // instant has exactly one representation; absent-versus-zero would make
+  // equal instants compare and hash unequal. Validation bounds it below one
+  // second, which is a wrapper rule: the vocabulary has no numeric range.
+  optional uint32 nanos = 2 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+}
+
+// The null type's one inhabitant. A property that is present and explicitly
+// null is a different fact from a property that is absent, and the resource
+// graph preserves the difference.
+message Null {}
+
+// A numeric sample.
+//
+// A union rather than a bare double because counters are 64-bit integers:
+// a gNMI in-octets value above 2^53 would silently lose precision in a
+// double, which is a fabricated observation with extra steps.
+message NumericValue {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  oneof kind {
+    option (nv.telemetry.options.v1.oneof_invariant) = {required: true};
+
+    double double_value = 1 [(nv.telemetry.options.v1.field_invariant) = {finite: true}];
+
+    sint64 int_value = 2;
+
+    uint64 uint_value = 3;
+  }
+}
+
+message Value {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    max_depth: 32
+  };
+
+  message List {
+    option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+    // Order is data here — a list reports what the device reported, in the
+    // order it reported it — so this is the repeated field canonicalization
+    // must not sort.
+    repeated Value values = 1 [(nv.telemetry.options.v1.field_invariant) = {max_items: 1024}];
+  }
+
+  message Map {
+    option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+    message Entry {
+      option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+      optional string key = 1 [(nv.telemetry.options.v1.field_invariant) = {
+        required: true
+        max_len: 256
+      }];
+
+      optional Value value = 2 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+    }
+
+    // Key-sorted: canonicalization orders entries by key, which also makes
+    // duplicate keys adjacent, and validation rejects them. An entry list
+    // rather than a proto map because a proto map has no wire order to
+    // canonicalize, silently keeps the last duplicate, and its synthetic
+    // entry fields cannot carry bounds.
+    repeated Entry entries = 1 [(nv.telemetry.options.v1.field_invariant) = {
+      unordered: true
+      max_items: 1024
+    }];
+  }
+
+  oneof kind {
+    option (nv.telemetry.options.v1.oneof_invariant) = {required: true};
+
+    Null null_value = 1;
+
+    bool bool_value = 2;
+
+    sint64 int_value = 3;
+
+    uint64 uint_value = 4;
+
+    double double_value = 5 [(nv.telemetry.options.v1.field_invariant) = {finite: true}];
+
+    string string_value = 6 [(nv.telemetry.options.v1.field_invariant) = {max_len: 4096}];
+
+    bytes bytes_value = 7 [(nv.telemetry.options.v1.field_invariant) = {max_len: 4096}];
+
+    Timestamp timestamp_value = 8;
+
+    List list_value = 9;
+
+    Map map_value = 10;
+  }
+}

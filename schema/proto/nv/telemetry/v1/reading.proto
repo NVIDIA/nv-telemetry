@@ -1,13 +1,51 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Numeric and state readings, referencing their descriptor by
-// signal key so units and bounds are not repeated on every sample.
+// Numeric readings, referencing their descriptor by signal key so units and
+// bounds are not repeated on every sample.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/signal.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// One numeric sample. A reading always has a value: a sensor that answered
+// without one is reporting state, not a reading, and state is its own payload
+// domain. A sensor that did not answer produces nothing — never a zero.
+message Reading {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional SignalKey key = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional NumericValue value = 2 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // When the source stamps individual samples, as a metric report does. The
+  // batch window covers samples that carry no time of their own.
+  optional Timestamp observed_at = 3;
+}
+
+// The readings payload domain.
+message Readings {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // Every key referenced by a sample must resolve here — a wrapper rule — so
+  // a batch is self-describing to a consumer that arrives mid-stream or reads
+  // it out of storage. Units and bounds repeat per batch, not per sample; the
+  // in-process catalog deduplicates descriptors across batches.
+  repeated SignalDescriptor descriptors = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 65536
+  }];
+
+  repeated Reading samples = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 65536
+  }];
+}

@@ -1,14 +1,77 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Signal identity and metadata: the canonical key that acquisition
-// routes agree on, and the descriptor carrying what a signal is — identity,
-// kind, unit, and the range the sensor can read.
+// Signal identity and metadata: the canonical key that acquisition routes
+// agree on, and the descriptor carrying what a signal *is* — identity, kind,
+// unit, and the range the sensor can read.
+//
+// Metadata and samples are projected separately, and every route to the same
+// signal — a Sensor resource, an EnvironmentMetrics property, a MetricReport
+// entry — reduces to the same key, so the planner can change acquisition
+// routes without changing public reading identity. What a signal is stops at
+// what cannot be written: device-settable configuration such as alarm
+// thresholds is observed as resource state instead, because carrying it in
+// both places would give one fact two representations that can disagree.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/subject.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// The canonical identity of one signal.
+message SignalKey {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+  };
+
+  // The resource the signal belongs to. Keys reduce to the resource denoted:
+  // a metric report naming a reading with a property fragment the sensor
+  // resource does not use still reduces to this subject, at key construction
+  // rather than at each join.
+  optional Subject subject = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Which of the resource's signals, where one resource carries several — a
+  // power supply reporting both watts and kilowatt-hours. Absent when the
+  // resource carries a single signal.
+  optional string facet = 2 [(nv.telemetry.options.v1.field_invariant) = {max_len: 128}];
+}
+
+// The range a sensor can read. Not alarm thresholds: a threshold is writable
+// on most implementations, which makes it resource state.
+message ValueRange {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // At least one bound must be present, and min must not exceed max — both
+  // wrapper rules, since the vocabulary has no cross-field constraints.
+  optional NumericValue min = 1;
+
+  optional NumericValue max = 2;
+}
+
+// What a signal is. Immutable: a refresh reporting an unchanged definition is
+// the same descriptor, so revision counting — a catalog concern, not a wire
+// one — counts real definition changes rather than polls.
+message SignalDescriptor {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional SignalKey key = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // What the signal measures — temperature, power, energy — in the
+  // contract's vocabulary. A string rather than an enum because source
+  // reading types are open sets; projection maps and validates them.
+  optional string kind = 2 [(nv.telemetry.options.v1.field_invariant) = {max_len: 128}];
+
+  // Unit of every sample under this key, in UCUM. Absent for dimensionless
+  // signals.
+  optional string unit = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 64}];
+
+  optional ValueRange range = 4;
+}

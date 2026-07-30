@@ -1,12 +1,54 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// State observations for device-reported condition.
+// State observations: targeted facts about device-reported condition.
+//
+// This is where writable things land. A descriptor carries only what a signal
+// is; an alarm threshold is writable on most implementations, which makes it
+// a convergence target rather than reading metadata, so it is observed here
+// and consumers join it to readings by subject.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/subject.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// One observed fact about one resource: this subject's `name` facet had this
+// value. Deliberately one fact per observation rather than a bag, so partial
+// observation needs no inner completeness story — the full structured
+// snapshot is the resource graph's job.
+message StateObservation {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional Subject subject = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Which facet of the resource's condition — state, health, a threshold —
+  // in the contract's vocabulary once projection has mapped it.
+  optional string name = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 256
+  }];
+
+  optional Value value = 3 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // When the source stamps the observation itself; the batch window covers
+  // the rest.
+  optional Timestamp observed_at = 4;
+}
+
+// The state payload domain.
+message States {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  repeated StateObservation observations = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 65536
+  }];
+}

@@ -1,14 +1,118 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Observation batch: shared endpoint context, provenance, the
-// observation window, completeness, and exactly one homogeneous payload
-// domain.
+// The observation batch: shared endpoint context, provenance, the observation
+// window, completeness, and exactly one homogeneous payload domain.
+//
+// Completeness is part of the observation, not an acquisition error: a
+// complete snapshot may establish that previously known things are absent, a
+// partial snapshot must not silently delete what it did not observe, and a
+// failed request emits no batch at all — never a fabricated one.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/graph.proto";
+import "nv/telemetry/v1/inventory.proto";
+import "nv/telemetry/v1/log.proto";
+import "nv/telemetry/v1/reading.proto";
+import "nv/telemetry/v1/state.proto";
+import "nv/telemetry/v1/subject.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+enum Completeness {
+  COMPLETENESS_UNSPECIFIED = 0;
+  COMPLETENESS_COMPLETE = 1;
+  COMPLETENESS_PARTIAL = 2;
+}
+
+// What the batch covers and how completely. Absence can only be inferred
+// inside the declared scope of a complete batch.
+message Coverage {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // UNSPECIFIED is rejected by validation: a batch that does not know its own
+  // completeness cannot be used to reason about absence.
+  optional Completeness completeness = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // The subtree observed; absent means the whole endpoint. On a graph
+  // payload, scope means reachability from this subject.
+  optional Subject scope = 2;
+}
+
+// Identity and static attributes of the endpoint, carried once per batch so
+// items do not copy their context.
+message EndpointContext {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional string endpoint_id = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 256
+  }];
+
+  // Static attributes such as rack, serial number, and device class.
+  // Credentials must never appear here.
+  optional Value.Map attributes = 2;
+}
+
+// Which provider produced this batch, under which request class — the
+// provenance the planner and dispatcher policy key off.
+message Origin {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional string provider = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 128
+  }];
+
+  optional string request_class = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 128
+  }];
+}
+
+// The observation time or window. A point in time carries no end; when an end
+// is present it must follow the start — a wrapper rule — so a point has
+// exactly one representation.
+message ObservationWindow {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional Timestamp start = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional Timestamp end = 2;
+}
+
+message ObservationBatch {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional EndpointContext endpoint = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional Origin origin = 2 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional ObservationWindow window = 3 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional Coverage coverage = 4 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Exactly one homogeneous payload domain. A response that yields both
+  // readings and inventory becomes two batches sharing context, not one
+  // mixed batch.
+  oneof payload {
+    option (nv.telemetry.options.v1.oneof_invariant) = {required: true};
+
+    Readings readings = 10;
+
+    Logs logs = 11;
+
+    States states = 12;
+
+    Inventory inventory = 13;
+
+    ResourceGraph resources = 14;
+  }
+}

@@ -1,14 +1,125 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Observed resource graph: canonical subjects, source keys,
-// recursive properties, explicit nulls, unresolved references, and typed
-// directed relationships.
+// The observed resource graph: the structured snapshot domain for
+// out-of-band device state. It preserves canonical subjects, original source
+// keys, source schemas and versions, recursive properties, explicit nulls,
+// unresolved references, and typed directed relationships.
+//
+// Graphs are canonically ordered and content-hashable, because a convergence
+// adapter depends on exact comparison that reports no spurious change.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/subject.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// A link the walk could not yet name: the location is known, the identity is
+// not. It becomes a relationship when a later pass resolves it. Kept distinct
+// because an identity invented to force an edge would be indistinguishable
+// from a real external target, and that distinction is what keeps a partial
+// walk honest.
+message UnresolvedReference {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // Where the link points, in the source's own location grammar.
+  optional string location = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 1024
+  }];
+
+  // The property that held the link, when one did.
+  optional string property = 2 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+}
+
+message ObservedResource {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional Subject subject = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // The one source location this resource maps to. Data from another URI
+  // becomes its own resource joined by a relationship, never a merge, because
+  // merging collapses two observation times and two entity tags into one.
+  optional string source_key = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 1024
+  }];
+
+  // The source's schema and version for this resource, such as
+  // "#Sensor.v1_2_0.Sensor".
+  optional string source_schema = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+
+  // The source's change marker for this resource, such as an entity tag.
+  optional string entity_tag = 4 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+
+  optional Timestamp observed_at = 5;
+
+  optional Value.Map properties = 6;
+
+  // Whether `properties` is the device's full representation. Required rather
+  // than defaulted, so a consumer can always tell a property the device does
+  // not implement from one that was never requested — a convergence consumer
+  // that conflated the two would read an uncollected property as unset and
+  // attempt to write it.
+  optional bool properties_complete = 7 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  repeated UnresolvedReference unresolved = 8 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 1024
+  }];
+}
+
+// A typed, directed edge. Both ends are identities, so an edge is a resolved
+// claim rather than a collected one: stating it costs no fetch, only
+// knowledge of what the target is called.
+message ResourceRelation {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // Must name a resource present in the graph — a wrapper rule — because the
+  // source is the resource on which the relation was observed.
+  optional Subject source = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // May be outside the collected graph, so partial walks retain external
+  // links.
+  optional Subject target = 2 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // What the edge means — containment, management, fabric — an open
+  // vocabulary, so a string. Cycles are valid: these relationships do not
+  // form one universal tree.
+  optional string kind = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 128
+  }];
+}
+
+// The graph payload domain.
+//
+// Scope on a graph batch means reachability from the scope subject rather
+// than subject equality, following relations from source to target — so a
+// subtree must hang off its root by outgoing edges, which is a constraint on
+// projections: a walk recording only each child naming its parent produces a
+// graph its own root cannot reach. Reachability is a wrapper rule on complete
+// graphs.
+message ResourceGraph {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+  };
+
+  repeated ObservedResource resources = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 65536
+  }];
+
+  repeated ResourceRelation relations = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 131072
+  }];
+}

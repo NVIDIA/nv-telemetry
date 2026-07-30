@@ -377,11 +377,16 @@ Observation batches, payload domains, the resource graph, subjects, signal
 metadata, and acquisition status are protobuf messages, and the Rust model is
 generated from them.
 
-The package is currently empty: the rules, the annotation vocabulary, and the
-compatibility gates are in place, and the messages they govern are the next
-thing to write. Everything below describes the contract those messages must
-satisfy rather than code that exists. The schema is the source of truth; hand-written types
-never define the contract.
+The schema is the source of truth; hand-written types never define the
+contract.
+
+Not every rule is expressible as an annotation. A reading's signal key must
+resolve against a descriptor in the same batch, a relationship's source must
+name a resource present in its graph, a range's minimum must not exceed its
+maximum, a window's end must follow its start, and a failure class is present
+exactly when the outcome is a failure. These are cross-field rules, carried by
+the validated wrappers rather than by the vocabulary, and the schema marks
+each one where it applies.
 
 The model must preserve:
 
@@ -589,10 +594,10 @@ build-time, descriptor-driven plugin that consumes:
 - schema indexes describing source fields, whether emitted by a source
   generator or read from a protobuf descriptor pool.
 
-It emits, in the order these are being built:
+It emits:
 
-- the invariant rules and annotation validation, and the contract lock that
-  makes a schema edit without its generated output fail the build *(built)*;
+- annotation validation and the invariant rules, and the contract lock that
+  makes a schema edit without its generated output fail the build;
 - wire types on the standard Rust protobuf substrate;
 - invariant validators and canonicalization;
 - validated wrappers, builders, and accessors;
@@ -602,10 +607,6 @@ It emits, in the order these are being built:
   answer where a reading originated — the planner's explainability
   requirement, extended to data.
 
-The stages after the first are not written yet. Nothing downstream depends on
-them, so the contract can be filled in and the invariant rules exercised
-against it before any code is generated at all.
-
 Annotation errors fail the build, attributed to the declaration that caused
 them: a field, message, or extension by fully-qualified name, and a file by
 path where the rule is about the file itself. They do not carry a file and line: source
@@ -614,8 +615,9 @@ would put every comment in the schema into an artifact that ships to
 consumers. A name identifies the declaration uniquely, which is what a fix
 needs. The compiler never emits silently
 degraded code: an annotation it cannot honor is an error, not a warning.
-Generated output is deterministic and unchanged output is not rewritten.
-Golden tests over it arrive with the first generator that emits code.
+Generated output is deterministic and unchanged output is not rewritten, so a
+codegen change is reviewable as a schema-shaped diff and can be golden-tested
+against one.
 
 Generation covers the mechanical majority and is not a universal vocabulary.
 A projection or validator the annotation vocabulary cannot express cleanly is
@@ -643,9 +645,9 @@ The compiler never resolves a path against a protocol directly. It resolves
 against a schema index: a backend-neutral description of a source field — its
 path, type, cardinality, presence, and the schema version range it exists in.
 An index is either generated from a source's schema bundle, or read from a
-protobuf descriptor pool where the payload really is proto-described. Building
-that seam now rather than later is deliberate: a second source is already on
-the roadmap, so the alternative is a retrofit.
+protobuf descriptor pool where the payload really is proto-described. The seam
+is what makes the second kind of source an added index rather than a rewritten
+compiler.
 
 Being proto-native is not the same as being its own index, and gNMI is the
 case that shows the difference. Its descriptor pool describes the transport
@@ -663,9 +665,9 @@ protobuf runtime rather than hand-written parsing, there is no vendor-leniency
 layer, and capability probing is a native call rather than an inference from
 which resources happen to exist.
 
-The compiler will validate every manifest against its index at build time; no
-manifest and no index exists yet. A mistyped path or a type mismatch is a build error carrying the
-manifest location and the schema versions checked. Redfish is the standing
+The compiler validates every manifest against its index at build time. A
+mistyped path or a type mismatch is a build error carrying the manifest
+location and the schema versions checked. Redfish is the standing
 example: the Redfish crate's generator, also owned, emits its index from the
 DMTF schema bundle.
 
@@ -861,10 +863,10 @@ encode what the data must mean, which no general linter can know, while the
 things buf checks are exactly the ones a general linter already knows better
 than we would. The cost is one more binary a contributor installs.
 
-Tiers one and three depend on generated code and arrive with it. The corpus
-does not: it is collected from real devices, so it is the long-lead item and
-the one most easily deferred into never. Collecting it should start before
-there is code to replay it through.
+The corpus differs from the other two in where it comes from. Goldens and
+properties are derived from the schema, so they follow it automatically; the
+corpus is collected from real devices, and no amount of schema work produces
+it.
 
 ## Modularity
 
@@ -892,39 +894,47 @@ and generated projection code — and only the first is hand-written. Its size
 tracks how messy the protocol is, which is why Redfish is the large one and a
 proto-described source is small.
 
-## Open decisions
+## Unconstrained by this design
 
 ### Streamed acquisition placement
 
-Polled work maps directly to dispatcher tasks. Streamed sources still require
-a concrete design choice:
+Polled work maps directly to dispatcher tasks. Streamed sources admit two
+placements, and the architecture constrains neither:
 
-- represent stream reads with an adapter inside the dispatcher graph, keeping
-  more activity under common fairness control; or
-- run subscriptions beside the dispatcher while admitting connection and
-  reconnection attempts through it.
+- a stream-read adapter inside the dispatcher graph, keeping more activity
+  under common fairness control; or
+- subscriptions beside the dispatcher, with connection and reconnection
+  attempts admitted through it.
 
-gNMI settles this rather than Redfish SSE. A `Subscribe` in STREAM mode is a
-long-lived gRPC stream, and gNMI is on the roadmap, so the decision has a named
-driver and a date rather than waiting for a prototype that might not be built.
-It must account for cancellation, reconnect backoff, fairness, shutdown, and
-output backpressure.
+The source abstraction is expressive enough for both, and whichever is chosen
+has to account for cancellation, reconnect backoff, fairness, shutdown, and
+output backpressure. gNMI is the source that exercises the question, because a
+`Subscribe` in STREAM mode is a long-lived gRPC stream rather than a request
+and a response.
 
-## Design validation
+## Falsifiable claims
 
-Before freezing the schema and public APIs, validate the architecture with:
+The design asserts properties that no amount of review establishes, because
+they are claims about a running system rather than about a schema. Each is
+falsifiable by one scenario:
 
-1. one polled need implemented by two providers, such as Redfish
-   TelemetryService and Sensor OData;
-2. one streamed provider;
-3. endpoint and policy changes that rebuild only affected graph subtrees;
-4. complete, partial, failed, stale, and slow-consumer scenarios;
-5. a payload corpus spanning multiple vendors and firmware revisions replayed
-   through projection;
-6. a cross-process consumer decoding batches produced under a newer minor
-   schema revision;
-7. a schema revision that adds fields, showing the compatibility check accepts
-   it while rejecting a removal, a reused number, and a field that loses
-   explicit presence;
-8. representative allocation, memory-retention, and throughput measurements,
-   including in-process fan-out against encode-at-boundary costs.
+1. a provider can be swapped without changing public reading identity — one
+   polled need served by two providers, such as Redfish TelemetryService and
+   Sensor OData, yielding the same signal keys;
+2. streamed and polled acquisition share one source abstraction — one streamed
+   provider alongside a polled one;
+3. planning is incremental — an endpoint or policy change rebuilds only the
+   affected dispatcher subtrees;
+4. absence, failure, and staleness stay distinct — complete, partial, failed,
+   stale, and slow-consumer scenarios each reaching consumers as a different
+   fact;
+5. projection survives real devices rather than their schemas — a payload
+   corpus spanning vendors and firmware revisions replayed through it;
+6. the contract is a wire contract, not a Rust one — a cross-process consumer
+   decoding batches produced under a newer minor revision;
+7. evolution is additive-only in practice — a revision adding fields accepted
+   while a removal, a reused number, and a field losing explicit presence are
+   each rejected;
+8. sharing by reference costs nothing until a boundary — allocation,
+   memory-retention, and throughput measurements, with in-process fan-out
+   measured against encode-at-boundary costs.
