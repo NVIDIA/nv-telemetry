@@ -119,28 +119,15 @@ scope root and every collected resource must be reachable from it. Projections
 that model containment should emit parent-to-child `contains` relations rather
 than only inverse edges.
 
-## Serde compatibility policy
+## Serde representation
 
-The optional `serde` feature preserves the existing representation of values
-accepted by current model invariants. Semantic string wrappers remain
-transparent, `Retryable::{Yes, No}` remain JSON/CBOR booleans, and
-invariant-bearing values deserialize through the same checks used by
-constructors. A legacy `ValueRange` with `lower > upper` is therefore
-intentionally rejected.
+The optional `serde` feature keeps semantic string wrappers transparent and
+encodes `Retryable::{Yes, No}` as booleans. Invariant-bearing values
+deserialize through the same checks used by constructors, so an inverted
+`ValueRange` is rejected. Readings encode a descriptor table and index rows
+into it, preserving descriptor sharing after deserialization.
 
-Wire evolution is strict:
-
-- do not send observation fields or enum variants to a reader that does not
-  know them;
-- an integration receiving mixed-version data must reject an unknown
-  observation shape at its schema/version boundary, never deserialize and
-  silently re-emit a value with newer fields removed;
-- adding a required field, changing a field meaning, or changing a wire shape
-  requires an explicit compatibility plan and normally a major version;
-- accepted legacy JSON and CBOR fixtures, and intentional legacy rejections,
-  are kept as compatibility tests.
-
-Serde support validates known core values; it is not a version-negotiating
+Serde validates the current core model; it is not a version-negotiating
 envelope. Systems that persist or exchange observations should carry an
 external schema/version discriminator and validate it before decoding.
 
@@ -189,40 +176,12 @@ fn build_batch() -> Result<ObservationBatch, Box<dyn std::error::Error>> {
 }
 ```
 
-## Migration from the pre-0.1 API
-
-Intentional source breaks:
-
-- pass typed components to `Subject`, `Origin`, and `SignalDescriptor`
-  constructors instead of interchangeable strings;
-- replace `finite!(value)` with `Finite::new(value)` and handle its
-  `Result`;
-- replace `GraphLimits::new(resources, relations)` with
-  `GraphLimits::default().with_max_resources(resources)
-  .with_max_relations(relations)`;
-- replace reads of `NonFiniteError::value` with matches on its `NaN`,
-  `PositiveInfinity`, and `NegativeInfinity` classifications;
-- replace `resource.establishes_absence()` with
-  `resource.completeness.establishes_absence()`;
-- replace removed row and resource macros/builders with constructors,
-  `with_*` methods, `Vec::into_boxed_slice`, and `ResourceGraph::new`;
-- replace unchecked or post-hoc range validation with the named `ValueRange`
-  constructors;
-- replace direct `PropertyValue::Array(values.into_boxed_slice())` construction
-  with `PropertyValue::array(values)?`; the wire representation remains an
-  ordinary array;
-- replace ambiguous unreachable-resource queries with
-  `reachability_from` and match all `Reachability` outcomes;
-- replace `outcome.retryable()` with `outcome.is_retryable()`, and pass
-  `Retryable::Yes` or `Retryable::No` to `AcquisitionOutcome::failed`; its
-  wire form remains a boolean.
-
 ## Package policy
 
 The minimum supported Rust version is Rust 1.89, declared by the workspace and
-checked in CI. The workspace lockfile is committed for reproducible
-development, CI, and instruction-count benchmarks; published libraries still
-use normal semver dependency ranges.
+checked in CI. This library workspace does not commit `Cargo.lock`; development,
+CI, and instruction-count benchmarks resolve the normal semver dependency
+ranges. Applications should lock the complete dependency graph they deploy.
 
 The default build has no serialization dependency. Enable serde with:
 

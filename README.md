@@ -8,11 +8,12 @@ Rust libraries for collecting and modeling bare-metal telemetry.
 - [`nv-telemetry-redfish`](redfish/README.md) projects Redfish resources into
   the core model.
 
-## Compatibility
+## Toolchain support
 
-The minimum supported Rust version (MSRV) is Rust 1.89. The workspace lockfile
-is checked in so development, CI, and instruction-count benchmarks resolve the
-same dependency versions.
+The minimum supported Rust version (MSRV) is Rust 1.89. As a library workspace,
+the repository does not commit `Cargo.lock`; dependency versions are resolved
+from the manifest ranges. Applications embedding these crates should commit
+their own lockfile.
 
 ## Development
 

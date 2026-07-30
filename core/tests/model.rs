@@ -749,18 +749,58 @@ fn acquisition_failure_is_status_not_an_observation() {
     ));
 }
 
-/// `Retryable` is a named type so a call site reads, but it still has to
-/// encode as the boolean it replaced. Only its serde attributes hold that,
-/// and a round trip would not notice if they went.
+/// `Retryable` is a named type at the API boundary and a boolean in the
+/// serialized representation. A round trip alone would not catch a shape
+/// change, so assert both values directly.
 #[cfg(feature = "serde")]
 #[test]
-fn a_named_retry_decision_still_encodes_as_a_boolean() {
-    let outcome = AcquisitionOutcome::failed(FailureClass::Timeout, Retryable::Yes);
+fn retry_decisions_encode_as_booleans() {
+    assert_eq!(
+        serde_json::to_value(Retryable::Yes).expect("serialize yes"),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        serde_json::to_value(Retryable::No).expect("serialize no"),
+        serde_json::json!(false)
+    );
 
     assert_eq!(
-        serde_json::to_string(&outcome).expect("serialize outcome"),
+        serde_json::to_string(&AcquisitionOutcome::failed(
+            FailureClass::Timeout,
+            Retryable::Yes,
+        ))
+        .expect("serialize outcome"),
         r#"{"failed":{"class":"timeout","retryable":true}}"#
     );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn semantic_values_have_explicit_json_shapes_and_round_trip_through_cbor() {
+    let range = ValueRange::between(Finite::new(-5.0).unwrap(), Finite::new(100.0).unwrap())
+        .expect("ordered range");
+    let subject = Subject::new("sensor".into(), "CPU0Temp".into());
+    let origin = Origin::new("redfish".into(), "sensor-reading".into());
+
+    assert_eq!(
+        serde_json::to_value(range).expect("serialize range"),
+        serde_json::json!({"lower": -5.0, "upper": 100.0})
+    );
+    assert_eq!(
+        serde_json::to_value(&subject).expect("serialize subject"),
+        serde_json::json!({"kind": "sensor", "id": "CPU0Temp"})
+    );
+    assert_eq!(
+        serde_json::to_value(&origin).expect("serialize origin"),
+        serde_json::json!({"provider": "redfish", "request_class": "sensor-reading"})
+    );
+
+    let values = (Retryable::Yes, Retryable::No, range, subject, origin);
+    let mut encoded = Vec::new();
+    ciborium::into_writer(&values, &mut encoded).expect("encode current CBOR values");
+    let decoded: (Retryable, Retryable, ValueRange, Subject, Origin) =
+        ciborium::from_reader(encoded.as_slice()).expect("decode current CBOR values");
+    assert_eq!(decoded, values);
 }
 
 #[cfg(feature = "serde")]

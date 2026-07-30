@@ -33,7 +33,7 @@ jobs:
         with:
           toolchain: ${{ env.MSRV }}
       # Benchmark-only dependencies need CI_RUST; library users do not.
-      - run: cargo check --workspace --all-features --lib --locked
+      - run: cargo check --workspace --all-features --lib
 
   build-and-test:
     strategy:
@@ -81,10 +81,9 @@ jobs:
           valgrind --version
 
       - name: Benchmark merge-base
-        # Installs the runner matching the *base* lockfile, so a PR that
-        # bumps gungraun still measures the base correctly. Targets are
-        # discovered from Cargo metadata so additions and removals cannot
-        # silently leave a hard-coded target list stale.
+        # Resolves the base revision's dependency graph and installs its
+        # matching runner. Targets come from Cargo metadata so additions and
+        # removals cannot silently leave a hard-coded target list stale.
         run: |
           set -euo pipefail
           BASE=$(git merge-base HEAD origin/main)
@@ -101,6 +100,7 @@ jobs:
                 | .targets[] | select(.kind == ["bench"])
                 | [$package, .name] | @tsv'
           }
+          rm -f Cargo.lock
           mapfile -t BENCHES < <(discover_benches)
           : > "$RUNNER_TEMP/baseline-benches.tsv"
           VERSION=$(cargo metadata --format-version=1 \
@@ -125,8 +125,8 @@ jobs:
 
       - name: Benchmark head against base
         if: env.SKIP_COMPARE != '1'
-        # The runner version must match the head's library version;
-        # taken from the lockfile so they cannot drift.
+        # Resolve the head independently so its runner matches the dependency
+        # version selected for this revision.
         run: |
           set -euo pipefail
           discover_benches() {
@@ -135,6 +135,7 @@ jobs:
                 | .targets[] | select(.kind == ["bench"])
                 | [$package, .name] | @tsv'
           }
+          rm -f Cargo.lock
           mapfile -t BENCHES < <(discover_benches)
           if [ "${#BENCHES[@]}" = "0" ]; then
             echo "no benchmark targets at head"

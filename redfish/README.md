@@ -174,25 +174,6 @@ exceeds the configured bound and `SignalCatalogError::RevisionExhausted` if an
 installed signal has consumed the full `u64` revision space. Both errors retain
 the rejected metadata record.
 
-## Migration notes
-
-Intentional source breaks:
-
-- replace `telemetry_projection!` with a zero-sized type implementing
-  `Project<Input, Context>`; feed source values through `FieldValue` and
-  `Fields::{require, optional}`, then finish with `complete` or `incomplete`;
-- construct `SensorProjectionContext` and pass it to each Sensor projection;
-- consume `ProjectionResult` through its accessors or `into_parts`; direct
-  construction is not public;
-- use `Fields::optional` for invalid-but-nonblocking source fields;
-- consume `SensorResourceRecord` as a resource/relation pair instead of
-  treating the Sensor resource as a standalone graph;
-- handle `SignalCatalog::upsert` capacity errors and the `SignalUpdate::Stale`
-  outcome;
-- recover unresolved samples with `UnresolvedSignal::into_sample`;
-- use typed function pointers or adapters for runtime projection dispatch
-  instead of `dyn Project`.
-
 ## Package policy
 
 The crate has the workspace MSRV of Rust 1.89. Its path dependency on

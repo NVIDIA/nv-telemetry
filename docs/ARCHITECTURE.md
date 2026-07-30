@@ -151,19 +151,19 @@ shared descriptor while advancing confirmation time.
 An unresolved sample is returned in `UnresolvedSignal`, allowing the embedder
 to buffer and retry it after metadata arrives.
 
-## Compatibility and packaging
+## Serialization and packaging
 
-Core's serde representation preserves legacy values accepted by current model
-invariants, including transparent semantic wrappers and boolean `Retryable`
-values. Known values still pass constructor validation, so a legacy inverted
-`ValueRange` is intentionally rejected. Wire evolution is strict:
-mixed-version integrations must reject unknown observation shapes at a
-schema/version boundary rather than decode and silently drop newer data.
+Core's serde representation uses transparent semantic wrappers and boolean
+`Retryable` values. Deserialization applies the model's constructor checks, so
+an inverted `ValueRange` is rejected. Readings use a descriptor table on the
+wire and restore shared descriptors when decoded. Serde does not provide
+schema negotiation; integrations that need it must supply an external
+schema/version boundary.
 
 The workspace MSRV is Rust 1.89. Both packages inherit it, docs.rs builds all
 features, and the Redfish package gives its path dependency a publishable
-version. The committed lockfile pins development, CI, and benchmark resolution;
-published libraries continue to use semver dependency ranges.
+version. As a library workspace, the repository does not commit `Cargo.lock`;
+development, CI, and benchmarks resolve the semver ranges that consumers see.
 
 ## Deliberate non-goals
 
