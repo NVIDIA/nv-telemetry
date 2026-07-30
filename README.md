@@ -15,8 +15,10 @@ that schema by a compiler this project owns, so the contract consumers hold is
 the schema rather than a Rust crate: a batch is the same object to an
 in-process consumer, a service in another language, and stored history.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the
-reasoning behind it.
+See [docs/DATA-MODEL.md](docs/DATA-MODEL.md) for how the observation model
+works, with real Redfish and gNMI payloads mapped onto it, and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the reasoning
+behind it.
 
 # Project structure
 
