@@ -19,8 +19,10 @@ use std::fmt;
 use std::ops::Range;
 
 use super::collection::sort_and_find_duplicate;
+use super::name::name_newtype;
 use super::Name;
 use super::PropertyMap;
+use super::SourceKey;
 use super::Subject;
 use super::Timestamp;
 
@@ -44,6 +46,13 @@ pub enum ResourceCompleteness {
     Partial,
 }
 
+impl ResourceCompleteness {
+    /// Returns whether a missing property establishes that it is absent.
+    pub const fn establishes_absence(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+}
+
 /// One protocol-neutral resource observed on an endpoint.
 ///
 /// A resource corresponds to exactly one source location, identified by
@@ -56,7 +65,7 @@ pub enum ResourceCompleteness {
 pub struct ObservedResource {
     pub subject: Subject,
     /// The single source location this resource was read from.
-    pub source_key: Name,
+    pub source_key: SourceKey,
     pub completeness: ResourceCompleteness,
     pub schema: Option<Name>,
     pub version: Option<Name>,
@@ -66,11 +75,7 @@ pub struct ObservedResource {
 
 impl ObservedResource {
     /// Records a resource whose full representation was observed.
-    pub fn complete(
-        subject: Subject,
-        source_key: impl Into<Name>,
-        properties: PropertyMap,
-    ) -> Self {
+    pub fn complete(subject: Subject, source_key: SourceKey, properties: PropertyMap) -> Self {
         Self::new(
             subject,
             source_key,
@@ -80,7 +85,7 @@ impl ObservedResource {
     }
 
     /// Records a resource whose properties are a subset of the representation.
-    pub fn partial(subject: Subject, source_key: impl Into<Name>, properties: PropertyMap) -> Self {
+    pub fn partial(subject: Subject, source_key: SourceKey, properties: PropertyMap) -> Self {
         Self::new(
             subject,
             source_key,
@@ -91,13 +96,13 @@ impl ObservedResource {
 
     pub fn new(
         subject: Subject,
-        source_key: impl Into<Name>,
+        source_key: SourceKey,
         completeness: ResourceCompleteness,
         properties: PropertyMap,
     ) -> Self {
         Self {
             subject,
-            source_key: source_key.into(),
+            source_key,
             completeness,
             schema: None,
             version: None,
@@ -123,12 +128,15 @@ impl ObservedResource {
         self.observed_at = Some(observed_at);
         self
     }
-
-    /// Returns whether absence of a property is meaningful for this resource.
-    pub fn establishes_absence(&self) -> bool {
-        matches!(self.completeness, ResourceCompleteness::Complete)
-    }
 }
+
+/// Vocabulary identifying the meaning of a resource-graph edge.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct RelationKind(Name);
+
+name_newtype!(RelationKind);
 
 /// One directed, typed relationship in an observed resource graph.
 ///
@@ -159,16 +167,16 @@ impl ObservedResource {
 #[non_exhaustive]
 pub struct ResourceRelation {
     pub source: Subject,
-    pub kind: Name,
+    pub kind: RelationKind,
     pub target: Subject,
     pub properties: PropertyMap,
 }
 
 impl ResourceRelation {
-    pub fn new(source: Subject, kind: impl Into<Name>, target: Subject) -> Self {
+    pub fn new(source: Subject, kind: RelationKind, target: Subject) -> Self {
         Self {
             source,
-            kind: kind.into(),
+            kind,
             target,
             properties: PropertyMap::empty(),
         }
@@ -202,8 +210,8 @@ pub struct ResourceGraph {
 /// A malfunctioning or hostile endpoint can advertise an unbounded topology.
 /// The check happens once the input is collected, so it bounds what a graph
 /// can hold rather than what a caller can allocate on the way there; a source
-/// reading an endpoint incrementally should stop itself rather than fill a
-/// [`ResourceGraphBuilder`] and learn at `finish`.
+/// reading an endpoint incrementally should stop before filling its input
+/// vectors and only then learning the limit from [`ResourceGraph::with_limits`].
 ///
 /// Limits only ever tighten [`DEFAULT`](Self::DEFAULT). Deserialization has no
 /// caller to take them from and so applies the default, and a graph built past
@@ -213,8 +221,8 @@ pub struct ResourceGraph {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GraphLimits {
-    pub max_resources: usize,
-    pub max_relations: usize,
+    max_resources: usize,
+    max_relations: usize,
 }
 
 impl GraphLimits {
@@ -226,11 +234,48 @@ impl GraphLimits {
         max_relations: 500_000,
     };
 
-    pub const fn new(max_resources: usize, max_relations: usize) -> Self {
-        Self {
-            max_resources,
-            max_relations,
+    pub const fn max_resources(self) -> usize {
+        self.max_resources
+    }
+
+    pub const fn max_relations(self) -> usize {
+        self.max_relations
+    }
+
+    #[must_use]
+    pub const fn with_max_resources(mut self, max_resources: usize) -> Self {
+        self.max_resources = max_resources;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_relations(mut self, max_relations: usize) -> Self {
+        self.max_relations = max_relations;
+        self
+    }
+
+    /// Checks input sizes against these limits.
+    ///
+    /// Called before anything has been sorted, so oversized input costs no
+    /// more than counting it.
+    fn check_sizes(
+        self,
+        resources: &[ObservedResource],
+        relations: &[ResourceRelation],
+    ) -> Result<(), ResourceGraphError> {
+        if resources.len() > self.max_resources {
+            return Err(ResourceGraphError::TooManyResources {
+                count: resources.len(),
+                limit: self.max_resources,
+            });
         }
+        if relations.len() > self.max_relations {
+            return Err(ResourceGraphError::TooManyRelations {
+                count: relations.len(),
+                limit: self.max_relations,
+            });
+        }
+        Ok(())
     }
 
     /// Returns these limits with anything looser than the default pulled back.
@@ -281,17 +326,14 @@ impl ResourceGraph {
     /// [`ResourceGraphError::TooManyResources`] or
     /// [`ResourceGraphError::TooManyRelations`] if the graph exceeds `limits`.
     pub fn with_limits(
-        mut resources: Vec<ObservedResource>,
-        mut relations: Vec<ResourceRelation>,
+        resources: Vec<ObservedResource>,
+        relations: Vec<ResourceRelation>,
         limits: GraphLimits,
     ) -> Result<Self, ResourceGraphError> {
-        check_size(&resources, &relations, limits.clamped())?;
-        sort_unique_subjects(&mut resources)?;
-        check_unique_source_keys(&resources)?;
-        sort_unique_relations(&mut relations)?;
-        // Both sides are sorted on the same key by the two steps above, which
-        // is what lets this one be a single merge pass.
-        check_relation_sources(&resources, &relations)?;
+        limits.clamped().check_sizes(&resources, &relations)?;
+
+        let resources = SortedResources::new(resources)?;
+        let relations = SortedRelations::sourced_in(relations, &resources)?;
 
         Ok(Self {
             resources: resources.into_boxed_slice(),
@@ -355,7 +397,7 @@ impl ResourceGraph {
             .collect()
     }
 
-    /// Returns the first resource in graph order that `root` cannot reach.
+    /// Classifies whether `root` reaches every resource in the graph.
     ///
     /// Answering this by searching [`reachable_from`](Self::reachable_from)
     /// for a resource it omits costs a scan of the reachable set per resource.
@@ -363,12 +405,14 @@ impl ResourceGraph {
     /// and asks it only when the graph is being rejected, so the answer has to
     /// cost the same as the traversal itself.
     ///
-    /// Returns `None` when `root` is absent, since a graph missing its own
-    /// root has no resource to single out.
-    pub fn first_unreachable_from(&self, root: &Subject) -> Option<&Subject> {
-        let root = self.index_of(root)?;
-        let unreached = self.visit_from(root).first_unreached()?;
-        Some(&self.resource(unreached).subject)
+    pub fn reachability_from(&self, root: &Subject) -> Reachability<'_> {
+        let Some(root) = self.index_of(root) else {
+            return Reachability::MissingRoot;
+        };
+        match self.visit_from(root).first_unreached() {
+            Some(unreached) => Reachability::Unreachable(&self.resource(unreached).subject),
+            None => Reachability::FullyReachable,
+        }
     }
 
     /// Marks every resource reachable from the resource at `root`.
@@ -413,6 +457,15 @@ impl ResourceGraph {
     pub const fn is_empty(&self) -> bool {
         self.resources.is_empty()
     }
+}
+
+/// Outcome of checking whether a graph is wholly reachable from one subject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum Reachability<'graph> {
+    MissingRoot,
+    FullyReachable,
+    Unreachable(&'graph Subject),
 }
 
 /// A resource's position in the graph's subject-sorted resource list.
@@ -492,152 +545,99 @@ fn compare_relations(left: &ResourceRelation, right: &ResourceRelation) -> Order
         .then_with(|| left.target.cmp(&right.target))
 }
 
-/// Rejects input past `limits` before anything has been sorted, so oversized
-/// input costs no more than counting it.
-fn check_size(
-    resources: &[ObservedResource],
-    relations: &[ResourceRelation],
-    limits: GraphLimits,
-) -> Result<(), ResourceGraphError> {
-    if resources.len() > limits.max_resources {
-        return Err(ResourceGraphError::TooManyResources {
-            count: resources.len(),
-            limit: limits.max_resources,
-        });
-    }
-    if relations.len() > limits.max_relations {
-        return Err(ResourceGraphError::TooManyRelations {
-            count: relations.len(),
-            limit: limits.max_relations,
-        });
-    }
-    Ok(())
-}
-
-/// Orders resources by subject, rejecting a subject described twice.
-fn sort_unique_subjects(resources: &mut [ObservedResource]) -> Result<(), ResourceGraphError> {
-    match sort_and_find_duplicate(resources, |left, right| left.subject.cmp(&right.subject)) {
-        Some(duplicate) => Err(ResourceGraphError::DuplicateResource(
-            duplicate.subject.clone(),
-        )),
-        None => Ok(()),
-    }
-}
-
-/// Rejects one source location described by two resources.
-fn check_unique_source_keys(resources: &[ObservedResource]) -> Result<(), ResourceGraphError> {
-    let mut source_keys: Vec<&Name> = resources
-        .iter()
-        .map(|resource| &resource.source_key)
-        .collect();
-    match sort_and_find_duplicate(&mut source_keys, Ord::cmp) {
-        Some(duplicate) => Err(ResourceGraphError::DuplicateSourceKey(Name::clone(
-            duplicate,
-        ))),
-        None => Ok(()),
-    }
-}
-
-/// Orders relations by source, then kind, then target, rejecting a repeat.
-fn sort_unique_relations(relations: &mut [ResourceRelation]) -> Result<(), ResourceGraphError> {
-    match sort_and_find_duplicate(relations, compare_relations) {
-        Some(duplicate) => Err(ResourceGraphError::DuplicateRelation {
-            source: duplicate.source.clone(),
-            kind: duplicate.kind.clone(),
-            target: duplicate.target.clone(),
-        }),
-        None => Ok(()),
-    }
-}
-
-/// Rejects an edge leaving a subject the graph does not hold.
+/// Resources ordered by subject, each subject and each source location
+/// appearing once.
 ///
-/// Both slices arrive sorted on the subject, so one merge pass answers this.
-/// A relation the walk leaves behind sorts before every remaining resource
-/// and so can never match one.
-fn check_relation_sources(
-    resources: &[ObservedResource],
-    relations: &[ResourceRelation],
-) -> Result<(), ResourceGraphError> {
-    let mut relation = 0;
-    for resource in resources {
-        while let Some(next) = relations.get(relation) {
-            match next.source.cmp(&resource.subject) {
-                Ordering::Less => {
-                    return Err(ResourceGraphError::UnknownRelationSource(
-                        next.source.clone(),
-                    ));
+/// That order is what lets a lookup binary search and what lets
+/// relation-source validation be a single merge pass. Both depend on work the
+/// caller has to have done first, so it is held in a type: the only way to
+/// obtain one is to sort, which makes the ordering a precondition the compiler
+/// checks rather than one a comment asks for.
+struct SortedResources(Vec<ObservedResource>);
+
+impl SortedResources {
+    fn new(mut resources: Vec<ObservedResource>) -> Result<Self, ResourceGraphError> {
+        if let Some(duplicate) = sort_and_find_duplicate(&mut resources, |left, right| {
+            left.subject.cmp(&right.subject)
+        }) {
+            return Err(ResourceGraphError::DuplicateResource(
+                duplicate.subject.clone(),
+            ));
+        }
+
+        let mut source_keys: Vec<&SourceKey> = resources
+            .iter()
+            .map(|resource| &resource.source_key)
+            .collect();
+        if let Some(duplicate) = sort_and_find_duplicate(&mut source_keys, Ord::cmp) {
+            return Err(ResourceGraphError::DuplicateSourceKey(SourceKey::clone(
+                duplicate,
+            )));
+        }
+
+        Ok(Self(resources))
+    }
+
+    fn into_boxed_slice(self) -> Box<[ObservedResource]> {
+        self.0.into_boxed_slice()
+    }
+}
+
+/// Relations ordered by source, then kind, then target, with no edge repeated
+/// and every edge leaving a subject the accompanying resources hold.
+///
+/// Taking the resources to build against is what makes that last part true of
+/// every value of this type: a relation set cannot be assembled without being
+/// checked against the resources it will sit beside.
+struct SortedRelations(Vec<ResourceRelation>);
+
+impl SortedRelations {
+    fn sourced_in(
+        mut relations: Vec<ResourceRelation>,
+        resources: &SortedResources,
+    ) -> Result<Self, ResourceGraphError> {
+        if let Some(duplicate) = sort_and_find_duplicate(&mut relations, compare_relations) {
+            return Err(ResourceGraphError::DuplicateRelation {
+                source: duplicate.source.clone(),
+                kind: duplicate.kind.clone(),
+                target: duplicate.target.clone(),
+            });
+        }
+
+        Self(relations).check_sources_in(resources)
+    }
+
+    /// Rejects an edge leaving a subject the resources do not hold.
+    ///
+    /// Both sides are now sorted on the subject, so one merge pass answers
+    /// this. A relation the walk leaves behind sorts before every remaining
+    /// resource and so can never match one.
+    fn check_sources_in(self, resources: &SortedResources) -> Result<Self, ResourceGraphError> {
+        let mut relation = 0;
+        for resource in &resources.0 {
+            while let Some(next) = self.0.get(relation) {
+                match next.source.cmp(&resource.subject) {
+                    Ordering::Less => {
+                        return Err(ResourceGraphError::UnknownRelationSource(
+                            next.source.clone(),
+                        ));
+                    }
+                    Ordering::Equal => relation += 1,
+                    Ordering::Greater => break,
                 }
-                Ordering::Equal => relation += 1,
-                Ordering::Greater => break,
             }
         }
-    }
-    match relations.get(relation) {
-        Some(orphan) => Err(ResourceGraphError::UnknownRelationSource(
-            orphan.source.clone(),
-        )),
-        None => Ok(()),
-    }
-}
 
-/// Mutable assembly boundary for an immutable [`ResourceGraph`].
-#[derive(Debug, Default)]
-pub struct ResourceGraphBuilder {
-    resources: Vec<ObservedResource>,
-    relations: Vec<ResourceRelation>,
-}
-
-impl ResourceGraphBuilder {
-    pub const fn new() -> Self {
-        Self {
-            resources: Vec::new(),
-            relations: Vec::new(),
+        match self.0.get(relation) {
+            Some(orphan) => Err(ResourceGraphError::UnknownRelationSource(
+                orphan.source.clone(),
+            )),
+            None => Ok(self),
         }
     }
 
-    pub fn with_capacity(resource_capacity: usize, relation_capacity: usize) -> Self {
-        Self {
-            resources: Vec::with_capacity(resource_capacity),
-            relations: Vec::with_capacity(relation_capacity),
-        }
-    }
-
-    pub fn push_resource(&mut self, resource: ObservedResource) {
-        self.resources.push(resource);
-    }
-
-    pub fn push_relation(&mut self, relation: ResourceRelation) {
-        self.relations.push(relation);
-    }
-
-    pub const fn resource_len(&self) -> usize {
-        self.resources.len()
-    }
-
-    pub const fn relation_len(&self) -> usize {
-        self.relations.len()
-    }
-
-    /// Validates the accumulated resources under [`GraphLimits::DEFAULT`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`ResourceGraph::with_limits`].
-    pub fn finish(self) -> Result<ResourceGraph, ResourceGraphError> {
-        ResourceGraph::new(self.resources, self.relations)
-    }
-
-    /// Validates the accumulated resources under caller-supplied limits.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`ResourceGraph::with_limits`].
-    pub fn finish_with_limits(
-        self,
-        limits: GraphLimits,
-    ) -> Result<ResourceGraph, ResourceGraphError> {
-        ResourceGraph::with_limits(self.resources, self.relations, limits)
+    fn into_boxed_slice(self) -> Box<[ResourceRelation]> {
+        self.0.into_boxed_slice()
     }
 }
 
@@ -645,10 +645,10 @@ impl ResourceGraphBuilder {
 #[non_exhaustive]
 pub enum ResourceGraphError {
     DuplicateResource(Subject),
-    DuplicateSourceKey(Name),
+    DuplicateSourceKey(SourceKey),
     DuplicateRelation {
         source: Subject,
-        kind: Name,
+        kind: RelationKind,
         target: Subject,
     },
     UnknownRelationSource(Subject),
@@ -703,12 +703,14 @@ impl fmt::Display for ResourceGraphError {
 impl Error for ResourceGraphError {}
 
 /// The unvalidated parts a [`ResourceGraph`] is assembled from.
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
 struct GraphParts {
     resources: Vec<ObservedResource>,
     relations: Vec<ResourceRelation>,
 }
 
+#[cfg(feature = "serde")]
 impl TryFrom<GraphParts> for ResourceGraph {
     type Error = ResourceGraphError;
 

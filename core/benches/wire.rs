@@ -69,9 +69,9 @@ mod unix {
 
     fn descriptor(index: usize) -> SignalDescriptor {
         SignalDescriptor::new(
-            Subject::new("sensor", format!("CPU{index}Temp")),
-            "temperature",
-            format!("CPU{index}Temp"),
+            Subject::new("sensor".into(), format!("CPU{index}Temp").into()),
+            "temperature".into(),
+            format!("CPU{index}Temp").into(),
             ReadingKind::Gauge,
             Unit::from_static("Cel"),
             timestamp(),
@@ -100,7 +100,7 @@ mod unix {
             .map(|index| {
                 let (index, signal) = signal(index);
                 Reading::new(
-                    format!("/redfish/v1/Chassis/1/Sensors/CPU{index}Temp"),
+                    format!("/redfish/v1/Chassis/1/Sensors/CPU{index}Temp").into(),
                     signal,
                     Finite::new(42.5).unwrap(),
                 )
@@ -113,7 +113,7 @@ mod unix {
     fn batch(rows: Box<[Reading]>) -> ObservationBatch {
         ObservationBatch::new(
             Arc::new(EndpointContext::new("bmc-1", attributes(LABELS))),
-            Origin::new("redfish-sensor", "sensor-reading"),
+            Origin::new("redfish-sensor".into(), "sensor-reading".into()),
             ObservationWindow::point(timestamp()),
             Coverage::complete_endpoint(),
             Payload::Readings(rows),

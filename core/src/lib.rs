@@ -25,7 +25,7 @@
 //! use std::sync::Arc;
 //! use nv_telemetry_core::{
 //!     Attributes, Coverage, EndpointContext, ObservationBatch, ObservationWindow,
-//!     Origin, Payload, ResourceGraph, Timestamp,
+//!     Origin, Payload, Provider, RequestClass, ResourceGraph, Timestamp,
 //! };
 //!
 //! let endpoint = Arc::new(EndpointContext::new("bmc-1", Attributes::empty()));
@@ -42,7 +42,10 @@
 //! for payload in payloads {
 //!     let batch = ObservationBatch::new(
 //!         Arc::clone(&endpoint),
-//!         Origin::new("example-provider", "example-request"),
+//!         Origin::new(
+//!             Provider::from_static("example-provider"),
+//!             RequestClass::from_static("example-request"),
+//!         ),
 //!         window,
 //!         Coverage::complete_endpoint(),
 //!         payload,
@@ -89,24 +92,28 @@ pub use model::OperatingState;
 pub use model::Origin;
 pub use model::Payload;
 pub use model::Property;
+pub use model::PropertyArray;
+pub use model::PropertyArrayError;
 pub use model::PropertyMap;
 pub use model::PropertyMapError;
 pub use model::PropertyValue;
 pub use model::Provider;
 pub use model::RangeOrderError;
+pub use model::Reachability;
 pub use model::Reading;
 pub use model::ReadingKind;
+pub use model::RelationKind;
 pub use model::ReportedState;
 pub use model::RequestClass;
 pub use model::ResourceCompleteness;
 pub use model::ResourceGraph;
-pub use model::ResourceGraphBuilder;
 pub use model::ResourceGraphError;
 pub use model::ResourceReference;
 pub use model::ResourceRelation;
 pub use model::Severity;
 pub use model::SharedBatch;
 pub use model::SignalDescriptor;
+pub use model::SourceKey;
 pub use model::StateObservation;
 pub use model::Subject;
 pub use model::SubjectId;
@@ -118,3 +125,4 @@ pub use model::ValueRange;
 pub use status::AcquisitionOutcome;
 pub use status::AcquisitionStatus;
 pub use status::FailureClass;
+pub use status::Retryable;

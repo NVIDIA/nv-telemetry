@@ -5,11 +5,15 @@
 //! joins the two halves back together.
 
 use nv_redfish::schema::sensor::Sensor;
+use nv_telemetry_core::DurationValue;
 use nv_telemetry_core::Finite;
 use nv_telemetry_core::NumericValue;
+use nv_telemetry_core::ObservedResource;
+use nv_telemetry_core::PropertyMap;
 use nv_telemetry_core::PropertyValue;
 use nv_telemetry_core::ReadingKind;
 use nv_telemetry_core::ResourceGraph;
+use nv_telemetry_core::SourceKey;
 use nv_telemetry_core::Subject;
 use nv_telemetry_core::Timestamp;
 use nv_telemetry_redfish::Project;
@@ -58,8 +62,9 @@ fn a_reading_finds_its_thresholds_through_the_subject_they_share() {
     let resource = project::<SensorResourceProjection>(&sensor);
 
     let mut catalog = SignalCatalog::new();
-    catalog.upsert(record);
+    catalog.upsert(record).expect("catalog capacity");
     let reading = catalog.resolve(sample).expect("catalogued metadata");
+    let (resource, relation) = resource.into_parts();
     let graph = ResourceGraph::new(vec![resource], Vec::new()).expect("a valid graph");
 
     // The join the convergence engine makes: a reading names its subject, and
@@ -70,29 +75,71 @@ fn a_reading_finds_its_thresholds_through_the_subject_they_share() {
 
     assert_eq!(
         reading.signal.subject,
-        Subject::new("sensor", "1/CPU0Temp"),
+        Subject::new("sensor".into(), "chassis/1/CPU0Temp".into()),
         "the chassis scopes an id that is unique only within its collection"
     );
+    assert_eq!(relation.source, Subject::new("chassis".into(), "1".into()));
+    assert_eq!(relation.target, reading.signal.subject);
+    assert_eq!(relation.kind.as_str(), "contains");
     assert_eq!(
         observed.source_key.as_str(),
         "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
         "the URI stays the source location rather than becoming the identity"
     );
     assert_eq!(
-        observed.properties.get("upper_critical"),
+        observed
+            .properties
+            .get("upper_critical")
+            .and_then(|value| match value {
+                PropertyValue::Object(properties) => properties.get("reading"),
+                _ => None,
+            }),
         Some(&PropertyValue::F64(Finite::new(90.0).unwrap()))
     );
     assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
 }
 
 #[test]
+fn a_complete_parent_and_projected_sensor_assemble_into_one_graph() {
+    let sensor_record = project::<SensorResourceProjection>(&fixture());
+    let (sensor, relation) = sensor_record.into_parts();
+    let parent_subject = relation.source.clone();
+    let parent = ObservedResource::complete(
+        parent_subject.clone(),
+        SourceKey::from("/redfish/v1/Chassis/1"),
+        PropertyMap::empty(),
+    );
+
+    let graph = ResourceGraph::new(vec![parent, sensor.clone()], vec![relation.clone()])
+        .expect("the emitted relation joins a complete parent to its sensor");
+
+    assert_eq!(graph.resources().len(), 2);
+    assert_eq!(graph.relations(), &[relation]);
+    assert_eq!(
+        graph.get(&parent_subject).map(|resource| &resource.subject),
+        Some(&parent_subject)
+    );
+    assert_eq!(
+        graph.get(&sensor.subject).map(|resource| &resource.subject),
+        Some(&sensor.subject)
+    );
+}
+
+#[test]
 fn a_threshold_the_device_leaves_unset_is_stated_rather_than_omitted() {
     let mut json = fixture_json();
     json["Thresholds"] = json!({ "UpperCaution": { "Reading": 80.0 } });
-    let resource = project::<SensorResourceProjection>(&sensor_from(json));
+    let record = project::<SensorResourceProjection>(&sensor_from(json));
+    let resource = record.resource();
 
     assert_eq!(
-        resource.properties.get("upper_caution"),
+        resource
+            .properties
+            .get("upper_caution")
+            .and_then(|value| match value {
+                PropertyValue::Object(properties) => properties.get("reading"),
+                _ => None,
+            }),
         Some(&PropertyValue::F64(Finite::new(80.0).unwrap()))
     );
     // The device implements thresholds and reports no upper critical, which
@@ -109,7 +156,8 @@ fn a_device_without_thresholds_makes_no_claim_about_them() {
     json.as_object_mut()
         .expect("a JSON object")
         .remove("Thresholds");
-    let resource = project::<SensorResourceProjection>(&sensor_from(json));
+    let record = project::<SensorResourceProjection>(&sensor_from(json));
+    let resource = record.resource();
 
     assert_eq!(resource.properties.get("upper_caution"), None);
     assert_eq!(resource.properties.get("upper_critical"), None);
@@ -128,10 +176,255 @@ fn the_same_sensor_id_in_two_chassis_stays_two_subjects() {
     let first = project::<SensorResourceProjection>(&fixture());
     let second = project::<SensorResourceProjection>(&sensor_from(second));
 
-    assert_ne!(first.subject, second.subject);
+    assert_ne!(first.resource().subject, second.resource().subject);
     // A graph rejects a repeated subject, so holding both proves they differ.
-    ResourceGraph::new(vec![first, second], Vec::new())
-        .expect("two chassis may report the same sensor id");
+    ResourceGraph::new(
+        vec![first.into_parts().0, second.into_parts().0],
+        Vec::new(),
+    )
+    .expect("two chassis may report the same sensor id");
+}
+
+#[test]
+fn every_power_distribution_parent_collection_scopes_its_sensors() {
+    let cases = [
+        ("FloorPDUs", "floor_pdus"),
+        ("RackPDUs", "rack_pdus"),
+        ("Switchgear", "switchgear"),
+        ("TransferSwitches", "transfer_switches"),
+        ("PowerShelves", "power_shelves"),
+        ("ElectricalBuses", "electrical_buses"),
+    ];
+
+    for (collection, subject_collection) in cases {
+        let mut json = fixture_json();
+        json["@odata.id"] = json!(format!(
+            "/redfish/v1/PowerEquipment/{collection}/PDU1/Sensors/CPU0Temp"
+        ));
+        let sensor = sensor_from(json);
+        let metadata = project::<SensorMetadataProjection>(&sensor);
+        let resource = project::<SensorResourceProjection>(&sensor);
+
+        assert_eq!(
+            metadata.descriptor().subject,
+            Subject::new(
+                "sensor".into(),
+                format!("power_distribution/{subject_collection}/PDU1/CPU0Temp").into(),
+            ),
+            "{collection}"
+        );
+        assert_eq!(
+            resource.parent_relation().source,
+            Subject::new(
+                "power_distribution".into(),
+                format!("{subject_collection}/PDU1").into(),
+            ),
+            "{collection}"
+        );
+        assert_eq!(
+            resource.parent_relation().target,
+            resource.resource().subject,
+            "{collection}"
+        );
+    }
+}
+
+#[test]
+fn reading_time_and_etag_are_preserved_in_their_respective_outputs() {
+    let mut json = fixture_json();
+    json["ReadingTime"] = json!("1970-01-01T00:00:01Z");
+    json["@odata.etag"] = json!("W/\"sensor-version\"");
+    let sensor = sensor_from(json);
+
+    let record = project::<SensorMetadataProjection>(&sensor);
+    let sample = project::<SensorSampleProjection>(&sensor);
+    let resource = project::<SensorResourceProjection>(&sensor);
+    let mut catalog = SignalCatalog::new();
+    catalog.upsert(record).expect("catalog capacity");
+    let reading = catalog.resolve(sample).expect("catalogued metadata");
+
+    assert_eq!(
+        reading.observed_at,
+        Some(Timestamp::new(1, 0).expect("valid timestamp"))
+    );
+    assert_eq!(
+        resource
+            .resource()
+            .version
+            .as_ref()
+            .map(nv_telemetry_core::Name::as_str),
+        Some("W/\"sensor-version\"")
+    );
+}
+
+#[test]
+fn a_pre_1601_reading_time_is_preserved() {
+    let mut json = fixture_json();
+    json["ReadingTime"] = json!("1500-01-01T00:00:00.123456789Z");
+    let sensor = sensor_from(json);
+
+    let record = project::<SensorMetadataProjection>(&sensor);
+    let sample = project::<SensorSampleProjection>(&sensor);
+    let mut catalog = SignalCatalog::new();
+    catalog.upsert(record).expect("catalog capacity");
+    let reading = catalog.resolve(sample).expect("catalogued metadata");
+
+    assert_eq!(
+        reading.observed_at,
+        Some(Timestamp::new(-14_831_769_600, 123_456_789).expect("valid timestamp"))
+    );
+}
+
+#[test]
+fn malformed_reading_time_is_rejected_at_the_typed_input_boundary() {
+    let mut json = fixture_json();
+    json["ReadingTime"] = json!("not-an-rfc3339-timestamp");
+
+    serde_json::from_value::<Sensor>(json).expect_err("ReadingTime must be RFC 3339");
+}
+
+#[test]
+fn all_threshold_slots_preserve_nested_behavior_metadata() {
+    let mut json = fixture_json();
+    let slots = [
+        ("UpperCaution", "upper_caution"),
+        ("UpperCritical", "upper_critical"),
+        ("UpperFatal", "upper_fatal"),
+        ("LowerCaution", "lower_caution"),
+        ("LowerCritical", "lower_critical"),
+        ("LowerFatal", "lower_fatal"),
+        ("UpperCautionUser", "upper_caution_user"),
+        ("UpperCriticalUser", "upper_critical_user"),
+        ("LowerCautionUser", "lower_caution_user"),
+        ("LowerCriticalUser", "lower_critical_user"),
+    ];
+    let thresholds = json
+        .get_mut("Thresholds")
+        .and_then(Value::as_object_mut)
+        .expect("threshold object");
+    for (source_name, _) in slots {
+        thresholds.insert(
+            source_name.to_owned(),
+            json!({
+                "Reading": 80.0,
+                "Activation": "Increasing",
+                "DwellTime": "PT2.5S",
+                "HysteresisReading": 3.0,
+                "HysteresisDuration": "PT1S"
+            }),
+        );
+    }
+
+    let record = project::<SensorResourceProjection>(&sensor_from(json));
+    for (_, property_name) in slots {
+        let value = record
+            .resource()
+            .properties
+            .get(property_name)
+            .expect("all ten slots are projected");
+        let PropertyValue::Object(properties) = value else {
+            panic!("a present threshold is a nested object");
+        };
+        assert_eq!(
+            properties.get("reading"),
+            Some(&PropertyValue::F64(Finite::new(80.0).unwrap()))
+        );
+        assert_eq!(
+            properties.get("activation"),
+            Some(&PropertyValue::String("increasing".into()))
+        );
+        assert_eq!(
+            properties.get("dwell_time"),
+            Some(&PropertyValue::Duration(
+                DurationValue::new(2, 500_000_000).expect("valid duration")
+            ))
+        );
+        assert_eq!(
+            properties.get("hysteresis_reading"),
+            Some(&PropertyValue::F64(Finite::new(3.0).unwrap()))
+        );
+        assert_eq!(
+            properties.get("hysteresis_duration"),
+            Some(&PropertyValue::Duration(
+                DurationValue::new(1, 0).expect("valid duration")
+            ))
+        );
+    }
+}
+
+#[test]
+fn invalid_threshold_durations_are_reported_without_losing_the_resource() {
+    let mut json = fixture_json();
+    json["Thresholds"] = json!({
+        "UpperCaution": {
+            "Reading": 80.0,
+            "DwellTime": "-PT1S",
+            "HysteresisDuration": "-PT2S"
+        }
+    });
+
+    let result = SensorResourceProjection::project(&sensor_from(json), &context());
+
+    assert!(result.output().is_some());
+    assert_eq!(result.issues().len(), 2);
+    assert!(result.issues().iter().any(|issue| issue.path()
+        == "Sensor.Thresholds.UpperCaution.DwellTime"
+        && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })));
+    assert!(result.issues().iter().any(|issue| issue.path()
+        == "Sensor.Thresholds.UpperCaution.HysteresisDuration"
+        && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })));
+}
+
+#[test]
+fn threshold_numbers_preserve_missing_and_non_finite_semantics() {
+    let mut sensor = fixture();
+    let thresholds = sensor.thresholds.as_mut().expect("fixture thresholds");
+    thresholds
+        .upper_caution
+        .as_mut()
+        .expect("fixture upper caution")
+        .reading = Some(Some(f64::NAN));
+    thresholds
+        .upper_critical
+        .as_mut()
+        .expect("fixture upper critical")
+        .hysteresis_reading = Some(Some(f64::INFINITY));
+
+    let result = SensorResourceProjection::project(&sensor, &context());
+    let resource = result
+        .output()
+        .expect("invalid leaves do not block resource");
+    let PropertyValue::Object(upper_caution) = resource
+        .resource()
+        .properties
+        .get("upper_caution")
+        .expect("configured threshold")
+    else {
+        panic!("threshold is a nested object");
+    };
+
+    assert_eq!(
+        upper_caution.get("hysteresis_reading"),
+        Some(&PropertyValue::Null),
+        "a missing numeric leaf remains explicitly null"
+    );
+    assert_eq!(upper_caution.get("reading"), None);
+    let PropertyValue::Object(upper_critical) = resource
+        .resource()
+        .properties
+        .get("upper_critical")
+        .expect("configured threshold")
+    else {
+        panic!("threshold is a nested object");
+    };
+    assert_eq!(upper_critical.get("hysteresis_reading"), None);
+    assert_eq!(result.issues().len(), 2);
+    assert!(result.issues().iter().any(|issue| issue.path()
+        == "Sensor.Thresholds.UpperCaution.Reading"
+        && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })));
+    assert!(result.issues().iter().any(|issue| issue.path()
+        == "Sensor.Thresholds.UpperCritical.HysteresisReading"
+        && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })));
 }
 
 #[test]
@@ -147,7 +440,7 @@ fn a_sensor_reporting_no_units_still_produces_a_signal() {
 
     assert_eq!(record.descriptor().unit.as_str(), "1");
     let mut catalog = SignalCatalog::new();
-    catalog.upsert(record);
+    catalog.upsert(record).expect("catalog capacity");
     catalog
         .resolve(sample)
         .expect("a unitless sensor is still collected");
@@ -201,6 +494,96 @@ fn a_reading_the_model_cannot_hold_is_invalid_rather_than_missing() {
 }
 
 #[test]
+fn unsupported_reading_type_blocks_metadata_with_an_invalid_issue() {
+    let mut json = fixture_json();
+    json["ReadingType"] = json!("OEMReadingType");
+
+    let result = SensorMetadataProjection::project(&sensor_from(json), &context());
+
+    assert!(result.output().is_none());
+    assert_eq!(result.issues().len(), 1);
+    assert_eq!(result.issues()[0].path(), "Sensor.ReadingType");
+    assert!(matches!(
+        result.issues()[0].kind(),
+        ProjectionIssueKind::Invalid { .. }
+    ));
+}
+
+#[test]
+fn unsupported_health_and_state_are_optional_invalid_issues() {
+    let mut json = fixture_json();
+    json["Status"] = json!({
+        "State": "OEMState",
+        "Health": "OEMHealth"
+    });
+    let sensor = sensor_from(json);
+    let result = SensorSampleProjection::project(&sensor, &context());
+
+    assert!(result.output().is_some());
+    assert_eq!(result.issues().len(), 2);
+    assert!(result.issues().iter().any(|issue| {
+        issue.path() == "Sensor.Status.State"
+            && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })
+    }));
+    assert!(result.issues().iter().any(|issue| {
+        issue.path() == "Sensor.Status.Health"
+            && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })
+    }));
+
+    let mut catalog = SignalCatalog::new();
+    catalog
+        .upsert(project::<SensorMetadataProjection>(&sensor))
+        .expect("catalog capacity");
+    let reading = catalog
+        .resolve(result.into_parts().0.expect("sample output"))
+        .expect("catalogued metadata");
+    assert_eq!(reading.reported_state, None);
+}
+
+#[test]
+fn non_finite_optional_ranges_are_issues_but_do_not_block_metadata() {
+    let mut sensor = fixture();
+    sensor.reading_range_min = Some(Some(f64::NAN));
+    sensor.reading_range_max = Some(Some(f64::INFINITY));
+
+    let result = SensorMetadataProjection::project(&sensor, &context());
+    let descriptor = result
+        .output()
+        .expect("optional bounds do not block metadata");
+
+    assert_eq!(descriptor.descriptor().bounds, None);
+    assert_eq!(result.issues().len(), 2);
+    assert!(result.issues().iter().any(|issue| {
+        issue.path() == "Sensor.ReadingRangeMin"
+            && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })
+    }));
+    assert!(result.issues().iter().any(|issue| {
+        issue.path() == "Sensor.ReadingRangeMax"
+            && matches!(issue.kind(), ProjectionIssueKind::Invalid { .. })
+    }));
+}
+
+#[test]
+fn inverted_optional_range_is_reported_and_omitted() {
+    let mut json = fixture_json();
+    json["ReadingRangeMin"] = json!(120.0);
+    json["ReadingRangeMax"] = json!(110.0);
+
+    let result = SensorMetadataProjection::project(&sensor_from(json), &context());
+    let descriptor = result
+        .output()
+        .expect("optional bounds do not block metadata");
+
+    assert_eq!(descriptor.descriptor().bounds, None);
+    assert_eq!(result.issues().len(), 1);
+    assert_eq!(result.issues()[0].path(), "Sensor.ReadingRangeMin");
+    assert!(matches!(
+        result.issues()[0].kind(),
+        ProjectionIssueKind::Invalid { .. }
+    ));
+}
+
+#[test]
 fn a_sensor_that_sent_no_reading_is_missing_rather_than_invalid() {
     let mut sensor = fixture();
     sensor.reading = None;
@@ -218,7 +601,9 @@ fn a_sensor_that_sent_no_reading_is_missing_rather_than_invalid() {
 fn a_metric_report_property_resolves_to_the_sensor_it_names() {
     let sensor = fixture();
     let mut catalog = SignalCatalog::new();
-    catalog.upsert(project::<SensorMetadataProjection>(&sensor));
+    catalog
+        .upsert(project::<SensorMetadataProjection>(&sensor))
+        .expect("catalog capacity");
 
     // A metric report addresses the reading inside the resource.
     let reported = SignalKey::from("/redfish/v1/Chassis/1/Sensors/CPU0Temp#/Reading");
@@ -230,7 +615,7 @@ fn a_metric_report_property_resolves_to_the_sensor_it_names() {
 }
 
 #[test]
-fn a_sensor_outside_a_chassis_cannot_be_given_a_subject() {
+fn a_sensor_outside_supported_parent_collections_has_no_subject() {
     let mut json = fixture_json();
     json["@odata.id"] = json!("/redfish/v1/Systems/1/Sensors/CPU0Temp");
     let sensor = sensor_from(json);

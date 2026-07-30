@@ -12,14 +12,29 @@ on:
       - "pull-request/[0-9]+"
       - "release/v*"
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  CI_RUST: "1.90.0"
+  MSRV: "1.89.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: ${{ env.MSRV }}
+      # Benchmark-only dependencies need CI_RUST; library users do not.
+      - run: cargo check --workspace --all-features --lib --locked
+
   build-and-test:
     strategy:
       fail-fast: false
@@ -28,22 +43,36 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
         with:
-          toolchain: "1.90.0"
+          toolchain: ${{ env.CI_RUST }}
       - run: make ci
+
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: ${{ env.CI_RUST }}
+      - name: Dry-run core publish
+        run: cargo publish --dry-run -p nv-telemetry-core
+      - name: Validate Redfish package contents
+        # A full dry-run can resolve this crate only after the matching core
+        # version is on crates.io; listing still validates package assembly.
+        run: cargo package --list -p nv-telemetry-redfish > /dev/null
 
   bench-regression:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
         with:
-          toolchain: "1.90.0"
+          toolchain: ${{ env.CI_RUST }}
 
       - name: Install valgrind
         run: |
@@ -53,10 +82,9 @@ jobs:
 
       - name: Benchmark merge-base
         # Installs the runner matching the *base* lockfile, so a PR that
-        # bumps gungraun still measures the base correctly. Only the
-        # specific "no bench target at base" case is tolerated; every
-        # other failure fails the job so the gate can never silently
-        # stop comparing.
+        # bumps gungraun still measures the base correctly. Targets are
+        # discovered from Cargo metadata so additions and removals cannot
+        # silently leave a hard-coded target list stale.
         run: |
           set -euo pipefail
           BASE=$(git merge-base HEAD origin/main)
@@ -67,24 +95,30 @@ jobs:
           fi
           echo "baseline commit: $BASE"
           git checkout "$BASE"
+          discover_benches() {
+            cargo metadata --format-version=1 --no-deps \
+              | jq -r '.packages[] | .name as $package
+                | .targets[] | select(.kind == ["bench"])
+                | [$package, .name] | @tsv'
+          }
+          mapfile -t BENCHES < <(discover_benches)
+          : > "$RUNNER_TEMP/baseline-benches.tsv"
           VERSION=$(cargo metadata --format-version=1 \
             | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
-          if [ -z "$VERSION" ]; then
-            echo "no gungraun at merge-base; head run records the initial baselines"
+          if [ "${#BENCHES[@]}" = "0" ]; then
+            echo "no benchmark targets at merge-base"
+          elif [ -z "$VERSION" ]; then
+            echo "benchmark targets exist but gungraun is not resolved"
+            exit 1
           else
             echo "base gungraun $VERSION"
             cargo install gungraun-runner --version "$VERSION" --locked
-            for bench in model wire graph; do
-              HAS_BENCH=$(cargo metadata --format-version=1 --no-deps \
-                | jq --arg b "$bench" \
-                  '[.packages[] | select(.name == "nv-telemetry-core")
-                    | .targets[] | select(.kind == ["bench"] and .name == $b)] | length')
-              if [ "$HAS_BENCH" = "0" ]; then
-                echo "no $bench bench at merge-base; head run records its baseline"
-              else
-                cargo bench -p nv-telemetry-core --all-features --bench "$bench" -- \
-                  --save-baseline=base
-              fi
+            for target in "${BENCHES[@]}"; do
+              IFS=$'\t' read -r package bench <<< "$target"
+              cargo bench -p "$package" --all-features --bench "$bench" -- \
+                --save-baseline=base
+              printf '%s\t%s\n' "$package" "$bench" \
+                >> "$RUNNER_TEMP/baseline-benches.tsv"
             done
           fi
           git checkout -f -
@@ -95,12 +129,40 @@ jobs:
         # taken from the lockfile so they cannot drift.
         run: |
           set -euo pipefail
+          discover_benches() {
+            cargo metadata --format-version=1 --no-deps \
+              | jq -r '.packages[] | .name as $package
+                | .targets[] | select(.kind == ["bench"])
+                | [$package, .name] | @tsv'
+          }
+          mapfile -t BENCHES < <(discover_benches)
+          if [ "${#BENCHES[@]}" = "0" ]; then
+            echo "no benchmark targets at head"
+            exit 0
+          fi
           VERSION=$(cargo metadata --format-version=1 \
-            | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first')
+            | jq -r '[.packages[] | select(.name == "gungraun") | .version] | first // empty')
+          if [ -z "$VERSION" ]; then
+            echo "benchmark targets exist but gungraun is not resolved"
+            exit 1
+          fi
           echo "head gungraun $VERSION"
           cargo install gungraun-runner --version "$VERSION" --locked
-          for bench in model wire graph; do
-            cargo bench -p nv-telemetry-core --all-features --bench "$bench" -- \
-              --baseline=base \
-              --callgrind-limits='ir=2%'
+          for target in "${BENCHES[@]}"; do
+            IFS=$'\t' read -r package bench <<< "$target"
+            compare=0
+            while IFS=$'\t' read -r base_package base_bench; do
+              if [ "$package" = "$base_package" ] && [ "$bench" = "$base_bench" ]; then
+                compare=1
+                break
+              fi
+            done < "$RUNNER_TEMP/baseline-benches.tsv"
+            if [ "$compare" = "1" ]; then
+              cargo bench -p "$package" --all-features --bench "$bench" -- \
+                --baseline=base \
+                --callgrind-limits='ir=2%'
+            else
+              echo "running new benchmark target $package/$bench without a baseline"
+              cargo bench -p "$package" --all-features --bench "$bench"
+            fi
           done

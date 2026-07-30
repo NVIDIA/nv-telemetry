@@ -68,7 +68,7 @@ mod unix {
     }
 
     fn subject(index: usize) -> Subject {
-        Subject::new("resource", format!("node-{index}"))
+        Subject::new("resource".into(), format!("node-{index}").into())
     }
 
     /// One resource's properties in the order a decoder yields them, which
@@ -88,21 +88,19 @@ mod unix {
             Property::new("health", "OK"),
             Property::new(
                 "addresses",
-                PropertyValue::Array(
-                    vec![
-                        PropertyValue::from("192.0.2.10"),
-                        PropertyValue::from("2001:db8::10"),
-                    ]
-                    .into_boxed_slice(),
-                ),
+                PropertyValue::array(vec![
+                    PropertyValue::from("192.0.2.10"),
+                    PropertyValue::from("2001:db8::10"),
+                ])
+                .expect("shallow property array"),
             ),
             Property::new("index", index as u64),
             Property::new("last_reset", PropertyValue::Timestamp(timestamp())),
             Property::new("oem_reserved", PropertyValue::Null),
             Property::new(
                 "manager",
-                ResourceReference::new("/redfish/v1/Managers/BMC")
-                    .with_subject(Subject::new("manager", "bmc")),
+                ResourceReference::new("/redfish/v1/Managers/BMC".into())
+                    .with_subject(Subject::new("manager".into(), "bmc".into())),
             ),
             Property::new("serial", format!("SN-{index:06}")),
         ]
@@ -119,7 +117,7 @@ mod unix {
             .map(|index| {
                 ObservedResource::complete(
                     subject(index),
-                    format!("/redfish/v1/Chassis/1/Nodes/{index}"),
+                    format!("/redfish/v1/Chassis/1/Nodes/{index}").into(),
                     properties(index),
                 )
                 .with_schema("#Chassis.v1_25_0.Chassis")
@@ -129,7 +127,7 @@ mod unix {
             .collect();
         let relations = (1..count)
             .map(|index| {
-                ResourceRelation::new(subject((index - 1) / 2), "contains", subject(index))
+                ResourceRelation::new(subject((index - 1) / 2), "contains".into(), subject(index))
             })
             .collect();
         (resources, relations)
@@ -186,7 +184,7 @@ mod unix {
     ) -> Result<ObservationBatch, BatchError> {
         ObservationBatch::new(
             Arc::new(EndpointContext::new("bmc-1", Attributes::empty())),
-            Origin::new("redfish-walk", "chassis-subtree"),
+            Origin::new("redfish-walk".into(), "chassis-subtree".into()),
             ObservationWindow::point(timestamp()),
             coverage,
             Payload::Resources(graph),

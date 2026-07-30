@@ -4,16 +4,30 @@ description = "nv-redfish projections for nv-telemetry"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 nv-redfish = { version = "0.12.1", default-features = false, features = ["std-redfish"] }
-nv-telemetry-core = { path = "../core" }
+nv-telemetry-core = { version = "0.1.0", path = "../core" }
+time = { version = "0.3.54", default-features = false }
 
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+# Compiles only on unix: the runner library it pulls in uses
+# std::os::unix and nix unconditionally.
+[target.'cfg(unix)'.dev-dependencies]
+gungraun = { workspace = true }
+
+[[bench]]
+name = "redfish"
+harness = false
 
 [lints]
 workspace = true

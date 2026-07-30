@@ -4,6 +4,7 @@ description = "Source-neutral observation model for nv-telemetry"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -18,9 +19,10 @@ serde = ["dep:serde"]
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-# A self-describing binary format, to cover the non-human-readable encoding
-# paths that a text format never reaches.
+# Self-describing binary formats cover the non-human-readable encoding paths
+# that a text format never reaches.
 ciborium.workspace = true
+rmp-serde = "1.3.1"
 serde_json.workspace = true
 
 # Compiles only on unix: the runner library it pulls in uses

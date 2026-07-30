@@ -64,13 +64,26 @@ name_newtype!(SubjectId);
 /// Fields are public; read and match them directly:
 ///
 /// ```
-/// use nv_telemetry_core::Subject;
+/// use nv_telemetry_core::{Subject, SubjectId, SubjectKind};
 ///
-/// let subject = Subject::new("sensor", "CPU0Temp");
+/// let subject = Subject::new(
+///     SubjectKind::from_static("sensor"),
+///     SubjectId::from_static("CPU0Temp"),
+/// );
 /// assert_eq!(subject.kind.as_str(), "sensor");
 ///
 /// let Subject { id, .. } = &subject;
 /// assert_eq!(id.as_str(), "CPU0Temp");
+/// ```
+///
+/// The two components use distinct types, so swapping variables is rejected:
+///
+/// ```compile_fail
+/// use nv_telemetry_core::{Subject, SubjectId, SubjectKind};
+///
+/// let kind = SubjectKind::from_static("sensor");
+/// let id = SubjectId::from_static("CPU0Temp");
+/// let subject = Subject::new(id, kind);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -81,13 +94,18 @@ pub struct Subject {
 }
 
 impl Subject {
-    pub fn new(kind: impl Into<SubjectKind>, id: impl Into<SubjectId>) -> Self {
-        Self {
-            kind: kind.into(),
-            id: id.into(),
-        }
+    pub const fn new(kind: SubjectKind, id: SubjectId) -> Self {
+        Self { kind, id }
     }
 }
+
+/// A protocol-specific location from which an observation was obtained.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct SourceKey(Name);
+
+name_newtype!(SourceKey);
 
 /// The resource set for which completeness is asserted.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -164,6 +182,17 @@ pub struct RequestClass(Name);
 name_newtype!(RequestClass);
 
 /// Provenance of an acquisition.
+///
+/// Provider and request class are separate semantic types, so a swapped call
+/// does not compile:
+///
+/// ```compile_fail
+/// use nv_telemetry_core::{Origin, Provider, RequestClass};
+///
+/// let provider = Provider::from_static("redfish");
+/// let request = RequestClass::from_static("sensor-poll");
+/// let origin = Origin::new(request, provider);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -173,10 +202,10 @@ pub struct Origin {
 }
 
 impl Origin {
-    pub fn new(provider: impl Into<Provider>, request_class: impl Into<RequestClass>) -> Self {
+    pub const fn new(provider: Provider, request_class: RequestClass) -> Self {
         Self {
-            provider: provider.into(),
-            request_class: request_class.into(),
+            provider,
+            request_class,
         }
     }
 }

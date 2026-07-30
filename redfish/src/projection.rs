@@ -4,6 +4,13 @@
 use std::fmt;
 
 /// Converts one typed source value into one telemetry value.
+///
+/// `Project` is a static interface: implementations are normally zero-sized
+/// marker types selected through a generic parameter, and projection is
+/// dispatched at compile time. The associated function deliberately does not
+/// take `self`, so this trait is not a runtime trait-object interface. Code
+/// that needs runtime selection can store typed function pointers such as
+/// `P::project` or wrap implementations in an object-safe adapter.
 pub trait Project<Input, Context = ()> {
     type Output;
 
@@ -12,12 +19,32 @@ pub trait Project<Input, Context = ()> {
 
 /// Why a projection field could not be used.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProjectionIssueKind {
     MissingRequired,
-    Invalid { detail: String },
+    Invalid {
+        detail: String,
+    },
+    /// A projection implementation finished in a state inconsistent with the
+    /// required fields it had evaluated.
+    InvalidProjection {
+        detail: &'static str,
+    },
 }
 
-/// A source field that prevented a projection from producing output.
+impl fmt::Display for ProjectionIssueKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingRequired => formatter.write_str("required field is missing"),
+            Self::Invalid { detail } => write!(formatter, "invalid field: {detail}"),
+            Self::InvalidProjection { detail } => {
+                write!(formatter, "invalid projection: {detail}")
+            }
+        }
+    }
+}
+
+/// A source field that was missing or unusable during projection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectionIssue {
     path: &'static str,
@@ -38,7 +65,19 @@ impl ProjectionIssue {
     }
 }
 
+impl fmt::Display for ProjectionIssue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.path, self.kind)
+    }
+}
+
 /// Result of projecting one source value.
+///
+/// A result without output always has at least one required-field or invalid
+/// projection issue. A result with output may have issues from invalid
+/// optional fields. [`Fields`] is the only public way to construct a result so
+/// those states cannot be confused.
+#[must_use = "projection issues and output must be handled"]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectionResult<T> {
     output: Option<T>,
@@ -46,7 +85,7 @@ pub struct ProjectionResult<T> {
 }
 
 impl<T> ProjectionResult<T> {
-    pub fn new(output: Option<T>, issues: Vec<ProjectionIssue>) -> Self {
+    fn new(output: Option<T>, issues: Vec<ProjectionIssue>) -> Self {
         Self {
             output,
             issues: issues.into_boxed_slice(),
@@ -73,6 +112,7 @@ impl<T> ProjectionResult<T> {
 /// answered unusably. A consumer needs the difference: a `NaN` reading is a
 /// device reporting garbage, not a device staying quiet.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum FieldValue<T> {
     Present(T),
     Missing,
@@ -111,7 +151,7 @@ impl<T> FieldValue<T> {
     }
 }
 
-/// Collects the reasons a projection could not produce output.
+/// Collects field issues and tracks whether projection can produce output.
 ///
 /// A projection offers every required field to [`require`](Self::require)
 /// before deciding whether it can build, so a failure reports all of them
@@ -121,6 +161,7 @@ impl<T> FieldValue<T> {
 #[derive(Debug, Default)]
 pub struct Fields {
     issues: Vec<ProjectionIssue>,
+    required_failures: usize,
 }
 
 impl Fields {
@@ -140,8 +181,30 @@ impl Fields {
                     path,
                     ProjectionIssueKind::MissingRequired,
                 ));
+                self.required_failures += 1;
                 None
             }
+            FieldValue::Invalid(detail) => {
+                self.issues.push(ProjectionIssue::new(
+                    path,
+                    ProjectionIssueKind::Invalid { detail },
+                ));
+                self.required_failures += 1;
+                None
+            }
+        }
+    }
+
+    /// Yields an optional value and records invalid data without making it a
+    /// required-field failure.
+    ///
+    /// Missing optional fields are expected and produce no issue. Invalid
+    /// optional fields are reported so callers can distinguish absent source
+    /// data from unusable source data while still receiving projected output.
+    pub fn optional<T>(&mut self, path: &'static str, value: FieldValue<T>) -> Option<T> {
+        match value {
+            FieldValue::Present(value) => Some(value),
+            FieldValue::Missing => None,
             FieldValue::Invalid(detail) => {
                 self.issues.push(ProjectionIssue::new(
                     path,
@@ -152,19 +215,31 @@ impl Fields {
         }
     }
 
-    /// Finishes with the projected value, which may still carry issues from
-    /// fields that were not required.
+    /// Finishes with the projected value and any optional-field issues.
+    ///
+    /// If a required field failed, the output is discarded and the collected
+    /// issues are returned. This keeps malformed device input from turning a
+    /// projection implementation mistake into a process panic.
     pub fn complete<T>(self, output: T) -> ProjectionResult<T> {
-        ProjectionResult::new(Some(output), self.issues)
+        let output = (self.required_failures == 0).then_some(output);
+        ProjectionResult::new(output, self.issues)
     }
 
     /// Finishes with no value, which is only reachable once a required field
     /// has failed.
-    pub fn incomplete<T>(self) -> ProjectionResult<T> {
-        debug_assert!(
-            !self.issues.is_empty(),
-            "a projection produced no output and no reason"
-        );
+    ///
+    /// Calling this without a required-field failure yields an
+    /// [`ProjectionIssueKind::InvalidProjection`] issue instead of panicking.
+    /// Optional-field issues alone do not justify incomplete output.
+    pub fn incomplete<T>(mut self) -> ProjectionResult<T> {
+        if self.required_failures == 0 {
+            self.issues.push(ProjectionIssue::new(
+                "$projection",
+                ProjectionIssueKind::InvalidProjection {
+                    detail: "produced no output without a required field failure",
+                },
+            ));
+        }
         ProjectionResult::new(None, self.issues)
     }
 }
@@ -174,6 +249,7 @@ mod tests {
     use super::FieldValue;
     use super::Fields;
     use super::Project;
+    use super::ProjectionIssue;
     use super::ProjectionIssueKind;
     use super::ProjectionResult;
 
@@ -232,5 +308,104 @@ mod tests {
 
         assert_eq!(result.output(), Some(&("sensor".to_owned(), 42)));
         assert!(result.issues().is_empty());
+    }
+
+    #[test]
+    fn optional_missing_field_is_not_an_issue() {
+        let mut fields = Fields::new();
+        let value = fields.optional::<u64>("Source.Optional", FieldValue::missing());
+
+        assert_eq!(value, None);
+        let result = fields.complete("output");
+        assert_eq!(result.output(), Some(&"output"));
+        assert!(result.issues().is_empty());
+    }
+
+    #[test]
+    fn optional_invalid_field_is_reported_without_blocking_output() {
+        let mut fields = Fields::new();
+        let value = fields.optional::<u64>(
+            "Source.Optional",
+            FieldValue::invalid("not a finite number"),
+        );
+
+        assert_eq!(value, None);
+        let result = fields.complete("output");
+        assert_eq!(result.output(), Some(&"output"));
+        assert_eq!(result.issues().len(), 1);
+        assert_eq!(
+            result.issues()[0].kind(),
+            &ProjectionIssueKind::Invalid {
+                detail: "not a finite number".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn required_failure_discards_completed_output() {
+        let mut fields = Fields::new();
+        let _ = fields.require::<u64>("Source.Value", FieldValue::missing());
+
+        let result = fields.complete("invalid output");
+
+        assert!(result.output().is_none());
+        assert_eq!(result.issues().len(), 1);
+        assert_eq!(
+            result.issues()[0].kind(),
+            &ProjectionIssueKind::MissingRequired
+        );
+    }
+
+    #[test]
+    fn incomplete_without_required_failure_reports_projection_issue() {
+        let mut fields = Fields::new();
+        let _ = fields.optional::<u64>("Source.Optional", FieldValue::invalid("invalid"));
+
+        let result: ProjectionResult<()> = fields.incomplete();
+
+        assert!(result.output().is_none());
+        assert_eq!(result.issues().len(), 2);
+        assert_eq!(result.issues()[1].path(), "$projection");
+        assert_eq!(
+            result.issues()[1].kind(),
+            &ProjectionIssueKind::InvalidProjection {
+                detail: "produced no output without a required field failure",
+            }
+        );
+    }
+
+    #[test]
+    fn projection_issues_have_contextual_display() {
+        let missing = ProjectionIssue::new("Source.Name", ProjectionIssueKind::MissingRequired);
+        let invalid = ProjectionIssue::new(
+            "Source.Value",
+            ProjectionIssueKind::Invalid {
+                detail: "outside range".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            missing.to_string(),
+            "Source.Name: required field is missing"
+        );
+        assert_eq!(
+            invalid.to_string(),
+            "Source.Value: invalid field: outside range"
+        );
+    }
+
+    #[test]
+    fn project_can_be_selected_as_a_typed_function_pointer() {
+        let project: fn(&Source, &()) -> ProjectionResult<(String, u64)> =
+            ExampleProjection::project;
+        let result = project(
+            &Source {
+                name: Some("sensor".to_owned()),
+                value: Some(42),
+            },
+            &(),
+        );
+
+        assert_eq!(result.output(), Some(&("sensor".to_owned(), 42)));
     }
 }

@@ -51,6 +51,7 @@ use nv_telemetry_core::Reading;
 use nv_telemetry_core::ReadingKind;
 use nv_telemetry_core::ReportedState;
 use nv_telemetry_core::ResourceGraph;
+use nv_telemetry_core::Retryable;
 use nv_telemetry_core::Severity;
 use nv_telemetry_core::SignalDescriptor;
 use nv_telemetry_core::StateObservation;
@@ -76,7 +77,7 @@ fn endpoint() -> Arc<EndpointContext> {
 }
 
 fn origin() -> Origin {
-    Origin::new("redfish-sensor-odata", "redfish-sensor-odata")
+    Origin::new("redfish-sensor-odata".into(), "redfish-sensor-odata".into())
 }
 
 fn window() -> ObservationWindow {
@@ -84,7 +85,10 @@ fn window() -> ObservationWindow {
 }
 
 fn sensor_subject() -> Subject {
-    Subject::new("sensor", "/redfish/v1/Chassis/1/Sensors/CPU0Temp")
+    Subject::new(
+        "sensor".into(),
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
+    )
 }
 
 fn hash_of<T: Hash>(value: &T) -> u64 {
@@ -96,8 +100,8 @@ fn hash_of<T: Hash>(value: &T) -> u64 {
 fn descriptor() -> SignalDescriptor {
     SignalDescriptor::new(
         sensor_subject(),
-        "temperature",
-        "CPU0Temp",
+        "temperature".into(),
+        "CPU0Temp".into(),
         ReadingKind::Gauge,
         Unit::from_static("celsius"),
         timestamp(99),
@@ -106,7 +110,7 @@ fn descriptor() -> SignalDescriptor {
 
 fn reading() -> Reading {
     Reading::new(
-        "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
         descriptor(),
         Finite::new(42.5).unwrap(),
     )
@@ -225,6 +229,26 @@ fn timestamps_validate_and_round_trip_before_the_epoch() {
             .expect("representable system time"),
         system_time
     );
+
+    let later = Timestamp::new(1, 250_000_000).expect("valid timestamp");
+    let earlier = Timestamp::new(-1, 750_000_000).expect("valid timestamp");
+    assert_eq!(
+        later
+            .checked_duration_since(earlier)
+            .expect("difference is representable")
+            .as_nanos(),
+        1_500_000_000
+    );
+    assert_eq!(
+        window().checked_duration().unwrap().as_nanos(),
+        1_000_000_000
+    );
+    assert_eq!(
+        Timestamp::new(i64::MAX, 0)
+            .unwrap()
+            .checked_duration_since(Timestamp::new(i64::MIN, 0).unwrap()),
+        Err(TimeError::OutOfRange)
+    );
 }
 
 #[test]
@@ -254,14 +278,14 @@ fn all_payload_domains_build_as_immutable_slices() {
 
     let states = vec![StateObservation::new("power_state", "on")
         .with_instance("system-1")
-        .with_subject(Subject::new("computer_system", "system-1"))];
+        .with_subject(Subject::new("computer_system".into(), "system-1".into()))];
 
     let inventory = vec![InventoryItem::new(sensor_subject(), Attributes::empty())];
 
     let resources = ResourceGraph::new(
         vec![ObservedResource::complete(
             sensor_subject(),
-            "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+            "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
             PropertyMap::empty(),
         )],
         Vec::new(),
@@ -280,7 +304,10 @@ fn all_payload_domains_build_as_immutable_slices() {
 
 #[test]
 fn coverage_pairs_a_scope_with_the_claim_made_about_it() {
-    let subject = Subject::new("sensor", "/redfish/v1/Chassis/1/Sensors/CPU0Temp");
+    let subject = Subject::new(
+        "sensor".into(),
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
+    );
     let complete = Coverage::complete_subject(subject.clone());
     assert_eq!(complete.scope, ObservationScope::Subject(subject));
     assert!(complete.completeness.is_complete());
@@ -293,7 +320,7 @@ fn coverage_pairs_a_scope_with_the_claim_made_about_it() {
 #[test]
 fn scope_is_enforced_and_completeness_is_relative_to_it() {
     let sensor = sensor_subject();
-    let other = Subject::new("sensor", "other");
+    let other = Subject::new("sensor".into(), "other".into());
     let batch = ObservationBatch::new(
         endpoint(),
         origin(),
@@ -320,7 +347,7 @@ fn scope_is_enforced_and_completeness_is_relative_to_it() {
 #[test]
 fn every_payload_domain_is_scope_checked_the_same_way() {
     let sensor = sensor_subject();
-    let other = Subject::new("sensor", "other");
+    let other = Subject::new("sensor".into(), "other".into());
 
     let scoped = |payload| {
         ObservationBatch::new(
@@ -386,16 +413,24 @@ fn a_row_without_a_subject_belongs_to_any_scope() {
 fn owned_values_and_shared_handles_build_the_same_batch() {
     let descriptor = SignalDescriptor::new(
         sensor_subject(),
-        "temperature",
-        "CPU0Temp",
+        "temperature".into(),
+        "CPU0Temp".into(),
         ReadingKind::Gauge,
         Unit::from_static("celsius"),
         timestamp(99),
     );
     let source_key = "/redfish/v1/Chassis/1/Sensors/CPU0Temp";
 
-    let from_value = Reading::new(source_key, descriptor.clone(), Finite::new(42.5).unwrap());
-    let from_handle = Reading::new(source_key, Arc::new(descriptor), Finite::new(42.5).unwrap());
+    let from_value = Reading::new(
+        source_key.into(),
+        descriptor.clone(),
+        Finite::new(42.5).unwrap(),
+    );
+    let from_handle = Reading::new(
+        source_key.into(),
+        Arc::new(descriptor),
+        Finite::new(42.5).unwrap(),
+    );
     assert_eq!(from_value, from_handle);
 
     let context = EndpointContext::new("bmc-1", Attributes::empty());
@@ -474,8 +509,53 @@ fn complete_empty_inventory_snapshot_is_valid_and_shareable() {
 }
 
 #[test]
+fn empty_shared_collections_compare_and_hash_by_content() {
+    let first = PropertyMap::empty();
+    let second = PropertyMap::empty();
+    assert_eq!(first, second);
+    assert_eq!(hash_of(&first), hash_of(&second));
+
+    let payloads = [
+        Payload::Readings(Box::new([])),
+        Payload::Logs(Box::new([])),
+        Payload::States(Box::new([])),
+        Payload::Inventory(Box::new([])),
+        Payload::Resources(ResourceGraph::empty()),
+    ];
+    assert!(payloads.iter().all(Payload::is_empty));
+}
+
+#[test]
+fn ordered_row_payloads_keep_source_order_in_identity() {
+    let rows = || {
+        vec![
+            LogRecord::new(Severity::from_static("info"), "first"),
+            LogRecord::new(Severity::from_static("info"), "second"),
+        ]
+    };
+    let build = |rows: Vec<LogRecord>| {
+        ObservationBatch::new(
+            endpoint(),
+            origin(),
+            window(),
+            Coverage::complete_endpoint(),
+            Payload::Logs(rows.into_boxed_slice()),
+        )
+        .expect("endpoint-scoped logs")
+    };
+    let forward = build(rows());
+    let reversed = build(rows().into_iter().rev().collect());
+
+    assert_ne!(forward, reversed);
+    assert_ne!(hash_of(&forward), hash_of(&reversed));
+}
+
+#[test]
 fn sensor_inventory_and_reading_share_subject_and_health_context() {
-    let entity = Subject::new("processor", "/redfish/v1/Systems/1/Processors/CPU0");
+    let entity = Subject::new(
+        "processor".into(),
+        "/redfish/v1/Systems/1/Processors/CPU0".into(),
+    );
     let sensor = sensor_subject();
     let inventory_item = InventoryItem::new(
         sensor.clone(),
@@ -491,19 +571,19 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
     let signal = Arc::new(
         SignalDescriptor::new(
             sensor.clone(),
-            "temperature",
-            "CPU0Temp",
+            "temperature".into(),
+            "CPU0Temp".into(),
             ReadingKind::Gauge,
             Unit::from_static("celsius"),
             timestamp(99),
         )
-        .with_bounds(ValueRange::new(
-            Some(Finite::new(-5.0).unwrap()),
-            Some(Finite::new(100.0).unwrap()),
-        )),
+        .with_bounds(
+            ValueRange::between(Finite::new(-5.0).unwrap(), Finite::new(100.0).unwrap())
+                .expect("ordered bounds"),
+        ),
     );
     let reading = Reading::new(
-        "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
         signal,
         Finite::new(42.5).unwrap(),
     )
@@ -526,7 +606,7 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
         Some("critical")
     );
     assert_eq!(
-        reading.signal.bounds.and_then(|bounds| bounds.upper),
+        reading.signal.bounds.and_then(ValueRange::upper),
         Some(Finite::new(100.0).unwrap())
     );
     assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
@@ -543,29 +623,29 @@ fn sensor_inventory_and_reading_share_subject_and_health_context() {
 /// which is what this walks through.
 #[test]
 fn thresholds_are_observed_as_resource_state_and_join_to_readings_by_subject() {
-    let sensor = Subject::new("sensor", "CPU0Temp");
+    let sensor = Subject::new("sensor".into(), "CPU0Temp".into());
     let signal = SignalDescriptor::new(
         sensor.clone(),
-        "temperature",
-        "CPU0Temp",
+        "temperature".into(),
+        "CPU0Temp".into(),
         ReadingKind::Gauge,
         Unit::from_static("celsius"),
         timestamp(1),
     )
     // The span the part can read, which is a capability and not a judgement.
-    .with_bounds(ValueRange::new(
-        Some(Finite::new(-5.0).unwrap()),
-        Some(Finite::new(100.0).unwrap()),
-    ));
+    .with_bounds(
+        ValueRange::between(Finite::new(-5.0).unwrap(), Finite::new(100.0).unwrap())
+            .expect("ordered bounds"),
+    );
     let reading = Reading::new(
-        "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
         signal,
         Finite::new(42.5).unwrap(),
     );
 
     let configured = ObservedResource::complete(
         sensor.clone(),
-        "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp".into(),
         PropertyMap::new(vec![
             Property::new(
                 "upper_caution",
@@ -601,29 +681,23 @@ fn thresholds_are_observed_as_resource_state_and_join_to_readings_by_subject() {
     );
     // The readable range stays on the signal and is not the threshold.
     assert_eq!(
-        reading.signal.bounds.and_then(|bounds| bounds.upper),
+        reading.signal.bounds.and_then(ValueRange::upper),
         Some(Finite::new(100.0).unwrap())
     );
 }
 
 #[test]
-fn reported_ranges_are_stored_permissively_but_can_be_checked() {
-    let inverted = ValueRange::new(
-        Some(Finite::new(100.0).unwrap()),
-        Some(Finite::new(-5.0).unwrap()),
-    );
-
-    // Storage keeps what the device said; `checked` is the opt-in gate.
-    assert_eq!(inverted.lower, Some(Finite::new(100.0).unwrap()));
-
-    let error = inverted.checked().expect_err("the edges contradict");
+fn reported_ranges_are_valid_by_construction() {
+    let error = ValueRange::between(Finite::new(100.0).unwrap(), Finite::new(-5.0).unwrap())
+        .expect_err("the edges contradict");
     assert_eq!(error.lower, Finite::new(100.0).unwrap());
     assert_eq!(error.upper, Finite::new(-5.0).unwrap());
 
-    assert!(ValueRange::new(Some(Finite::new(-5.0).unwrap()), None)
-        .checked()
-        .is_ok());
-    assert!(ValueRange::empty().checked().is_ok());
+    assert_eq!(
+        ValueRange::at_least(Finite::new(-5.0).unwrap()).lower(),
+        Some(Finite::new(-5.0).unwrap())
+    );
+    assert!(ValueRange::empty().is_empty());
 }
 
 #[test]
@@ -634,22 +708,59 @@ fn non_finite_values_are_rejected_at_construction() {
 }
 
 #[test]
+fn public_records_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<ObservationBatch>();
+    assert_send_sync::<AcquisitionStatus>();
+    assert_send_sync::<SignalDescriptor>();
+    assert_send_sync::<ResourceGraph>();
+    assert_send_sync::<PropertyValue>();
+}
+
+#[test]
+fn statuses_support_value_hashing() {
+    let first = AcquisitionStatus::new(
+        endpoint(),
+        origin(),
+        window(),
+        AcquisitionOutcome::failed(FailureClass::Timeout, Retryable::Yes),
+    );
+    let second = first.clone();
+    assert_eq!(hash_of(&first), hash_of(&second));
+}
+
+#[test]
 fn acquisition_failure_is_status_not_an_observation() {
     let status = AcquisitionStatus::new(
         endpoint(),
         origin(),
         window(),
-        AcquisitionOutcome::failed(FailureClass::Timeout, true),
+        AcquisitionOutcome::failed(FailureClass::Timeout, Retryable::Yes),
     );
 
-    assert!(status.outcome.retryable());
+    assert!(status.outcome.is_retryable());
     assert!(matches!(
         status.outcome,
         AcquisitionOutcome::Failed {
             class: FailureClass::Timeout,
-            retryable: true
+            retryable: Retryable::Yes
         }
     ));
+}
+
+/// `Retryable` is a named type so a call site reads, but it still has to
+/// encode as the boolean it replaced. Only its serde attributes hold that,
+/// and a round trip would not notice if they went.
+#[cfg(feature = "serde")]
+#[test]
+fn a_named_retry_decision_still_encodes_as_a_boolean() {
+    let outcome = AcquisitionOutcome::failed(FailureClass::Timeout, Retryable::Yes);
+
+    assert_eq!(
+        serde_json::to_string(&outcome).expect("serialize outcome"),
+        r#"{"failed":{"class":"timeout","retryable":true}}"#
+    );
 }
 
 #[cfg(feature = "serde")]
@@ -685,7 +796,7 @@ fn readings_share_one_descriptor_across_the_wire() {
     let rows: Vec<Reading> = (0..3)
         .map(|index| {
             Reading::new(
-                format!("sample-{index}"),
+                format!("sample-{index}").into(),
                 Arc::clone(&shared),
                 Finite::new(42.5).unwrap(),
             )
@@ -717,7 +828,7 @@ fn descriptor_sharing_is_a_memory_detail_the_wire_format_does_not_expose() {
         (0..3)
             .map(|index| {
                 Reading::new(
-                    format!("sample-{index}"),
+                    format!("sample-{index}").into(),
                     Arc::clone(&shared),
                     Finite::new(42.5).unwrap(),
                 )
@@ -728,7 +839,7 @@ fn descriptor_sharing_is_a_memory_detail_the_wire_format_does_not_expose() {
         (0..3)
             .map(|index| {
                 Reading::new(
-                    format!("sample-{index}"),
+                    format!("sample-{index}").into(),
                     descriptor(),
                     Finite::new(42.5).unwrap(),
                 )
@@ -782,4 +893,20 @@ fn serde_rejects_invalid_invariant_bearing_values() {
     let duplicate_attributes =
         r#"[{"key":"rack","value":{"string":"one"}},{"key":"rack","value":{"string":"two"}}]"#;
     assert!(serde_json::from_str::<Attributes>(duplicate_attributes).is_err());
+
+    let reversed_window = r#"{
+        "started_at":{"seconds":2,"nanoseconds":0},
+        "completed_at":{"seconds":1,"nanoseconds":0}
+    }"#;
+    assert!(serde_json::from_str::<ObservationWindow>(reversed_window).is_err());
+
+    let inverted_range = r#"{"lower":100.0,"upper":-5.0}"#;
+    assert!(serde_json::from_str::<ValueRange>(inverted_range).is_err());
+
+    let range = ValueRange::between(Finite::new(-5.0).unwrap(), Finite::new(100.0).unwrap())
+        .expect("ordered range");
+    assert_eq!(
+        serde_json::to_string(&range).expect("serialize range"),
+        r#"{"lower":-5.0,"upper":100.0}"#
+    );
 }

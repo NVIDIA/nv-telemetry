@@ -1,0 +1,16 @@
+{
+  "retryable_yes": true,
+  "retryable_no": false,
+  "value_range": {
+    "lower": -5.0,
+    "upper": 100.0
+  },
+  "subject": {
+    "kind": "sensor",
+    "id": "CPU0Temp"
+  },
+  "origin": {
+    "provider": "redfish",
+    "request_class": "sensor-reading"
+  }
+}

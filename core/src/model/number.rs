@@ -48,7 +48,13 @@ impl Finite {
             }
             return Ok(Self(value));
         }
-        Err(NonFiniteError { value })
+        if value.is_nan() {
+            Err(NonFiniteError::NaN)
+        } else if value.is_sign_positive() {
+            Err(NonFiniteError::PositiveInfinity)
+        } else {
+            Err(NonFiniteError::NegativeInfinity)
+        }
     }
 
     pub const fn get(self) -> f64 {
@@ -109,19 +115,24 @@ impl From<u32> for Finite {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct NonFiniteError {
-    /// The rejected value, which may be `NaN` and so compare unequal to itself.
-    pub value: f64,
+pub enum NonFiniteError {
+    NaN,
+    PositiveInfinity,
+    NegativeInfinity,
 }
 
 impl fmt::Display for NonFiniteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let classification = match self {
+            Self::NaN => "NaN",
+            Self::PositiveInfinity => "positive infinity",
+            Self::NegativeInfinity => "negative infinity",
+        };
         write!(
             formatter,
-            "observation values must be finite, got {}",
-            self.value
+            "observation values must be finite, got {classification}"
         )
     }
 }
@@ -150,8 +161,14 @@ mod tests {
 
     #[test]
     fn non_finite_is_rejected() {
-        assert!(Finite::new(f64::NAN).is_err());
-        assert!(Finite::new(f64::INFINITY).is_err());
-        assert!(Finite::new(f64::NEG_INFINITY).is_err());
+        assert_eq!(Finite::new(f64::NAN), Err(NonFiniteError::NaN));
+        assert_eq!(
+            Finite::new(f64::INFINITY),
+            Err(NonFiniteError::PositiveInfinity)
+        );
+        assert_eq!(
+            Finite::new(f64::NEG_INFINITY),
+            Err(NonFiniteError::NegativeInfinity)
+        );
     }
 }

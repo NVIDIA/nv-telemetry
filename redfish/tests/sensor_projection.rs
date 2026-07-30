@@ -1,265 +1,89 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// The fixtures mirror nv-redfish's shape, where the outer Option separates an
-// absent field from a JSON null carried by the inner one.
-#![allow(clippy::option_option)]
-
 use std::sync::Arc;
 
+use nv_redfish::schema::sensor::Sensor;
 use nv_telemetry_core::Finite;
-use nv_telemetry_core::Health;
 use nv_telemetry_core::NumericValue;
-use nv_telemetry_core::ReadingKind;
-use nv_telemetry_core::ReportedState;
-use nv_telemetry_core::SignalDescriptor;
-use nv_telemetry_core::Subject;
 use nv_telemetry_core::Timestamp;
 use nv_telemetry_redfish::FieldValue;
 use nv_telemetry_redfish::Fields;
 use nv_telemetry_redfish::Project;
-use nv_telemetry_redfish::ProjectionIssueKind;
 use nv_telemetry_redfish::ProjectionResult;
+use nv_telemetry_redfish::SensorMetadataProjection;
+use nv_telemetry_redfish::SensorProjectionContext;
+use nv_telemetry_redfish::SensorSampleProjection;
 use nv_telemetry_redfish::SignalCatalog;
-use nv_telemetry_redfish::SignalDescriptorRecord;
 use nv_telemetry_redfish::SignalKey;
 use nv_telemetry_redfish::SignalSample;
 use nv_telemetry_redfish::SignalUpdate;
 
-#[derive(Clone, Debug, serde::Deserialize)]
-struct SensorSchema {
-    #[serde(rename = "@odata.id")]
-    odata_id: Option<String>,
-    #[serde(rename = "Id")]
-    id: Option<String>,
-    #[serde(rename = "Reading")]
-    reading: Option<Option<f64>>,
-    #[serde(rename = "ReadingType")]
-    reading_type: Option<Option<String>>,
-    #[serde(rename = "ReadingUnits")]
-    reading_units: Option<Option<String>>,
-    #[serde(rename = "Status")]
-    status: Option<StatusSchema>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-struct StatusSchema {
-    #[serde(rename = "Health")]
-    health: Option<Option<String>>,
-}
-
-#[derive(Clone, Debug)]
-struct MetricValueSchema {
-    report_id: String,
-    metric_property: Option<String>,
-    metric_value: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ProjectionContext {
-    observed_at: Timestamp,
+#[derive(Debug)]
+struct ExternalSource {
+    value: Option<u64>,
 }
 
 #[derive(Debug)]
-struct FixtureSensorMetadataProjection;
+struct ExternalProjection;
 
-impl Project<SensorSchema, ProjectionContext> for FixtureSensorMetadataProjection {
-    type Output = SignalDescriptorRecord;
+impl Project<ExternalSource> for ExternalProjection {
+    type Output = u64;
 
-    fn project(
-        sensor: &SensorSchema,
-        context: &ProjectionContext,
-    ) -> ProjectionResult<Self::Output> {
+    fn project(source: &ExternalSource, _context: &()) -> ProjectionResult<Self::Output> {
         let mut fields = Fields::new();
-        let source_key = fields.require(
-            "Sensor.@odata.id",
-            FieldValue::from_option(sensor.odata_id.clone()),
-        );
-        let instance = fields.require("Sensor.Id", FieldValue::from_option(sensor.id.clone()));
-        let metric = fields.require(
-            "Sensor.ReadingType",
-            FieldValue::from_option(
-                sensor
-                    .reading_type
-                    .clone()
-                    .flatten()
-                    .map(|value| value.to_ascii_lowercase()),
-            ),
-        );
-        let unit = fields.require(
-            "Sensor.ReadingUnits",
-            FieldValue::from_nested_option(sensor.reading_units.clone()),
-        );
-
-        let (Some(source_key), Some(instance), Some(metric), Some(unit)) =
-            (source_key, instance, metric, unit)
-        else {
+        let Some(value) = fields.require(
+            "ExternalSource.Value",
+            FieldValue::from_option(source.value),
+        ) else {
             return fields.incomplete();
         };
-
-        let descriptor = SignalDescriptor::new(
-            Subject::new("sensor", source_key.clone()),
-            metric,
-            instance,
-            ReadingKind::Gauge,
-            unit,
-            context.observed_at,
-        );
-        fields.complete(SignalDescriptorRecord::new(source_key, descriptor))
+        fields.complete(value * 2)
     }
 }
 
-#[derive(Debug)]
-struct FixtureSensorSampleProjection;
-
-impl Project<SensorSchema, ProjectionContext> for FixtureSensorSampleProjection {
-    type Output = SignalSample;
-
-    fn project(
-        sensor: &SensorSchema,
-        context: &ProjectionContext,
-    ) -> ProjectionResult<Self::Output> {
-        let mut fields = Fields::new();
-        let source_key = fields.require(
-            "Sensor.@odata.id",
-            FieldValue::from_option(sensor.odata_id.clone()),
-        );
-        let signal_key = fields.require(
-            "Sensor.@odata.id",
-            FieldValue::from_option(sensor.odata_id.clone()),
-        );
-        let value = fields.require(
-            "Sensor.Reading",
-            FieldValue::from_option(finite_reading(sensor.reading.flatten())),
-        );
-
-        let (Some(source_key), Some(signal_key), Some(value)) = (source_key, signal_key, value)
-        else {
-            return fields.incomplete();
-        };
-
-        let reported_state = sensor
-            .status
-            .as_ref()
-            .and_then(|status| status.health.clone().flatten())
-            .map(|health| ReportedState::new(None, Some(health.into())));
-
-        let mut sample =
-            SignalSample::new(source_key, signal_key, value).with_observed_at(context.observed_at);
-        if let Some(reported_state) = reported_state {
-            sample = sample.with_reported_state(reported_state);
-        }
-        fields.complete(sample)
-    }
-}
-
-#[derive(Debug)]
-struct MetricReportSampleProjection;
-
-impl Project<MetricValueSchema, ProjectionContext> for MetricReportSampleProjection {
-    type Output = SignalSample;
-
-    fn project(
-        metric_value: &MetricValueSchema,
-        context: &ProjectionContext,
-    ) -> ProjectionResult<Self::Output> {
-        let mut fields = Fields::new();
-        let signal_key = fields.require(
-            "MetricValue.MetricProperty",
-            FieldValue::from_option(metric_value.metric_property.clone()),
-        );
-        let value = fields.require(
-            "MetricValue.MetricValue",
-            parse_metric_value(metric_value.metric_value.as_deref()),
-        );
-
-        let (Some(signal_key), Some(value)) = (signal_key, value) else {
-            return fields.incomplete();
-        };
-
-        let source_key = format!("metric-report:{}", metric_value.report_id);
-        fields.complete(
-            SignalSample::new(source_key, signal_key, value).with_observed_at(context.observed_at),
-        )
-    }
-}
-
-fn finite_reading(value: Option<f64>) -> Option<Finite> {
-    value.and_then(|value| Finite::new(value).ok())
-}
-
-fn parse_metric_value(value: Option<&str>) -> FieldValue<Finite> {
-    let Some(value) = value else {
-        return FieldValue::missing();
-    };
-    match value.parse::<f64>() {
-        Ok(value) => FieldValue::from_result(Finite::new(value)),
-        Err(error) => FieldValue::invalid(error.to_string()),
-    }
-}
-
-fn fixture() -> SensorSchema {
+fn fixture() -> Sensor {
     serde_json::from_str(include_str!("fixtures/sensor.json")).expect("valid Redfish fixture")
 }
 
-#[test]
-fn sensor_metadata_and_samples_are_projected_in_two_layers() {
-    let context = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_000, 0).expect("valid timestamp"),
-    };
-    let sensor = fixture();
-
-    let metadata = FixtureSensorMetadataProjection::project(&sensor, &context);
-    assert!(metadata.issues().is_empty());
-    let mut catalog = SignalCatalog::new();
-    let record = metadata.into_parts().0.expect("metadata output");
-    catalog.upsert(record);
-
-    let sample = FixtureSensorSampleProjection::project(&sensor, &context)
-        .into_parts()
-        .0
-        .expect("sample output");
-    let reading = catalog.resolve(sample).expect("catalog metadata");
-
-    assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
-    assert_eq!(reading.signal.unit.as_str(), "Cel");
-    assert_eq!(reading.signal.metric.as_str(), "temperature");
-    assert_eq!(
-        reading
-            .reported_state
-            .as_ref()
-            .and_then(|state| state.health.as_ref())
-            .map(Health::as_str),
-        Some("OK")
-    );
+fn context(seconds: i64) -> SensorProjectionContext {
+    SensorProjectionContext::new(Timestamp::new(seconds, 0).expect("valid timestamp"))
 }
 
 #[test]
-fn compiled_nv_redfish_sensor_projects_without_an_adapter() {
-    let sensor: nv_redfish::schema::sensor::Sensor =
-        serde_json::from_str(include_str!("fixtures/sensor.json"))
-            .expect("fixture matches compiled nv-redfish Sensor");
-    let observed_at = Timestamp::new(1_721_000_000, 0).expect("valid timestamp");
-    let context = nv_telemetry_redfish::SensorProjectionContext::new(observed_at);
+fn project_can_be_extended_outside_the_crate() {
+    let result = ExternalProjection::project(&ExternalSource { value: Some(21) }, &());
 
-    let record = nv_telemetry_redfish::SensorMetadataProjection::project(&sensor, &context)
+    assert_eq!(result.output(), Some(&42));
+    assert!(result.issues().is_empty());
+}
+
+#[test]
+fn compiled_sensor_metadata_and_sample_join_without_an_adapter() {
+    let sensor = fixture();
+    let context = context(1_721_000_000);
+    let record = SensorMetadataProjection::project(&sensor, &context)
         .into_parts()
         .0
         .expect("metadata output");
-    let sample = nv_telemetry_redfish::SensorSampleProjection::project(&sensor, &context)
+    let sample = SensorSampleProjection::project(&sensor, &context)
         .into_parts()
         .0
         .expect("sample output");
     let mut catalog = SignalCatalog::new();
-    catalog.upsert(record);
+    catalog.upsert(record).expect("catalog capacity");
     let reading = catalog.resolve(sample).expect("catalog metadata");
 
+    assert_eq!(reading.value, NumericValue::F64(Finite::new(42.5).unwrap()));
     assert_eq!(reading.signal.metric.as_str(), "temperature");
     assert_eq!(reading.signal.instance.as_str(), "CPU0Temp");
     assert_eq!(reading.signal.unit.as_str(), "Cel");
     assert_eq!(reading.signal.revision, 0);
     assert_eq!(
-        reading.signal.bounds.and_then(|bounds| bounds.lower),
+        reading
+            .signal
+            .bounds
+            .and_then(nv_telemetry_core::ValueRange::lower),
         Some(Finite::new(-10.0).unwrap())
     );
 }
@@ -267,66 +91,64 @@ fn compiled_nv_redfish_sensor_projects_without_an_adapter() {
 #[test]
 fn refreshing_unchanged_metadata_keeps_the_shared_descriptor() {
     let sensor = fixture();
-    let first = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_000, 0).expect("valid timestamp"),
-    };
-    let later = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_600, 0).expect("valid timestamp"),
-    };
+    let first = context(1_721_000_000);
+    let later = context(1_721_000_600);
 
     let mut catalog = SignalCatalog::new();
-    let added = catalog.upsert(
-        FixtureSensorMetadataProjection::project(&sensor, &first)
-            .into_parts()
-            .0
-            .expect("metadata output"),
-    );
+    let added = catalog
+        .upsert(
+            SensorMetadataProjection::project(&sensor, &first)
+                .into_parts()
+                .0
+                .expect("metadata output"),
+        )
+        .expect("catalog capacity");
     let installed = match added {
         SignalUpdate::Added(descriptor) => descriptor,
         other => panic!("expected a new signal, got {other:?}"),
     };
 
-    let refreshed = catalog.upsert(
-        FixtureSensorMetadataProjection::project(&sensor, &later)
-            .into_parts()
-            .0
-            .expect("metadata output"),
-    );
+    let refreshed = catalog
+        .upsert(
+            SensorMetadataProjection::project(&sensor, &later)
+                .into_parts()
+                .0
+                .expect("metadata output"),
+        )
+        .expect("catalog capacity");
 
     assert!(matches!(refreshed, SignalUpdate::Unchanged(_)));
     assert!(Arc::ptr_eq(refreshed.descriptor(), &installed));
     assert_eq!(refreshed.descriptor().revision, 0);
-    assert_eq!(refreshed.descriptor().observed_at, first.observed_at);
+    assert_eq!(refreshed.descriptor().observed_at, first.observed_at());
 }
 
 #[test]
 fn confirmation_time_advances_on_refresh_and_drives_pruning() {
     let sensor = fixture();
-    let first = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_000, 0).expect("valid timestamp"),
-    };
-    let later = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_600, 0).expect("valid timestamp"),
-    };
+    let first = context(1_721_000_000);
+    let later = context(1_721_000_600);
     let key = SignalKey::from("/redfish/v1/Chassis/1/Sensors/CPU0Temp");
 
     let mut catalog = SignalCatalog::new();
     for context in [&first, &later] {
-        catalog.upsert(
-            FixtureSensorMetadataProjection::project(&sensor, context)
-                .into_parts()
-                .0
-                .expect("metadata output"),
-        );
+        catalog
+            .upsert(
+                SensorMetadataProjection::project(&sensor, context)
+                    .into_parts()
+                    .0
+                    .expect("metadata output"),
+            )
+            .expect("catalog capacity");
     }
 
     assert_eq!(
         catalog.get(&key).expect("descriptor").observed_at,
-        first.observed_at
+        first.observed_at()
     );
-    assert_eq!(catalog.last_confirmed_at(&key), Some(later.observed_at));
+    assert_eq!(catalog.last_confirmed_at(&key), Some(later.observed_at()));
 
-    catalog.retain_confirmed_since(later.observed_at);
+    catalog.retain_confirmed_since(later.observed_at());
     assert_eq!(catalog.len(), 1);
 
     let after_removal = Timestamp::new(1_721_001_200, 0).expect("valid timestamp");
@@ -336,25 +158,28 @@ fn confirmation_time_advances_on_refresh_and_drives_pruning() {
 
 #[test]
 fn changed_metadata_replaces_the_descriptor_at_the_next_revision() {
-    let context = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_000, 0).expect("valid timestamp"),
-    };
+    let first = context(1_721_000_000);
+    let later = context(1_721_000_001);
     let mut sensor = fixture();
     let mut catalog = SignalCatalog::new();
-    catalog.upsert(
-        FixtureSensorMetadataProjection::project(&sensor, &context)
-            .into_parts()
-            .0
-            .expect("metadata output"),
-    );
+    catalog
+        .upsert(
+            SensorMetadataProjection::project(&sensor, &first)
+                .into_parts()
+                .0
+                .expect("metadata output"),
+        )
+        .expect("catalog capacity");
 
     sensor.reading_units = Some(Some("K".to_owned()));
-    let update = catalog.upsert(
-        FixtureSensorMetadataProjection::project(&sensor, &context)
-            .into_parts()
-            .0
-            .expect("metadata output"),
-    );
+    let update = catalog
+        .upsert(
+            SensorMetadataProjection::project(&sensor, &later)
+                .into_parts()
+                .0
+                .expect("metadata output"),
+        )
+        .expect("catalog capacity");
 
     let SignalUpdate::Revised {
         descriptor,
@@ -369,27 +194,22 @@ fn changed_metadata_replaces_the_descriptor_at_the_next_revision() {
 }
 
 #[test]
-fn metric_report_sample_reuses_sensor_metadata() {
-    let context = ProjectionContext {
-        observed_at: Timestamp::new(1_721_000_010, 0).expect("valid timestamp"),
-    };
+fn a_sample_from_another_acquisition_route_reuses_sensor_metadata() {
+    let context = context(1_721_000_010);
     let sensor = fixture();
-    let record = FixtureSensorMetadataProjection::project(&sensor, &context)
+    let record = SensorMetadataProjection::project(&sensor, &context)
         .into_parts()
         .0
         .expect("metadata output");
     let mut catalog = SignalCatalog::new();
-    catalog.upsert(record);
+    catalog.upsert(record).expect("catalog capacity");
 
-    let metric_value = MetricValueSchema {
-        report_id: "ThermalReport".to_owned(),
-        metric_property: sensor.odata_id,
-        metric_value: Some("43.25".to_owned()),
-    };
-    let sample = MetricReportSampleProjection::project(&metric_value, &context)
-        .into_parts()
-        .0
-        .expect("metric sample output");
+    let sample = SignalSample::new(
+        "metric-report:ThermalReport",
+        "/redfish/v1/Chassis/1/Sensors/CPU0Temp#/Reading",
+        Finite::new(43.25).expect("finite reading"),
+    )
+    .with_observed_at(context.observed_at());
     let reading = catalog.resolve(sample).expect("same canonical signal");
 
     let key = SignalKey::from("/redfish/v1/Chassis/1/Sensors/CPU0Temp");
@@ -399,28 +219,4 @@ fn metric_report_sample_reuses_sensor_metadata() {
         reading.value,
         NumericValue::F64(Finite::new(43.25).unwrap())
     );
-}
-
-#[test]
-fn missing_sensor_metadata_reports_every_required_field() {
-    let empty = SensorSchema {
-        odata_id: None,
-        id: None,
-        reading: None,
-        reading_type: None,
-        reading_units: None,
-        status: None,
-    };
-    let context = ProjectionContext {
-        observed_at: Timestamp::new(1, 0).expect("valid timestamp"),
-    };
-
-    let result = FixtureSensorMetadataProjection::project(&empty, &context);
-
-    assert!(result.output().is_none());
-    assert_eq!(result.issues().len(), 4);
-    assert!(result
-        .issues()
-        .iter()
-        .all(|issue| issue.kind() == &ProjectionIssueKind::MissingRequired));
 }

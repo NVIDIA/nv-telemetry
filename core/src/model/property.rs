@@ -23,6 +23,7 @@ use super::DurationValue;
 use super::Finite;
 use super::Name;
 use super::NonFiniteError;
+use super::SourceKey;
 use super::Subject;
 use super::Timestamp;
 
@@ -31,14 +32,14 @@ use super::Timestamp;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct ResourceReference {
-    pub source_key: Name,
+    pub source_key: SourceKey,
     pub subject: Option<Subject>,
 }
 
 impl ResourceReference {
-    pub fn new(source_key: impl Into<Name>) -> Self {
+    pub fn new(source_key: SourceKey) -> Self {
         Self {
-            source_key: source_key.into(),
+            source_key,
             subject: None,
         }
     }
@@ -63,7 +64,7 @@ impl ResourceReference {
 ///
 /// [`ResourceCompleteness::Complete`]: super::ResourceCompleteness::Complete
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(
     feature = "serde",
     serde(tag = "type", content = "value", rename_all = "snake_case")
@@ -81,7 +82,7 @@ pub enum PropertyValue {
     Timestamp(Timestamp),
     Duration(DurationValue),
     Reference(ResourceReference),
-    Array(Box<[PropertyValue]>),
+    Array(PropertyArray),
     Object(PropertyMap),
 }
 
@@ -95,6 +96,920 @@ impl PropertyValue {
         match Finite::new(value) {
             Ok(value) => Ok(Self::F64(value)),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Builds an array property, rejecting excessive nesting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PropertyArrayError::DepthExceeded`] if the array nests deeper
+    /// than [`PropertyMap::MAX_DEPTH`].
+    pub fn array(values: Vec<Self>) -> Result<Self, PropertyArrayError> {
+        PropertyArray::new(values).map(Self::Array)
+    }
+
+    /// Returns whether this value nests no deeper than `remaining` further
+    /// levels.
+    ///
+    /// The walk stops when the budget runs out, so its own recursion is
+    /// bounded by the limit even when the inspected value is deeper.
+    fn within_depth(&self, remaining: u32) -> bool {
+        match self {
+            Self::Array(items) => {
+                remaining > 0 && items.iter().all(|item| item.within_depth(remaining - 1))
+            }
+            Self::Object(map) => {
+                remaining > 0
+                    && map
+                        .iter()
+                        .all(|property| property.value.within_depth(remaining - 1))
+            }
+            Self::Null
+            | Self::Bool(_)
+            | Self::I64(_)
+            | Self::U64(_)
+            | Self::F64(_)
+            | Self::String(_)
+            | Self::Bytes(_)
+            | Self::Timestamp(_)
+            | Self::Duration(_)
+            | Self::Reference(_) => true,
+        }
+    }
+}
+
+/// A recursively bounded property array.
+///
+/// The wrapper keeps the recursive [`PropertyValue`] enum safe to clone, hash,
+/// compare, serialize, and drop: every public construction path checks the
+/// same depth bound as [`PropertyMap`]. Its serde representation is the
+/// underlying sequence, preserving the wire shape of `PropertyValue::Array`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "Vec<PropertyValue>"))]
+pub struct PropertyArray(Box<[PropertyValue]>);
+
+impl PropertyArray {
+    /// Builds an array, rejecting excessive nesting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PropertyArrayError::DepthExceeded`] if the array nests deeper
+    /// than [`PropertyMap::MAX_DEPTH`].
+    pub fn new(values: Vec<PropertyValue>) -> Result<Self, PropertyArrayError> {
+        let child_depth = PropertyMap::MAX_DEPTH - 1;
+        if values.iter().any(|value| !value.within_depth(child_depth)) {
+            return Err(PropertyArrayError::DepthExceeded {
+                limit: PropertyMap::MAX_DEPTH,
+            });
+        }
+        Ok(Self(values.into_boxed_slice()))
+    }
+
+    pub fn as_slice(&self) -> &[PropertyValue] {
+        &self.0
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, PropertyValue> {
+        self.0.iter()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn into_vec(self) -> Vec<PropertyValue> {
+        self.0.into_vec()
+    }
+}
+
+impl TryFrom<Vec<PropertyValue>> for PropertyArray {
+    type Error = PropertyArrayError;
+
+    fn try_from(values: Vec<PropertyValue>) -> Result<Self, Self::Error> {
+        Self::new(values)
+    }
+}
+
+impl AsRef<[PropertyValue]> for PropertyArray {
+    fn as_ref(&self) -> &[PropertyValue] {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a PropertyArray {
+    type Item = &'a PropertyValue;
+    type IntoIter = std::slice::Iter<'a, PropertyValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// A rejected recursively nested property array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PropertyArrayError {
+    DepthExceeded { limit: u32 },
+}
+
+impl fmt::Display for PropertyArrayError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DepthExceeded { limit } => {
+                write!(
+                    formatter,
+                    "property array nests deeper than the limit of {limit} levels"
+                )
+            }
+        }
+    }
+}
+
+impl Error for PropertyArrayError {}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PropertyValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        property_value_depth::enter(deserializer)
+    }
+}
+
+/// Internal adjacent-tag representation, kept separate so recursive fields
+/// re-enter the depth budget through [`PropertyValue`].
+#[cfg(feature = "serde")]
+enum PropertyValueRepr {
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(Finite),
+    String(Arc<str>),
+    Bytes(Arc<[u8]>),
+    Timestamp(Timestamp),
+    Duration(DurationValue),
+    Reference(ResourceReference),
+    Array(PropertyArray),
+    Object(PropertyMap),
+}
+
+#[cfg(feature = "serde")]
+impl From<PropertyValueRepr> for PropertyValue {
+    fn from(value: PropertyValueRepr) -> Self {
+        match value {
+            PropertyValueRepr::Null => Self::Null,
+            PropertyValueRepr::Bool(value) => Self::Bool(value),
+            PropertyValueRepr::I64(value) => Self::I64(value),
+            PropertyValueRepr::U64(value) => Self::U64(value),
+            PropertyValueRepr::F64(value) => Self::F64(value),
+            PropertyValueRepr::String(value) => Self::String(value),
+            PropertyValueRepr::Bytes(value) => Self::Bytes(value),
+            PropertyValueRepr::Timestamp(value) => Self::Timestamp(value),
+            PropertyValueRepr::Duration(value) => Self::Duration(value),
+            PropertyValueRepr::Reference(value) => Self::Reference(value),
+            PropertyValueRepr::Array(value) => Self::Array(value),
+            PropertyValueRepr::Object(value) => Self::Object(value),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+mod property_value_depth {
+    use std::cell::Cell;
+    use std::fmt;
+
+    use serde::de::DeserializeSeed as _;
+    use serde::Deserialize as _;
+
+    use super::PropertyArray;
+    use super::PropertyMap;
+    use super::PropertyValue;
+    use super::PropertyValueRepr;
+
+    // When an adjacent tag follows its content, Serde has to buffer the
+    // untyped content before it can select a variant. One recursive property
+    // level uses at most four map/sequence levels (an object is the widest
+    // case), and the fixed margin covers the leaf payload and envelopes.
+    //
+    // This is deliberately separate from `MAX_DEPTH`: it bounds work done
+    // before the semantic property depth is knowable, while `DEPTH` below
+    // remains the exact model invariant.
+    const MAX_BUFFER_DEPTH: u32 = PropertyMap::MAX_DEPTH * 4 + 16;
+    const MAX_BUFFER_PREALLOCATED_ITEMS: usize = 4096;
+
+    std::thread_local! {
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+
+    pub(super) fn enter<'de, D>(deserializer: D) -> Result<PropertyValue, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        DEPTH.with(|depth| {
+            let current = depth.get();
+            if current > PropertyMap::MAX_DEPTH {
+                return Err(serde::de::Error::custom(format_args!(
+                    "property value nests deeper than the limit of {} levels",
+                    PropertyMap::MAX_DEPTH
+                )));
+            }
+
+            depth.set(current + 1);
+            let _restore = RestoreDepth { depth, current };
+            deserialize_repr(deserializer).map(PropertyValue::from)
+        })
+    }
+
+    struct RestoreDepth<'a> {
+        depth: &'a Cell<u32>,
+        current: u32,
+    }
+
+    impl Drop for RestoreDepth<'_> {
+        fn drop(&mut self) {
+            self.depth.set(self.current);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum PropertyTag {
+        Null,
+        Bool,
+        I64,
+        U64,
+        F64,
+        String,
+        Bytes,
+        Timestamp,
+        Duration,
+        Reference,
+        Array,
+        Object,
+    }
+
+    impl<'de> serde::Deserialize<'de> for PropertyTag {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct TagVisitor;
+
+            impl serde::de::Visitor<'_> for TagVisitor {
+                type Value = PropertyTag;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a property value type")
+                }
+
+                fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    match value {
+                        "null" => Ok(PropertyTag::Null),
+                        "bool" => Ok(PropertyTag::Bool),
+                        "i64" => Ok(PropertyTag::I64),
+                        "u64" => Ok(PropertyTag::U64),
+                        "f64" => Ok(PropertyTag::F64),
+                        "string" => Ok(PropertyTag::String),
+                        "bytes" => Ok(PropertyTag::Bytes),
+                        "timestamp" => Ok(PropertyTag::Timestamp),
+                        "duration" => Ok(PropertyTag::Duration),
+                        "reference" => Ok(PropertyTag::Reference),
+                        "array" => Ok(PropertyTag::Array),
+                        "object" => Ok(PropertyTag::Object),
+                        _ => Err(E::unknown_variant(
+                            value,
+                            &[
+                                "null",
+                                "bool",
+                                "i64",
+                                "u64",
+                                "f64",
+                                "string",
+                                "bytes",
+                                "timestamp",
+                                "duration",
+                                "reference",
+                                "array",
+                                "object",
+                            ],
+                        )),
+                    }
+                }
+            }
+
+            deserializer.deserialize_str(TagVisitor)
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(field_identifier, rename_all = "snake_case")]
+    enum PropertyField {
+        Type,
+        Value,
+        #[serde(other)]
+        Other,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(transparent)]
+    struct BytesValue(#[serde(with = "super::hex_bytes")] std::sync::Arc<[u8]>);
+
+    fn deserialize_repr<'de, D>(deserializer: D) -> Result<PropertyValueRepr, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let human_readable = deserializer.is_human_readable();
+        deserializer.deserialize_struct(
+            "PropertyValue",
+            &["type", "value"],
+            PropertyValueVisitor { human_readable },
+        )
+    }
+
+    struct PropertyValueVisitor {
+        human_readable: bool,
+    }
+
+    impl<'de> serde::de::Visitor<'de> for PropertyValueVisitor {
+        type Value = PropertyValueRepr;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an adjacently tagged property value")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut tag = None;
+            let mut value = None;
+            let mut buffered = None;
+
+            while let Some(field) = map.next_key::<PropertyField>()? {
+                match field {
+                    PropertyField::Type => {
+                        if tag.is_some() {
+                            return Err(serde::de::Error::duplicate_field("type"));
+                        }
+                        tag = Some(map.next_value::<PropertyTag>()?);
+                    }
+                    PropertyField::Value => {
+                        if value.is_some() || buffered.is_some() {
+                            return Err(serde::de::Error::duplicate_field("value"));
+                        }
+                        if let Some(tag) = tag {
+                            value = Some(deserialize_tagged_value(tag, &mut map)?);
+                        } else {
+                            buffered = Some(map.next_value_seed(BufferSeed::root())?);
+                        }
+                    }
+                    PropertyField::Other => {
+                        let _ = map.next_value_seed(BufferSeed::root())?;
+                    }
+                }
+            }
+
+            let tag = tag.ok_or_else(|| serde::de::Error::missing_field("type"))?;
+            match (tag, value, buffered) {
+                (PropertyTag::Null, None, None) => Ok(PropertyValueRepr::Null),
+                (_, Some(value), None) => Ok(value),
+                (_, None, Some(buffered)) => {
+                    deserialize_buffered(tag, buffered, self.human_readable)
+                }
+                (_, None, None) => Err(serde::de::Error::missing_field("value")),
+                (_, Some(_), Some(_)) => {
+                    Err(serde::de::Error::custom("property value was decoded twice"))
+                }
+            }
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let tag = sequence
+                .next_element::<PropertyTag>()?
+                .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+            match deserialize_tagged_element(tag, &mut sequence)? {
+                Some(value) => Ok(value),
+                None if matches!(tag, PropertyTag::Null) => Ok(PropertyValueRepr::Null),
+                None => Err(serde::de::Error::invalid_length(1, &self)),
+            }
+        }
+    }
+
+    fn deserialize_tagged_value<'de, A>(
+        tag: PropertyTag,
+        map: &mut A,
+    ) -> Result<PropertyValueRepr, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        match tag {
+            PropertyTag::Null => map.next_value::<()>().map(|()| PropertyValueRepr::Null),
+            PropertyTag::Bool => map.next_value().map(PropertyValueRepr::Bool),
+            PropertyTag::I64 => map.next_value().map(PropertyValueRepr::I64),
+            PropertyTag::U64 => map.next_value().map(PropertyValueRepr::U64),
+            PropertyTag::F64 => map.next_value().map(PropertyValueRepr::F64),
+            PropertyTag::String => map.next_value().map(PropertyValueRepr::String),
+            PropertyTag::Bytes => map
+                .next_value::<BytesValue>()
+                .map(|value| PropertyValueRepr::Bytes(value.0)),
+            PropertyTag::Timestamp => map.next_value().map(PropertyValueRepr::Timestamp),
+            PropertyTag::Duration => map.next_value().map(PropertyValueRepr::Duration),
+            PropertyTag::Reference => map.next_value().map(PropertyValueRepr::Reference),
+            PropertyTag::Array => map.next_value().map(PropertyValueRepr::Array),
+            PropertyTag::Object => map.next_value().map(PropertyValueRepr::Object),
+        }
+    }
+
+    fn deserialize_tagged_element<'de, A>(
+        tag: PropertyTag,
+        sequence: &mut A,
+    ) -> Result<Option<PropertyValueRepr>, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        macro_rules! next {
+            ($type:ty, $variant:ident) => {
+                sequence
+                    .next_element::<$type>()
+                    .map(|value| value.map(PropertyValueRepr::$variant))
+            };
+        }
+
+        match tag {
+            PropertyTag::Null => sequence
+                .next_element::<()>()
+                .map(|value| value.map(|()| PropertyValueRepr::Null)),
+            PropertyTag::Bool => next!(bool, Bool),
+            PropertyTag::I64 => next!(i64, I64),
+            PropertyTag::U64 => next!(u64, U64),
+            PropertyTag::F64 => next!(super::Finite, F64),
+            PropertyTag::String => next!(std::sync::Arc<str>, String),
+            PropertyTag::Bytes => sequence
+                .next_element::<BytesValue>()
+                .map(|value| value.map(|value| PropertyValueRepr::Bytes(value.0))),
+            PropertyTag::Timestamp => next!(super::Timestamp, Timestamp),
+            PropertyTag::Duration => next!(super::DurationValue, Duration),
+            PropertyTag::Reference => next!(super::ResourceReference, Reference),
+            PropertyTag::Array => next!(PropertyArray, Array),
+            PropertyTag::Object => next!(PropertyMap, Object),
+        }
+    }
+
+    fn deserialize_buffered<E>(
+        tag: PropertyTag,
+        buffered: BufferedValue,
+        human_readable: bool,
+    ) -> Result<PropertyValueRepr, E>
+    where
+        E: serde::de::Error,
+    {
+        macro_rules! decode {
+            ($type:ty, $variant:ident) => {
+                <$type>::deserialize(BufferedDeserializer::<E>::new(buffered, human_readable))
+                    .map(PropertyValueRepr::$variant)
+            };
+        }
+
+        match tag {
+            PropertyTag::Null => {
+                <()>::deserialize(BufferedDeserializer::<E>::new(buffered, human_readable))
+                    .map(|()| PropertyValueRepr::Null)
+            }
+            PropertyTag::Bool => decode!(bool, Bool),
+            PropertyTag::I64 => decode!(i64, I64),
+            PropertyTag::U64 => decode!(u64, U64),
+            PropertyTag::F64 => decode!(super::Finite, F64),
+            PropertyTag::String => decode!(std::sync::Arc<str>, String),
+            PropertyTag::Bytes => {
+                BytesValue::deserialize(BufferedDeserializer::<E>::new(buffered, human_readable))
+                    .map(|value| PropertyValueRepr::Bytes(value.0))
+            }
+            PropertyTag::Timestamp => decode!(super::Timestamp, Timestamp),
+            PropertyTag::Duration => decode!(super::DurationValue, Duration),
+            PropertyTag::Reference => decode!(super::ResourceReference, Reference),
+            PropertyTag::Array => decode!(PropertyArray, Array),
+            PropertyTag::Object => decode!(PropertyMap, Object),
+        }
+    }
+
+    /// The subset of Serde's data model needed to replay an untyped `value`.
+    ///
+    /// Maps remain ordered entry vectors so duplicate fields survive replay
+    /// and are rejected by the same validators as tag-first input.
+    enum BufferedValue {
+        Bool(bool),
+        I64(i64),
+        I128(i128),
+        U64(u64),
+        U128(u128),
+        F64(f64),
+        Char(char),
+        String(String),
+        Bytes(Vec<u8>),
+        None,
+        Some(Box<Self>),
+        Unit,
+        Newtype(Box<Self>),
+        Sequence(Vec<Self>),
+        Map(Vec<(Self, Self)>),
+    }
+
+    #[derive(Clone, Copy)]
+    struct BufferSeed {
+        remaining: u32,
+    }
+
+    impl BufferSeed {
+        const fn root() -> Self {
+            Self {
+                remaining: MAX_BUFFER_DEPTH,
+            }
+        }
+
+        fn descend<E>(self) -> Result<Self, E>
+        where
+            E: serde::de::Error,
+        {
+            self.remaining
+                .checked_sub(1)
+                .map(|remaining| Self { remaining })
+                .ok_or_else(|| {
+                    E::custom(format_args!(
+                        "property value wire representation nests too deeply \
+                         before its type tag (limit: {MAX_BUFFER_DEPTH} container levels)"
+                    ))
+                })
+        }
+    }
+
+    impl<'de> serde::de::DeserializeSeed<'de> for BufferSeed {
+        type Value = BufferedValue;
+
+        fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(BufferVisitor {
+                remaining: self.remaining,
+            })
+        }
+    }
+
+    struct BufferVisitor {
+        remaining: u32,
+    }
+
+    impl<'de> serde::de::Visitor<'de> for BufferVisitor {
+        type Value = BufferedValue;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a self-describing value")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(BufferedValue::Bool(value))
+        }
+
+        fn visit_i8<E>(self, value: i8) -> Result<Self::Value, E> {
+            Ok(BufferedValue::I64(i64::from(value)))
+        }
+
+        fn visit_i16<E>(self, value: i16) -> Result<Self::Value, E> {
+            Ok(BufferedValue::I64(i64::from(value)))
+        }
+
+        fn visit_i32<E>(self, value: i32) -> Result<Self::Value, E> {
+            Ok(BufferedValue::I64(i64::from(value)))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+            Ok(BufferedValue::I64(value))
+        }
+
+        fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E> {
+            Ok(BufferedValue::I128(value))
+        }
+
+        fn visit_u8<E>(self, value: u8) -> Result<Self::Value, E> {
+            Ok(BufferedValue::U64(u64::from(value)))
+        }
+
+        fn visit_u16<E>(self, value: u16) -> Result<Self::Value, E> {
+            Ok(BufferedValue::U64(u64::from(value)))
+        }
+
+        fn visit_u32<E>(self, value: u32) -> Result<Self::Value, E> {
+            Ok(BufferedValue::U64(u64::from(value)))
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+            Ok(BufferedValue::U64(value))
+        }
+
+        fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E> {
+            Ok(BufferedValue::U128(value))
+        }
+
+        fn visit_f32<E>(self, value: f32) -> Result<Self::Value, E> {
+            Ok(BufferedValue::F64(f64::from(value)))
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+            Ok(BufferedValue::F64(value))
+        }
+
+        fn visit_char<E>(self, value: char) -> Result<Self::Value, E> {
+            Ok(BufferedValue::Char(value))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+            Ok(BufferedValue::String(value.to_owned()))
+        }
+
+        fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E> {
+            Ok(BufferedValue::String(value.to_owned()))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+            Ok(BufferedValue::String(value))
+        }
+
+        fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E> {
+            Ok(BufferedValue::Bytes(value.to_vec()))
+        }
+
+        fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> Result<Self::Value, E> {
+            Ok(BufferedValue::Bytes(value.to_vec()))
+        }
+
+        fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(BufferedValue::Bytes(value))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(BufferedValue::None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            BufferSeed {
+                remaining: self.remaining,
+            }
+            .deserialize(deserializer)
+            .map(Box::new)
+            .map(BufferedValue::Some)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(BufferedValue::Unit)
+        }
+
+        fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            BufferSeed {
+                remaining: self.remaining,
+            }
+            .deserialize(deserializer)
+            .map(Box::new)
+            .map(BufferedValue::Newtype)
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let seed = BufferSeed {
+                remaining: self.remaining,
+            }
+            .descend()?;
+            let mut values = Vec::with_capacity(
+                sequence
+                    .size_hint()
+                    .unwrap_or_default()
+                    .min(MAX_BUFFER_PREALLOCATED_ITEMS),
+            );
+            while let Some(value) = sequence.next_element_seed(seed)? {
+                values.push(value);
+            }
+            Ok(BufferedValue::Sequence(values))
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let seed = BufferSeed {
+                remaining: self.remaining,
+            }
+            .descend()?;
+            let mut values = Vec::with_capacity(
+                map.size_hint()
+                    .unwrap_or_default()
+                    .min(MAX_BUFFER_PREALLOCATED_ITEMS),
+            );
+            while let Some(entry) = map.next_entry_seed(seed, seed)? {
+                values.push(entry);
+            }
+            Ok(BufferedValue::Map(values))
+        }
+    }
+
+    struct BufferedDeserializer<E> {
+        value: BufferedValue,
+        human_readable: bool,
+        error: std::marker::PhantomData<E>,
+    }
+
+    impl<E> BufferedDeserializer<E> {
+        const fn new(value: BufferedValue, human_readable: bool) -> Self {
+            Self {
+                value,
+                human_readable,
+                error: std::marker::PhantomData,
+            }
+        }
+    }
+
+    impl<'de, E> serde::Deserializer<'de> for BufferedDeserializer<E>
+    where
+        E: serde::de::Error,
+    {
+        type Error = E;
+
+        fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: serde::de::Visitor<'de>,
+        {
+            let human_readable = self.human_readable;
+            match self.value {
+                BufferedValue::Bool(value) => visitor.visit_bool(value),
+                BufferedValue::I64(value) => visitor.visit_i64(value),
+                BufferedValue::I128(value) => visitor.visit_i128(value),
+                BufferedValue::U64(value) => visitor.visit_u64(value),
+                BufferedValue::U128(value) => visitor.visit_u128(value),
+                BufferedValue::F64(value) => visitor.visit_f64(value),
+                BufferedValue::Char(value) => visitor.visit_char(value),
+                BufferedValue::String(value) => visitor.visit_string(value),
+                BufferedValue::Bytes(value) => visitor.visit_byte_buf(value),
+                BufferedValue::None => visitor.visit_none(),
+                BufferedValue::Some(value) => visitor.visit_some(Self::new(*value, human_readable)),
+                BufferedValue::Unit => visitor.visit_unit(),
+                BufferedValue::Newtype(value) => {
+                    visitor.visit_newtype_struct(Self::new(*value, human_readable))
+                }
+                BufferedValue::Sequence(values) => {
+                    visitor.visit_seq(BufferedSequence::new(values, human_readable))
+                }
+                BufferedValue::Map(values) => {
+                    visitor.visit_map(BufferedMap::new(values, human_readable))
+                }
+            }
+        }
+
+        fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: serde::de::Visitor<'de>,
+        {
+            let human_readable = self.human_readable;
+            match self.value {
+                BufferedValue::None | BufferedValue::Unit => visitor.visit_none(),
+                BufferedValue::Some(value) => visitor.visit_some(Self::new(*value, human_readable)),
+                value => visitor.visit_some(Self::new(value, human_readable)),
+            }
+        }
+
+        fn deserialize_newtype_struct<V>(
+            self,
+            _name: &'static str,
+            visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: serde::de::Visitor<'de>,
+        {
+            let human_readable = self.human_readable;
+            match self.value {
+                BufferedValue::Newtype(value) => {
+                    visitor.visit_newtype_struct(Self::new(*value, human_readable))
+                }
+                value => visitor.visit_newtype_struct(Self::new(value, human_readable)),
+            }
+        }
+
+        fn is_human_readable(&self) -> bool {
+            self.human_readable
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf unit unit_struct seq tuple tuple_struct map struct enum identifier
+            ignored_any
+        }
+    }
+
+    struct BufferedSequence<E> {
+        values: std::vec::IntoIter<BufferedValue>,
+        human_readable: bool,
+        error: std::marker::PhantomData<E>,
+    }
+
+    impl<E> BufferedSequence<E> {
+        fn new(values: Vec<BufferedValue>, human_readable: bool) -> Self {
+            Self {
+                values: values.into_iter(),
+                human_readable,
+                error: std::marker::PhantomData,
+            }
+        }
+    }
+
+    impl<'de, E> serde::de::SeqAccess<'de> for BufferedSequence<E>
+    where
+        E: serde::de::Error,
+    {
+        type Error = E;
+
+        fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+        where
+            T: serde::de::DeserializeSeed<'de>,
+        {
+            self.values
+                .next()
+                .map(|value| {
+                    seed.deserialize(BufferedDeserializer::new(value, self.human_readable))
+                })
+                .transpose()
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(self.values.len())
+        }
+    }
+
+    struct BufferedMap<E> {
+        entries: std::vec::IntoIter<(BufferedValue, BufferedValue)>,
+        value: Option<BufferedValue>,
+        human_readable: bool,
+        error: std::marker::PhantomData<E>,
+    }
+
+    impl<E> BufferedMap<E> {
+        fn new(values: Vec<(BufferedValue, BufferedValue)>, human_readable: bool) -> Self {
+            Self {
+                entries: values.into_iter(),
+                value: None,
+                human_readable,
+                error: std::marker::PhantomData,
+            }
+        }
+    }
+
+    impl<'de, E> serde::de::MapAccess<'de> for BufferedMap<E>
+    where
+        E: serde::de::Error,
+    {
+        type Error = E;
+
+        fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+        where
+            K: serde::de::DeserializeSeed<'de>,
+        {
+            let Some((key, value)) = self.entries.next() else {
+                return Ok(None);
+            };
+            self.value = Some(value);
+            seed.deserialize(BufferedDeserializer::new(key, self.human_readable))
+                .map(Some)
+        }
+
+        fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+        where
+            V: serde::de::DeserializeSeed<'de>,
+        {
+            let value = self.value.take().ok_or_else(|| {
+                E::custom("map value requested before its key was successfully decoded")
+            })?;
+            seed.deserialize(BufferedDeserializer::new(value, self.human_readable))
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(self.entries.len())
         }
     }
 }
@@ -167,6 +1082,12 @@ impl From<PropertyMap> for PropertyValue {
     }
 }
 
+impl From<PropertyArray> for PropertyValue {
+    fn from(value: PropertyArray) -> Self {
+        Self::Array(value)
+    }
+}
+
 /// One named resource property.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -234,7 +1155,7 @@ impl PropertyMap {
         }
         if let Some(deep) = properties
             .iter()
-            .find(|property| !within_depth(&property.value, Self::MAX_DEPTH))
+            .find(|property| !property.value.within_depth(Self::MAX_DEPTH))
         {
             let error = PropertyMapError::DepthExceeded {
                 name: deep.name.clone(),
@@ -264,7 +1185,8 @@ sorted_collection!(
 /// teardown flat.
 ///
 /// The variants matched here are the recursive ones, and must stay in step
-/// with [`within_depth`]: a variant one walks and the other skips is either
+/// with [`PropertyValue::within_depth`]: a variant one walks and the other
+/// skips is either
 /// unbounded nesting or an unbounded drop.
 fn dismantle(properties: Vec<Property>) {
     let mut pending: Vec<PropertyValue> = properties
@@ -273,31 +1195,22 @@ fn dismantle(properties: Vec<Property>) {
         .collect();
 
     while let Some(value) = pending.pop() {
-        // Only arrays need flattening. An `Object` holds a `PropertyMap`,
-        // which exists only by passing the depth check, so its own nesting
-        // is already bounded and the recursive drop of one is safe.
-        if let PropertyValue::Array(items) = value {
-            pending.extend(items.into_vec());
+        match value {
+            // An `Object` holds a `PropertyMap`, which exists only by passing
+            // the depth check, so its own recursive drop is bounded.
+            PropertyValue::Array(items) => pending.extend(items.into_vec()),
+            PropertyValue::Object(_)
+            | PropertyValue::Null
+            | PropertyValue::Bool(_)
+            | PropertyValue::I64(_)
+            | PropertyValue::U64(_)
+            | PropertyValue::F64(_)
+            | PropertyValue::String(_)
+            | PropertyValue::Bytes(_)
+            | PropertyValue::Timestamp(_)
+            | PropertyValue::Duration(_)
+            | PropertyValue::Reference(_) => {}
         }
-    }
-}
-
-/// Returns whether a value nests no deeper than `remaining` further levels.
-///
-/// The walk stops when the budget runs out, so its own recursion is bounded by
-/// the limit even when the inspected value is deeper.
-fn within_depth(value: &PropertyValue, remaining: u32) -> bool {
-    match value {
-        PropertyValue::Array(items) => {
-            remaining > 0 && items.iter().all(|item| within_depth(item, remaining - 1))
-        }
-        PropertyValue::Object(map) => {
-            remaining > 0
-                && map
-                    .iter()
-                    .all(|property| within_depth(&property.value, remaining - 1))
-        }
-        _ => true,
     }
 }
 
@@ -333,6 +1246,7 @@ mod hex_bytes {
     use std::sync::Arc;
 
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    const MAX_PREALLOCATED_BYTES: usize = 64 * 1024;
 
     pub(super) fn serialize<S>(value: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -342,7 +1256,15 @@ mod hex_bytes {
             return serializer.serialize_bytes(value);
         }
 
-        let mut encoded = String::with_capacity(value.len() * 2);
+        let capacity = value.len().checked_mul(2).ok_or_else(|| {
+            serde::ser::Error::custom("hex encoded property length exceeds addressable capacity")
+        })?;
+        let mut encoded = String::new();
+        encoded.try_reserve_exact(capacity).map_err(|error| {
+            serde::ser::Error::custom(format_args!(
+                "hex encoded property cannot reserve {capacity} bytes: {error}"
+            ))
+        })?;
         for byte in value.iter() {
             encoded.push(DIGITS[usize::from(byte >> 4)] as char);
             encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
@@ -406,7 +1328,11 @@ mod hex_bytes {
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or_default());
+            let capacity = sequence
+                .size_hint()
+                .unwrap_or_default()
+                .min(MAX_PREALLOCATED_BYTES);
+            let mut bytes = Vec::with_capacity(capacity);
             while let Some(byte) = sequence.next_element::<u8>()? {
                 bytes.push(byte);
             }

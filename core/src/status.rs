@@ -36,8 +36,36 @@ pub enum FailureClass {
     Other,
 }
 
+/// Whether attempting the same acquisition again could answer differently.
+///
+/// Named rather than a bare `bool` so a call site states which it means. The
+/// wire form stays a boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "bool", into = "bool"))]
+pub enum Retryable {
+    Yes,
+    No,
+}
+
+impl From<bool> for Retryable {
+    fn from(value: bool) -> Self {
+        if value {
+            Self::Yes
+        } else {
+            Self::No
+        }
+    }
+}
+
+impl From<Retryable> for bool {
+    fn from(value: Retryable) -> Self {
+        matches!(value, Retryable::Yes)
+    }
+}
+
 /// Operational result of one acquisition attempt.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -47,7 +75,7 @@ pub enum AcquisitionOutcome {
     },
     Failed {
         class: FailureClass,
-        retryable: bool,
+        retryable: Retryable,
     },
 }
 
@@ -56,20 +84,20 @@ impl AcquisitionOutcome {
         Self::Succeeded { emitted_batches }
     }
 
-    pub const fn failed(class: FailureClass, retryable: bool) -> Self {
+    pub const fn failed(class: FailureClass, retryable: Retryable) -> Self {
         Self::Failed { class, retryable }
     }
 
-    pub const fn retryable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         match self {
             Self::Succeeded { .. } => false,
-            Self::Failed { retryable, .. } => *retryable,
+            Self::Failed { retryable, .. } => matches!(retryable, Retryable::Yes),
         }
     }
 }
 
 /// Operational status emitted separately from device observations.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct AcquisitionStatus {

@@ -14,6 +14,8 @@ export RUSTDOCFLAGS := -D warnings
 
 fmt-toolchain := nightly-2026-06-16
 
+.PHONY: all ci fmt bench rust-install clean
+
 define build-and-test
 	cargo +$(fmt-toolchain) fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings

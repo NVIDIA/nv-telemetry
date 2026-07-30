@@ -30,16 +30,21 @@ use nv_telemetry_core::ObservedResource;
 use nv_telemetry_core::Origin;
 use nv_telemetry_core::Payload;
 use nv_telemetry_core::Property;
+use nv_telemetry_core::PropertyArrayError;
 use nv_telemetry_core::PropertyMap;
 use nv_telemetry_core::PropertyMapError;
 use nv_telemetry_core::PropertyValue;
+use nv_telemetry_core::Reachability;
+use nv_telemetry_core::RelationKind;
 use nv_telemetry_core::ResourceCompleteness;
 use nv_telemetry_core::ResourceGraph;
-use nv_telemetry_core::ResourceGraphBuilder;
 use nv_telemetry_core::ResourceGraphError;
 use nv_telemetry_core::ResourceReference;
 use nv_telemetry_core::ResourceRelation;
+use nv_telemetry_core::SourceKey;
 use nv_telemetry_core::Subject;
+use nv_telemetry_core::SubjectId;
+use nv_telemetry_core::SubjectKind;
 use nv_telemetry_core::Timestamp;
 
 fn timestamp() -> Timestamp {
@@ -50,12 +55,24 @@ fn endpoint() -> Arc<EndpointContext> {
     Arc::new(EndpointContext::new("bmc-1", Attributes::empty()))
 }
 
+fn subject(kind: impl Into<SubjectKind>, id: impl Into<SubjectId>) -> Subject {
+    Subject::new(kind.into(), id.into())
+}
+
+fn source_key(value: impl Into<SourceKey>) -> SourceKey {
+    value.into()
+}
+
+fn relation(source: Subject, kind: impl Into<RelationKind>, target: Subject) -> ResourceRelation {
+    ResourceRelation::new(source, kind.into(), target)
+}
+
 fn host_subject() -> Subject {
-    Subject::new("computer_system", "host-1")
+    subject("computer_system", "host-1")
 }
 
 fn dpu_subject() -> Subject {
-    Subject::new("dpu", "dpu-0")
+    subject("dpu", "dpu-0")
 }
 
 fn properties(values: Vec<Property>) -> PropertyMap {
@@ -70,19 +87,17 @@ fn host_resource() -> ObservedResource {
     let network = properties(vec![
         Property::new(
             "addresses",
-            PropertyValue::Array(
-                vec![
-                    PropertyValue::from("192.0.2.10"),
-                    PropertyValue::from("2001:db8::10"),
-                ]
-                .into_boxed_slice(),
-            ),
+            PropertyValue::array(vec![
+                PropertyValue::from("192.0.2.10"),
+                PropertyValue::from("2001:db8::10"),
+            ])
+            .expect("shallow property array"),
         ),
         Property::new("connected", true),
     ]);
     ObservedResource::complete(
         host_subject(),
-        "/redfish/v1/Systems/host-1",
+        source_key("/redfish/v1/Systems/host-1"),
         properties(vec![
             Property::new("bios_settings_hash", "sha256:abc"),
             Property::new("firmware", firmware),
@@ -103,13 +118,13 @@ fn host_resource() -> ObservedResource {
 fn dpu_resource() -> ObservedResource {
     ObservedResource::complete(
         dpu_subject(),
-        "/redfish/v1/Systems/host-1/Processors/DPU0",
+        source_key("/redfish/v1/Systems/host-1/Processors/DPU0"),
         properties(vec![
             Property::new("agent_version", "3.2.1"),
             Property::new(
                 "manager",
-                ResourceReference::new("/redfish/v1/Managers/BMC")
-                    .with_subject(Subject::new("manager", "bmc")),
+                ResourceReference::new(source_key("/redfish/v1/Managers/BMC"))
+                    .with_subject(subject("manager", "bmc")),
             ),
             Property::new("mode", "nic"),
         ]),
@@ -151,11 +166,12 @@ fn property_maps_reject_duplicate_names() {
 fn property_nesting_is_bounded() {
     assert!(nest_arrays(PropertyMap::MAX_DEPTH - 1).is_ok());
     assert!(nest_arrays(PropertyMap::MAX_DEPTH).is_ok());
-    assert!(matches!(
-        nest_arrays(PropertyMap::MAX_DEPTH + 1),
-        Err(PropertyMapError::DepthExceeded { name, limit })
-            if name.as_str() == "oem" && limit == PropertyMap::MAX_DEPTH
-    ));
+    assert_eq!(
+        nested_array(PropertyMap::MAX_DEPTH + 1),
+        Err(PropertyArrayError::DepthExceeded {
+            limit: PropertyMap::MAX_DEPTH,
+        })
+    );
 
     // Objects count against the same budget, one level per map.
     assert!(nest_objects(PropertyMap::MAX_DEPTH).is_ok());
@@ -164,27 +180,38 @@ fn property_nesting_is_bounded() {
         Err(PropertyMapError::DepthExceeded { name, .. }) if name.as_str() == "oem"
     ));
 
-    // Rejecting is not enough on its own: releasing a value this deep through
-    // the recursive drop glue would abort the process.
-    assert!(nest_arrays(500_000).is_err());
+    // Arrays reject the first level that would make recursive clone, hash,
+    // equality, serialization, or drop exceed the shared bound.
+    assert!(nested_array(500_000).is_err());
 
-    // Only arrays nest without bound, since an object holds a map that already
-    // passed the check. A rejected value has to release safely either way.
-    let mut mixed = PropertyValue::Object(
+    let mixed = PropertyValue::Object(
         PropertyMap::new(vec![Property::new("inner", "leaf")]).expect("a one-level map"),
     );
-    for _ in 0..500_000 {
-        mixed = PropertyValue::Array(vec![mixed].into_boxed_slice());
-    }
-    assert!(PropertyMap::new(vec![Property::new("oem", mixed)]).is_err());
+    assert_eq!(
+        nested_array_from(mixed, 500_000),
+        Err(PropertyArrayError::DepthExceeded {
+            limit: PropertyMap::MAX_DEPTH,
+        })
+    );
 }
 
 fn nest_arrays(depth: u32) -> Result<PropertyMap, PropertyMapError> {
-    let mut value = PropertyValue::from("leaf");
-    for _ in 0..depth {
-        value = PropertyValue::Array(vec![value].into_boxed_slice());
-    }
+    let value = nested_array(depth).expect("requested depth is within the property limit");
     PropertyMap::new(vec![Property::new("oem", value)])
+}
+
+fn nested_array(depth: u32) -> Result<PropertyValue, PropertyArrayError> {
+    nested_array_from(PropertyValue::from("leaf"), depth)
+}
+
+fn nested_array_from(
+    mut value: PropertyValue,
+    depth: u32,
+) -> Result<PropertyValue, PropertyArrayError> {
+    for _ in 0..depth {
+        value = PropertyValue::array(vec![value])?;
+    }
+    Ok(value)
 }
 
 /// Each level is its own map, so every level but the outermost is validated on
@@ -215,7 +242,7 @@ fn the_deepest_accepted_property_survives_every_supported_format() {
             ResourceGraph::new(
                 vec![ObservedResource::complete(
                     host_subject(),
-                    "/redfish/v1/Systems/host-1",
+                    source_key("/redfish/v1/Systems/host-1"),
                     deepest,
                 )],
                 Vec::new(),
@@ -245,7 +272,9 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
     let oversized = ResourceGraph::with_limits(
         vec![host_resource(), dpu_resource()],
         Vec::new(),
-        GraphLimits::new(1, 0),
+        GraphLimits::default()
+            .with_max_resources(1)
+            .with_max_relations(0),
     );
     assert!(matches!(
         oversized,
@@ -254,12 +283,10 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
 
     let too_many_relations = ResourceGraph::with_limits(
         vec![host_resource(), dpu_resource()],
-        vec![ResourceRelation::new(
-            host_subject(),
-            "contains",
-            dpu_subject(),
-        )],
-        GraphLimits::new(10, 0),
+        vec![relation(host_subject(), "contains", dpu_subject())],
+        GraphLimits::default()
+            .with_max_resources(10)
+            .with_max_relations(0),
     );
     assert!(matches!(
         too_many_relations,
@@ -269,18 +296,18 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
     // A graph exactly at the limit is within it.
     assert!(ResourceGraph::with_limits(
         vec![host_resource(), dpu_resource()],
-        vec![ResourceRelation::new(
-            host_subject(),
-            "contains",
-            dpu_subject(),
-        )],
-        GraphLimits::new(2, 1),
+        vec![relation(host_subject(), "contains", dpu_subject(),)],
+        GraphLimits::default()
+            .with_max_resources(2)
+            .with_max_relations(1),
     )
     .is_ok());
 
     // A limit looser than the default is clamped to it, so the model cannot
     // build a graph that its own deserialization would then reject.
-    let beyond_default = GraphLimits::new(usize::MAX, usize::MAX);
+    let beyond_default = GraphLimits::default()
+        .with_max_resources(usize::MAX)
+        .with_max_relations(usize::MAX);
     assert!(ResourceGraph::with_limits(
         vec![host_resource(), dpu_resource()],
         Vec::new(),
@@ -289,10 +316,10 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
     .is_ok());
     assert!(matches!(
         ResourceGraph::with_limits(
-            (0..=GraphLimits::DEFAULT.max_resources)
+            (0..=GraphLimits::DEFAULT.max_resources())
                 .map(|index| ObservedResource::complete(
-                    Subject::new("node", format!("n{index}")),
-                    format!("/nodes/{index}"),
+                    subject("node", format!("n{index}")),
+                    source_key(format!("/nodes/{index}")),
                     PropertyMap::empty(),
                 ))
                 .collect(),
@@ -300,28 +327,21 @@ fn graph_size_is_bounded_and_the_bound_is_configurable() {
             beyond_default,
         ),
         Err(ResourceGraphError::TooManyResources { limit, .. })
-            if limit == GraphLimits::DEFAULT.max_resources
+            if limit == GraphLimits::DEFAULT.max_resources()
     ));
 }
 
 #[test]
 fn graph_sorts_resources_and_relations_and_supports_external_targets() {
-    let external_switch = Subject::new("switch", "leaf-1");
-    let mut builder = ResourceGraphBuilder::new();
-    builder.push_resource(dpu_resource());
-    builder.push_resource(host_resource());
-    builder.push_relation(ResourceRelation::new(
-        host_subject(),
-        "connected_to",
-        external_switch,
-    ));
-    builder.push_relation(ResourceRelation::new(
-        host_subject(),
-        "contains",
-        dpu_subject(),
-    ));
-
-    let graph = builder.finish().expect("valid graph");
+    let external_switch = subject("switch", "leaf-1");
+    let graph = ResourceGraph::new(
+        vec![dpu_resource(), host_resource()],
+        vec![
+            relation(host_subject(), "connected_to", external_switch),
+            relation(host_subject(), "contains", dpu_subject()),
+        ],
+    )
+    .expect("valid graph");
 
     assert_eq!(&graph.resources()[0].subject, &host_subject());
     assert_eq!(&graph.resources()[1].subject, &dpu_subject());
@@ -334,19 +354,19 @@ fn graph_sorts_resources_and_relations_and_supports_external_targets() {
 
 #[test]
 fn relation_lookup_isolates_each_source_and_traverses_cycles() {
-    let manager = Subject::new("manager", "bmc");
+    let manager = subject("manager", "bmc");
     let manager_resource = ObservedResource::complete(
         manager.clone(),
-        "/redfish/v1/Managers/BMC",
+        source_key("/redfish/v1/Managers/BMC"),
         PropertyMap::empty(),
     );
     let graph = ResourceGraph::new(
         vec![host_resource(), dpu_resource(), manager_resource],
         vec![
-            ResourceRelation::new(host_subject(), "contains", dpu_subject()),
-            ResourceRelation::new(host_subject(), "managed_by", manager.clone()),
+            relation(host_subject(), "contains", dpu_subject()),
+            relation(host_subject(), "managed_by", manager.clone()),
             // Closes a cycle, which traversal must terminate on.
-            ResourceRelation::new(manager.clone(), "manages", host_subject()),
+            relation(manager.clone(), "manages", host_subject()),
         ],
     )
     .expect("valid graph");
@@ -362,8 +382,34 @@ fn relation_lookup_isolates_each_source_and_traverses_cycles() {
 
     assert_eq!(graph.reachable_from(&dpu_subject()), vec![&dpu_subject()]);
     assert!(graph
-        .reachable_from(&Subject::new("switch", "absent"))
+        .reachable_from(&subject("switch", "absent"))
         .is_empty());
+}
+
+#[test]
+fn traversal_reports_a_detached_resource_beside_a_cycle() {
+    let manager = subject("manager", "detached");
+    let graph = ResourceGraph::new(
+        vec![
+            host_resource(),
+            dpu_resource(),
+            ObservedResource::complete(
+                manager.clone(),
+                source_key("/redfish/v1/Managers/detached"),
+                PropertyMap::empty(),
+            ),
+        ],
+        vec![
+            relation(host_subject(), "contains", dpu_subject()),
+            relation(dpu_subject(), "part_of", host_subject()),
+        ],
+    )
+    .expect("cycle and detached resource form a valid graph");
+
+    assert_eq!(
+        graph.reachability_from(&host_subject()),
+        Reachability::Unreachable(&manager)
+    );
 }
 
 /// Relations are bound to their source by walking both sorted slices at once,
@@ -371,11 +417,15 @@ fn relation_lookup_isolates_each_source_and_traverses_cycles() {
 /// resource, the last, one with nothing in between, and the empty edges.
 #[test]
 fn relation_lookup_holds_for_every_shape_of_source_run() {
-    let first = Subject::new("chassis", "a");
-    let middle = Subject::new("chassis", "m");
-    let last = Subject::new("chassis", "z");
+    let first = subject("chassis", "a");
+    let middle = subject("chassis", "m");
+    let last = subject("chassis", "z");
     let resource = |subject: &Subject, key: &str| {
-        ObservedResource::complete(subject.clone(), key.to_owned(), PropertyMap::empty())
+        ObservedResource::complete(
+            subject.clone(),
+            source_key(key.to_owned()),
+            PropertyMap::empty(),
+        )
     };
     let resources = || {
         vec![
@@ -390,9 +440,9 @@ fn relation_lookup_holds_for_every_shape_of_source_run() {
     let graph = ResourceGraph::new(
         resources(),
         vec![
-            ResourceRelation::new(first.clone(), "contains", middle.clone()),
-            ResourceRelation::new(last.clone(), "contains", first.clone()),
-            ResourceRelation::new(last.clone(), "peer_of", middle.clone()),
+            relation(first.clone(), "contains", middle.clone()),
+            relation(last.clone(), "contains", first.clone()),
+            relation(last.clone(), "peer_of", middle.clone()),
         ],
     )
     .expect("a valid graph");
@@ -401,29 +451,35 @@ fn relation_lookup_holds_for_every_shape_of_source_run() {
     assert!(graph.relations_from(&middle).is_empty());
     assert_eq!(graph.relations_from(&last).len(), 2);
     assert_eq!(graph.reachable_from(&last), vec![&first, &middle, &last]);
-    assert_eq!(graph.first_unreachable_from(&first), Some(&last));
-    assert_eq!(graph.first_unreachable_from(&last), None);
+    assert_eq!(
+        graph.reachability_from(&first),
+        Reachability::Unreachable(&last)
+    );
+    assert_eq!(graph.reachability_from(&last), Reachability::FullyReachable);
 
     let edgeless = ResourceGraph::new(resources(), Vec::new()).expect("a valid graph");
     assert!(edgeless.relations_from(&first).is_empty());
     assert!(edgeless.relations_from(&last).is_empty());
-    assert_eq!(edgeless.first_unreachable_from(&middle), Some(&first));
+    assert_eq!(
+        edgeless.reachability_from(&middle),
+        Reachability::Unreachable(&first)
+    );
 
     let empty = ResourceGraph::empty();
     assert!(empty.relations_from(&first).is_empty());
-    assert_eq!(empty.first_unreachable_from(&first), None);
+    assert_eq!(empty.reachability_from(&first), Reachability::MissingRoot);
 }
 
 /// A relation may point outside the graph, and traversal has to step over one
 /// rather than stopping at it.
 #[test]
 fn traversal_steps_over_relations_leaving_the_graph() {
-    let external = Subject::new("switch", "leaf-1");
+    let external = subject("switch", "leaf-1");
     let graph = ResourceGraph::new(
         vec![host_resource(), dpu_resource()],
         vec![
-            ResourceRelation::new(host_subject(), "connected_to", external),
-            ResourceRelation::new(host_subject(), "contains", dpu_subject()),
+            relation(host_subject(), "connected_to", external),
+            relation(host_subject(), "contains", dpu_subject()),
         ],
     )
     .expect("a valid graph");
@@ -432,7 +488,10 @@ fn traversal_steps_over_relations_leaving_the_graph() {
         graph.reachable_from(&host_subject()),
         vec![&host_subject(), &dpu_subject()]
     );
-    assert_eq!(graph.first_unreachable_from(&host_subject()), None);
+    assert_eq!(
+        graph.reachability_from(&host_subject()),
+        Reachability::FullyReachable
+    );
 }
 
 #[test]
@@ -460,14 +519,14 @@ fn hash_of(graph: &ResourceGraph) -> u64 {
 fn completeness_records_whether_a_missing_property_is_meaningful() {
     let complete = host_resource();
     assert_eq!(complete.completeness, ResourceCompleteness::Complete);
-    assert!(complete.establishes_absence());
+    assert!(complete.completeness.establishes_absence());
 
     let selected = ObservedResource::partial(
         host_subject(),
-        "/redfish/v1/Systems/host-1",
+        source_key("/redfish/v1/Systems/host-1"),
         properties(vec![Property::new("power_state", "on")]),
     );
-    assert!(!selected.establishes_absence());
+    assert!(!selected.completeness.establishes_absence());
     assert!(selected.properties.get("bios_settings_hash").is_none());
 }
 
@@ -477,8 +536,8 @@ fn one_source_location_may_only_back_one_resource() {
         vec![
             host_resource(),
             ObservedResource::complete(
-                Subject::new("computer_system", "host-1-environment"),
-                "/redfish/v1/Systems/host-1",
+                subject("computer_system", "host-1-environment"),
+                source_key("/redfish/v1/Systems/host-1"),
                 PropertyMap::empty(),
             ),
         ],
@@ -501,10 +560,10 @@ fn graph_rejects_duplicate_resources_relations_and_unknown_sources() {
             if subject == host_subject()
     ));
 
-    let relation = ResourceRelation::new(host_subject(), "contains", dpu_subject());
+    let edge = relation(host_subject(), "contains", dpu_subject());
     let duplicate_relation = ResourceGraph::new(
         vec![host_resource(), dpu_resource()],
-        vec![relation.clone(), relation],
+        vec![edge.clone(), edge],
     );
     assert!(matches!(
         duplicate_relation,
@@ -513,16 +572,16 @@ fn graph_rejects_duplicate_resources_relations_and_unknown_sources() {
 
     let unknown_source = ResourceGraph::new(
         vec![host_resource()],
-        vec![ResourceRelation::new(
-            Subject::new("manager", "missing"),
+        vec![relation(
+            subject("manager", "missing"),
             "manages",
             host_subject(),
         )],
     );
     assert!(matches!(
         unknown_source,
-        Err(ResourceGraphError::UnknownRelationSource(subject))
-            if subject == Subject::new("manager", "missing")
+        Err(ResourceGraphError::UnknownRelationSource(missing))
+            if missing == subject("manager", "missing")
     ));
 }
 
@@ -532,7 +591,7 @@ fn graph_batch(
 ) -> Result<ObservationBatch, BatchError> {
     ObservationBatch::new(
         endpoint(),
-        Origin::new("redfish", "resource-graph"),
+        Origin::new("redfish".into(), "resource-graph".into()),
         ObservationWindow::point(timestamp()),
         Coverage::new(scope, nv_telemetry_core::Completeness::Complete),
         Payload::Resources(graph),
@@ -542,11 +601,7 @@ fn graph_batch(
 fn host_contains_dpu() -> ResourceGraph {
     ResourceGraph::new(
         vec![host_resource(), dpu_resource()],
-        vec![ResourceRelation::new(
-            host_subject(),
-            "contains",
-            dpu_subject(),
-        )],
+        vec![relation(host_subject(), "contains", dpu_subject())],
     )
     .expect("valid graph")
 }
@@ -595,23 +650,23 @@ fn subject_scope_rejects_resources_outside_the_rooted_subtree() {
 fn rejecting_a_large_graph_costs_what_the_traversal_costs() {
     const RESOURCES: usize = 20_000;
 
-    let root = Subject::new("chassis", "root");
-    let node = |index: usize| Subject::new("node", format!("n{index:06}"));
+    let root = subject("chassis", "root");
+    let node = |index: usize| subject("node", format!("n{index:06}"));
     let mut resources = vec![ObservedResource::complete(
         root.clone(),
-        "/redfish/v1/Chassis/root",
+        source_key("/redfish/v1/Chassis/root"),
         PropertyMap::empty(),
     )];
     let mut relations = Vec::new();
     for index in 0..RESOURCES {
         resources.push(ObservedResource::complete(
             node(index),
-            format!("/redfish/v1/Chassis/root/Nodes/{index}"),
+            source_key(format!("/redfish/v1/Chassis/root/Nodes/{index}")),
             PropertyMap::empty(),
         ));
         // Every node but the last hangs off the root.
         if index + 1 < RESOURCES {
-            relations.push(ResourceRelation::new(root.clone(), "contains", node(index)));
+            relations.push(relation(root.clone(), "contains", node(index)));
         }
     }
     let graph = ResourceGraph::new(resources, relations).expect("a valid graph");
@@ -648,10 +703,10 @@ fn an_unresolved_link_stays_a_reference_until_its_subject_is_known() {
     let unresolved = ResourceGraph::new(
         vec![ObservedResource::complete(
             host_subject(),
-            "/redfish/v1/Systems/host-1",
+            source_key("/redfish/v1/Systems/host-1"),
             PropertyMap::new(vec![Property::new(
                 "network_adapter",
-                ResourceReference::new(LINK),
+                ResourceReference::new(source_key(LINK)),
             )])
             .expect("unique property names"),
         )],
@@ -674,22 +729,18 @@ fn an_unresolved_link_stays_a_reference_until_its_subject_is_known() {
 
     // Once the identity is known the link becomes an edge, and the target
     // need not have been collected for the graph to accept it.
-    let adapter = Subject::new("network_adapter", "1");
+    let adapter = subject("network_adapter", "1");
     let resolved = ResourceGraph::new(
         vec![ObservedResource::complete(
             host_subject(),
-            "/redfish/v1/Systems/host-1",
+            source_key("/redfish/v1/Systems/host-1"),
             PropertyMap::new(vec![Property::new(
                 "network_adapter",
-                ResourceReference::new(LINK).with_subject(adapter.clone()),
+                ResourceReference::new(source_key(LINK)).with_subject(adapter.clone()),
             )])
             .expect("unique property names"),
         )],
-        vec![ResourceRelation::new(
-            host_subject(),
-            "contains",
-            adapter.clone(),
-        )],
+        vec![relation(host_subject(), "contains", adapter.clone())],
     )
     .expect("an external target is allowed");
 
@@ -721,7 +772,7 @@ fn subject_scope_requires_its_root_to_be_present() {
 #[test]
 fn relation_identity_ignores_relation_properties() {
     let labelled = |label| {
-        ResourceRelation::new(host_subject(), "contains", dpu_subject())
+        relation(host_subject(), "contains", dpu_subject())
             .with_properties(properties(vec![Property::new("discovered_by", label)]))
     };
 
@@ -744,6 +795,12 @@ fn relation_identity_ignores_relation_properties() {
         single.relations()[0].properties.get("discovered_by"),
         Some(&PropertyValue::from("chassis-walk"))
     );
+
+    assert_ne!(
+        labelled("chassis-walk"),
+        labelled("systems-walk"),
+        "edge properties participate in value equality even though they are not identity"
+    );
 }
 
 #[cfg(feature = "serde")]
@@ -756,6 +813,83 @@ fn serde_round_trip_preserves_validated_resource_graph_batch() {
         serde_json::from_str(&encoded).expect("deserialize graph batch");
 
     assert_eq!(decoded, batch);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn default_messagepack_round_trip_accepts_contentless_null_only() {
+    let sensor = subject("sensor", "CPU0Temp");
+    let batch = graph_batch(
+        ObservationScope::Endpoint,
+        ResourceGraph::new(
+            vec![ObservedResource::complete(
+                sensor,
+                source_key("/redfish/v1/Chassis/1/Sensors/CPU0Temp"),
+                properties(vec![
+                    Property::new("lower_caution", PropertyValue::Null),
+                    Property::new("nullable_oem_value", PropertyValue::Null),
+                    Property::new("upper_critical", PropertyValue::Null),
+                ]),
+            )],
+            Vec::new(),
+        )
+        .expect("a valid graph"),
+    )
+    .expect("an endpoint-scoped graph");
+
+    // The default MessagePack serializer represents structs as sequences. A
+    // unit variant's adjacent tag is therefore a one-element sequence with no
+    // content slot.
+    let encoded = rmp_serde::to_vec(&batch).expect("serialize graph batch as MessagePack");
+    assert_eq!(
+        rmp_serde::from_slice::<ObservationBatch>(&encoded)
+            .expect("deserialize graph batch from MessagePack"),
+        batch
+    );
+
+    for value_bearing_tag in [
+        "bool",
+        "i64",
+        "u64",
+        "f64",
+        "string",
+        "bytes",
+        "timestamp",
+        "duration",
+        "reference",
+        "array",
+        "object",
+    ] {
+        let missing_content =
+            rmp_serde::to_vec(&[value_bearing_tag]).expect("encode one-element sequence");
+        assert!(
+            rmp_serde::from_slice::<PropertyValue>(&missing_content).is_err(),
+            "accepted missing content for the {value_bearing_tag} tag"
+        );
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn semantic_source_and_relation_types_keep_string_wire_fields() {
+    let resource = serde_json::to_value(host_resource()).expect("serialize resource");
+    assert_eq!(
+        resource["source_key"],
+        serde_json::json!("/redfish/v1/Systems/host-1")
+    );
+
+    let edge = serde_json::to_value(relation(host_subject(), "contains", dpu_subject()))
+        .expect("serialize relation");
+    assert_eq!(edge["kind"], serde_json::json!("contains"));
+
+    let reference = serde_json::to_value(ResourceReference::new(source_key(
+        "/redfish/v1/Managers/BMC",
+    )))
+    .expect("serialize reference");
+    assert_eq!(
+        reference["source_key"],
+        serde_json::json!("/redfish/v1/Managers/BMC")
+    );
 }
 
 #[cfg(feature = "serde")]
@@ -775,6 +909,11 @@ fn bytes_round_trip_as_hex_rather_than_a_numeric_array() {
     assert_eq!(
         serde_json::from_str::<PropertyMap>(&encoded).expect("deserialize bytes"),
         map
+    );
+    assert_eq!(
+        serde_json::from_str::<PropertyValue>(r#"{"value":"001fabff","type":"bytes"}"#)
+            .expect("deserialize content-first hex bytes"),
+        PropertyValue::Bytes(vec![0x00, 0x1f, 0xab, 0xff].into())
     );
 }
 
@@ -802,6 +941,212 @@ fn bytes_stay_native_in_a_binary_format() {
         encoded.len(),
         blob.len()
     );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn malformed_hex_and_numeric_json_sequences_are_rejected() {
+    for malformed in [
+        r#"{"type":"bytes","value":"0"}"#,
+        r#"{"type":"bytes","value":"0g"}"#,
+        r#"{"type":"bytes","value":[0,1,255]}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<PropertyValue>(malformed).is_err(),
+            "accepted malformed byte value: {malformed}"
+        );
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn binary_byte_sequences_are_accepted_without_changing_the_wire_variant() {
+    use ciborium::value::Integer;
+    use ciborium::value::Value;
+
+    for value_first in [false, true] {
+        let tag = (Value::Text("type".into()), Value::Text("bytes".into()));
+        let content = (
+            Value::Text("value".into()),
+            Value::Array(vec![
+                Value::Integer(Integer::from(0_u8)),
+                Value::Integer(Integer::from(1_u8)),
+                Value::Integer(Integer::from(255_u8)),
+            ]),
+        );
+        let entries = if value_first {
+            vec![content, tag]
+        } else {
+            vec![tag, content]
+        };
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&Value::Map(entries), &mut encoded).expect("encode CBOR sequence");
+
+        assert_eq!(
+            ciborium::from_reader::<PropertyValue, _>(encoded.as_slice())
+                .expect("decode binary byte sequence"),
+            PropertyValue::Bytes(vec![0, 1, 255].into())
+        );
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn standalone_property_deserialization_enforces_the_depth_budget() {
+    let nested_array = |depth: u32| {
+        let mut value = serde_json::json!({"type": "string", "value": "leaf"});
+        for _ in 0..depth {
+            value = serde_json::json!({"type": "array", "value": [value]});
+        }
+        value
+    };
+
+    assert!(serde_json::from_value::<PropertyValue>(nested_array(PropertyMap::MAX_DEPTH)).is_ok());
+    assert!(
+        serde_json::from_value::<PropertyValue>(nested_array(PropertyMap::MAX_DEPTH + 1)).is_err()
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn content_first_json_obeys_the_same_property_depth_budget() {
+    for at_limit in [
+        content_first_array_json(PropertyMap::MAX_DEPTH),
+        content_first_object_json(PropertyMap::MAX_DEPTH),
+    ] {
+        serde_json::from_str::<PropertyValue>(&at_limit)
+            .unwrap_or_else(|error| panic!("content-first JSON at the limit failed: {error}"));
+    }
+
+    let over_limit = content_first_array_json(PropertyMap::MAX_DEPTH + 1);
+    let error = serde_json::from_str::<PropertyValue>(&over_limit)
+        .expect_err("content-first JSON over the model limit must be rejected");
+    assert!(
+        error.to_string().contains("nests deeper than the limit"),
+        "the semantic depth guard did not reject the value: {error}"
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn content_first_binary_input_is_bounded_before_its_tag() {
+    for at_limit in [
+        content_first_array_cbor(PropertyMap::MAX_DEPTH),
+        content_first_object_cbor(PropertyMap::MAX_DEPTH),
+    ] {
+        ciborium::from_reader::<PropertyValue, _>(at_limit.as_slice())
+            .unwrap_or_else(|error| panic!("content-first CBOR at the limit failed: {error}"));
+    }
+
+    let over_limit = content_first_array_cbor(PropertyMap::MAX_DEPTH + 1);
+    let error = ciborium::from_reader::<PropertyValue, _>(over_limit.as_slice())
+        .expect_err("content-first CBOR over the model limit must be rejected");
+    assert!(
+        error.to_string().contains("nests deeper than the limit"),
+        "the semantic depth guard did not reject the CBOR value: {error}"
+    );
+
+    // This reaches the pre-tag structural guard, rather than recursively
+    // buffering or dropping the complete attacker-controlled value.
+    let far_over_limit = content_first_array_cbor(100_000);
+    let error = ciborium::from_reader::<PropertyValue, _>(far_over_limit.as_slice())
+        .expect_err("extreme content-first CBOR must be rejected");
+    assert!(
+        error.to_string().contains("before its type tag"),
+        "the bounded pre-tag buffer did not reject extreme nesting: {error}"
+    );
+
+    // A failed decode must restore the thread-local semantic budget.
+    let shallow = content_first_array_cbor(1);
+    assert!(
+        ciborium::from_reader::<PropertyValue, _>(shallow.as_slice()).is_ok(),
+        "a rejected value must not poison later decoding"
+    );
+}
+
+#[cfg(feature = "serde")]
+fn content_first_array_json(depth: u32) -> String {
+    let mut encoded = String::new();
+    for _ in 0..depth {
+        encoded.push_str(r#"{"value":["#);
+    }
+    encoded.push_str(r#"{"value":"leaf","type":"string"}"#);
+    for _ in 0..depth {
+        encoded.push_str(r#"],"type":"array"}"#);
+    }
+    encoded
+}
+
+#[cfg(feature = "serde")]
+fn content_first_object_json(depth: u32) -> String {
+    let mut encoded = String::new();
+    for _ in 0..depth {
+        encoded.push_str(r#"{"value":[{"name":"n","value":"#);
+    }
+    encoded.push_str(r#"{"value":"leaf","type":"string"}"#);
+    for _ in 0..depth {
+        encoded.push_str(r#"}],"type":"object"}"#);
+    }
+    encoded
+}
+
+#[cfg(feature = "serde")]
+fn content_first_array_cbor(depth: u32) -> Vec<u8> {
+    const ARRAY_PREFIX: &[u8] = b"\xa2\x65value\x81";
+    const ARRAY_SUFFIX: &[u8] = b"\x64type\x65array";
+    const STRING_LEAF: &[u8] = b"\xa2\x65value\x64leaf\x64type\x66string";
+
+    let layer_width = ARRAY_PREFIX.len() + ARRAY_SUFFIX.len();
+    let mut encoded = Vec::with_capacity(depth as usize * layer_width + STRING_LEAF.len());
+    for _ in 0..depth {
+        encoded.extend_from_slice(ARRAY_PREFIX);
+    }
+    encoded.extend_from_slice(STRING_LEAF);
+    for _ in 0..depth {
+        encoded.extend_from_slice(ARRAY_SUFFIX);
+    }
+    encoded
+}
+
+#[cfg(feature = "serde")]
+fn content_first_object_cbor(depth: u32) -> Vec<u8> {
+    const OBJECT_PREFIX: &[u8] = b"\xa2\x65value\x81\xa2\x64name\x61n\x65value";
+    const OBJECT_SUFFIX: &[u8] = b"\x64type\x66object";
+    const STRING_LEAF: &[u8] = b"\xa2\x65value\x64leaf\x64type\x66string";
+
+    let layer_width = OBJECT_PREFIX.len() + OBJECT_SUFFIX.len();
+    let mut encoded = Vec::with_capacity(depth as usize * layer_width + STRING_LEAF.len());
+    for _ in 0..depth {
+        encoded.extend_from_slice(OBJECT_PREFIX);
+    }
+    encoded.extend_from_slice(STRING_LEAF);
+    for _ in 0..depth {
+        encoded.extend_from_slice(OBJECT_SUFFIX);
+    }
+    encoded
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn graph_deserialization_applies_default_resource_limits() {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::from(r#"{"resources":["#);
+    for index in 0..=GraphLimits::DEFAULT.max_resources() {
+        if index != 0 {
+            encoded.push(',');
+        }
+        write!(
+            encoded,
+            r#"{{"subject":{{"kind":"node","id":"n{index}"}},"source_key":"/nodes/{index}","completeness":"complete","schema":null,"version":null,"observed_at":null,"properties":[]}}"#
+        )
+        .expect("write to string");
+    }
+    encoded.push_str(r#"],"relations":[]}"#);
+
+    let error = serde_json::from_str::<ResourceGraph>(&encoded)
+        .expect_err("one resource over the default must be rejected");
+    assert!(error.to_string().contains("exceeding the limit"));
 }
 
 #[cfg(feature = "serde")]

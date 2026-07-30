@@ -1,349 +1,240 @@
 # nv-telemetry-core
 
-`nv-telemetry-core` is the source-neutral data plane for `nv-telemetry`:
-immutable observations and acquisition status, with no protocol, network
-client, async runtime, dispatcher, exporter, or health policy. Protocol crates
-translate their responses into these types, so applications route the same
-observations to storage, APIs, or health processing without touching
-protocol-specific objects.
+`nv-telemetry-core` is the source-neutral data plane for `nv-telemetry`. It
+contains immutable observations and acquisition status, with no protocol,
+network client, async runtime, dispatcher, exporter, or health policy.
 
-## Data flow
+## Data model
 
-1. An acquisition source collects protocol data.
-2. The source projects each result into a core row type.
-3. Rows from one domain are placed in a homogeneous `Payload`.
-4. The payload is wrapped in an `ObservationBatch` with endpoint, provenance,
-   time, and coverage.
-5. The immutable batch is shared as `Arc<ObservationBatch>`.
-6. Success or failure is reported separately as `AcquisitionStatus`.
+An acquisition emits one or more homogeneous `ObservationBatch` values. Each
+batch carries:
 
-A failure never produces a synthetic observation. An empty complete batch, an
-empty partial batch, and a failed acquisition all mean different things.
+- shared endpoint identity and attributes;
+- typed provider and request-class provenance;
+- an `ObservationWindow`;
+- scope-relative `Coverage`;
+- exactly one `Payload` domain.
 
-## Crate structure
+Failures are emitted separately as `AcquisitionStatus`; they never manufacture
+device observations. Empty complete, empty partial, failed, and stale data are
+distinct states.
+
+The implementation is split into `status.rs` and these model modules:
 
 ```text
-src/
-├── lib.rs                 public API and top-level documentation
-├── status.rs              acquisition outcomes and failure classification
-└── model/
-    ├── mod.rs             model exports and completeness semantics
-    ├── name.rs            owned or static names
-    ├── number.rs          finite floating-point observation values
-    ├── collection.rs      shared machinery for the sorted collections
-    ├── attributes.rs      sorted typed key/value attributes
-    ├── time.rs            timestamps, durations, and observation windows
-    ├── context.rs         endpoints, subjects, origin, scope, coverage
-    ├── reading.rs         signal metadata and numeric readings
-    ├── log.rs             log records and severity
-    ├── state.rs           source-reported state observations
-    ├── inventory.rs       discovered inventory items
-    ├── property.rs        recursive resource property values
-    ├── resource.rs        observed resources, relations, resource graph
-    └── batch.rs           payloads, batches, validation, row builders
+attributes  batch  collection  context  inventory  log  name
+number      property  reading  resource  state      time
 ```
 
-Modules are implementation boundaries; common types are re-exported from the
-crate root.
+Common types are re-exported from the crate root.
 
-## Observation batch
+## Typed construction
 
-`ObservationBatch` is the canonical unit of telemetry flow:
+Compound identities use distinct component types so swapped arguments do not
+compile:
 
-- `Arc<EndpointContext>`: endpoint identity and attributes;
-- `Origin`: provider and request-class provenance;
-- `ObservationWindow`: when the source observed the data;
-- `Coverage`: the scope and completeness claim;
-- `Payload`: exactly one observation domain.
+- `Subject::new(SubjectKind, SubjectId)`;
+- `Origin::new(Provider, RequestClass)`;
+- `SignalDescriptor::new(Subject, Metric, Instance, ReadingKind, Unit, Timestamp)`;
+- `ResourceRelation::new(Subject, RelationKind, Subject)`.
 
-`Payload` is `#[non_exhaustive]` with five variants. `Readings`, `Logs`,
-`States`, and `Inventory` each hold a `Box<[_]>` of rows; `Resources` holds a
-`ResourceGraph`, which is a connected structure rather than a list.
+String vocabulary types accept owned or static strings through `From` and
+`from_static`. Invariant-bearing types use checked constructors:
 
-A batch and everything in it implements `Eq` and `Hash`, so a snapshot works as
-a cache key and a consumer can tell a changed observation from a repeated one
-without walking it field by field. Batches are homogeneous; one acquisition may
-emit several when its response spans domains. A row payload is built from a
-`Vec` and converted with `into`, since nothing about accumulating rows needs
-checking; `ResourceGraphBuilder` is separate because assembling a graph does.
+- `Finite::new` rejects `NaN` and infinities;
+- `Timestamp::new` and `DurationValue::new` validate nanoseconds;
+- `ObservationWindow::new` rejects reversed windows and
+  `checked_duration` derives a checked span;
+- `ValueRange::empty`, `at_least`, and `at_most` are infallible, while
+  `ValueRange::between` rejects inverted bounds;
+- `PropertyValue::array` rejects recursive values beyond the property-depth
+  limit;
+- `ResourceGraph::new` and `with_limits` validate complete graph input.
 
-## Shared ownership
+There is no public resource-graph builder. Collect resources and relations,
+then assemble them directly with `ResourceGraph`.
 
-`EndpointContext` is behind an `Arc` because one is reattached to every batch
-and status an endpoint produces, and `SignalDescriptor` because one is shared by
-every sample of its signal. `Arc::ptr_eq` is a fast path for "same definition",
-not a replacement for comparing descriptors: readings built from different
-catalogs hold equal definitions separately.
+## Identity, ordering, and sharing
 
-`Attributes` and `PropertyMap` share their entries for the same reason: one
-projection labels every row it emits, so cloning is a refcount bump rather than
-a copy. The sharing is an implementation detail, since both are immutable once
-built and compare by content.
+`EndpointId` identifies the managed endpoint, `Subject` identifies the thing
+observed, `SourceKey` records its protocol location, and `Origin` records how it
+was acquired. These identities are intentionally separate.
 
-Each also caches a digest of its entries in that shared allocation, computed on
-first use, because hashing a snapshot would otherwise walk every entry of every
-row. The digest is seeded per process, so an endpoint that chooses its own
-attribute keys cannot precompute entries that collide in a consumer's map.
-Caching counts as interior mutability, so clippy's `mutable_key_type` fires on a
-`HashMap` keyed by anything holding one; the digest is derived from the entries
-equality already compares, so it cannot change what a key hashes to.
+Row order is part of the identity and hash of `Readings`, `Logs`, `States`, and
+`Inventory` payloads. Core does not sort those domains because their source
+order may be meaningful. Producers using batch hashes for change detection
+must emit rows in a deterministic source-defined order.
 
-Constructors take `impl Into<Arc<_>>`, so a projection passes the handle it
-holds and a one-off caller passes the value. The batch itself is not forced
-into shared ownership: `ObservationBatch::new` returns it by value, and
-`SharedBatch` is the alias for when several consumers need the same one.
+Resource graphs are different: resources sort by subject and relations by
+`(source, kind, target)`, so discovery order is not graph identity.
 
-Serde does not carry `Arc` identity, so `Payload::Readings` encodes as a
-descriptor table with rows indexing into it. Entries match by value, so equal
-payloads encode to identical bytes and decoding can only widen sharing. A
-`Reading` serialized alone carries its descriptor inline.
+`EndpointContext`, signal descriptors, attributes, and property maps use
+immutable shared storage. Pointer equality is only a fast path; equality and
+hashing remain content-based. With serde enabled, a readings payload stores a
+descriptor table and rows index into it, preserving sharing without putting
+pointer identity on the wire.
 
-## Identity and provenance
+## Readings
 
-- `EndpointId` identifies the managed endpoint.
-- `Subject` identifies the device, component, or sensor being observed.
-- A row's source key identifies the original protocol record.
-- `Origin` identifies the provider and request class that produced the batch.
+`SignalDescriptor` contains stable metadata: subject, metric and instance,
+reading kind, unit, definition observation time and revision, attributes, and
+an optional valid `ValueRange`. `Reading` adds the source key, numeric value,
+optional source sample time, attributes, and source-reported state.
 
-These must not be collapsed into one string: a subject can be observed through
-several providers, and one provider can report many source records for the same
-subject.
+A per-reading timestamp may predate the batch window. It records when the
+device sampled the value; the batch window records when acquisition ran.
 
-Each half of a compound identity is its own type rather than a bare `Name`:
-`Subject` pairs a `SubjectKind` with a `SubjectId`, `Origin` pairs a `Provider`
-with a `RequestClass`, and a signal is a `Metric` at an `Instance`. The pairs
-would otherwise be two interchangeable strings sitting next to each other in a
-constructor, where swapping them still compiles and yields an identity that
-joins to the wrong thing. All of them accept `&str`, `String`, or `Name`, so
-the wrapper costs a call site nothing.
+`SignalDescriptor::matches_definition` ignores `observed_at` and `revision`.
+Catalogs can therefore keep the shared descriptor for an unchanged refresh,
+increment revisions only for definition changes, and track confirmation time
+separately.
 
-## Readings and signal metadata
+Thresholds are observed configuration, not signal metadata. They belong in a
+resource graph and join to readings through the shared subject.
 
-`SignalDescriptor` holds the long-lived metadata — subject, metric and instance
-identity, reading kind and unit, observation time and revision, attributes, and
-readable bounds — and each `Reading` adds its source key, numeric value,
-sample timestamp, sample attributes, and source-reported state. The split lets
-different acquisition routes, such as an individual sensor request and a bulk
-metric report, produce readings with one logical signal identity.
-`NumericValue` preserves signed integers, unsigned integers, and floats rather
-than forcing everything through `f64`.
+## Resource graphs
 
-`SignalDescriptor::matches_definition` compares everything except observation
-time and revision, so a catalog can tell a real change from a repeated poll and
-leave the descriptor in place. `revision` therefore counts definition changes
-rather than refreshes, and `observed_at` marks when the current definition first
-appeared; a catalog tracks re-observation separately so it can still prune
-signals an endpoint has stopped reporting.
+An `ObservedResource` represents one source location and carries its subject,
+source key, completeness, optional schema/version, observation time, and
+recursive `PropertyMap`. `PropertyValue` preserves explicit nulls, references,
+bytes, timestamps, and durations. `PropertyArray` makes recursive array
+construction checked, so property depth is bounded before values can be
+cloned, hashed, serialized, or dropped. Graph size is bounded separately.
 
-A signal's `bounds` is a `ValueRange`: the span the sensor is able to read,
-with either edge optional. It is a capability of the device, not a judgement
-about the value, and `checked` reports a contradictory pair so a projection can
-drop it rather than publish it.
+`ResourceCompleteness::Complete` means an omitted property is absent;
+`Partial` means omission proves nothing. A relation is a resolved directed fact
+whose source must be present. Its target may be outside the collected graph.
+An unresolved link remains a `PropertyValue::Reference`.
 
-Alarm thresholds are deliberately absent. Every other field here is something
-the device *is*; a threshold is something it is *configured to*, and on most
-Redfish implementations it is writable. That makes it observed configuration
-rather than reading metadata, so it travels in the resource graph below, where
-a convergence engine can diff it against a desired value. A consumer that
-classifies readings joins the two by subject.
+Subject-scoped row payloads require matching subjects. Subject-scoped graphs
+instead require explicit reachability from the scope root by outgoing
+relations. `ResourceGraph::reachability_from` distinguishes:
 
-## Observed resource graph
+- `Reachability::MissingRoot`;
+- `Reachability::FullyReachable`;
+- `Reachability::Unreachable(subject)`.
 
-Readings and logs are high-volume and narrow, so they get purpose-built rows.
-Device configuration, capabilities, and topology are the opposite — low-volume
-and arbitrarily shaped — and they go in `Payload::Resources` as a
-`ResourceGraph`. This is the observed half of a convergence comparison, so it
-preserves the source's own shape rather than flattening it.
+An empty graph is valid under any scope. A non-empty graph must contain its
+scope root and every collected resource must be reachable from it. Projections
+that model containment should emit parent-to-child `contains` relations rather
+than only inverse edges.
 
-An `ObservedResource` carries its `Subject`, the `source_key` it came from,
-optional schema and version for concurrency control, an observation time, and a
-`PropertyMap`. `PropertyValue` recurses through objects and arrays and keeps
-nulls, references, bytes, timestamps, and durations distinct rather than
-stringifying them. `PropertyMap::MAX_DEPTH` caps nesting at 32, so walking or
-releasing a stored map cannot overflow the stack; a value that arrives deeper
-than that is dismantled iteratively as it is rejected, rather than taken apart
-by the recursive drop glue. The cap is set by what a decoder reads back rather
-than by what a walk survives: adjacent tagging multiplies each level against a
-decoder's own recursion limit, so a looser cap would let this crate encode
-graphs that a consumer of the same crate cannot decode.
+## Serde compatibility policy
 
-Absence is three different facts, and the model keeps them apart.
-`PropertyValue::Null` is a reported null. A property missing from a `Complete`
-resource is one the device does not implement. The same property missing from a
-`Partial` resource means nothing at all — `ResourceCompleteness` is what makes
-`establishes_absence` answerable.
+The optional `serde` feature preserves the existing representation of values
+accepted by current model invariants. Semantic string wrappers remain
+transparent, `Retryable::{Yes, No}` remain JSON/CBOR booleans, and
+invariant-bearing values deserialize through the same checks used by
+constructors. A legacy `ValueRange` with `lower > upper` is therefore
+intentionally rejected.
 
-`ResourceRelation` is a typed directed edge identified by
-`(source, kind, target)`; properties describe an edge but do not distinguish
-two of them. Its source must be in the graph, while its target may be external,
-so a subtree keeps its links into scopes that were not collected. Assembly
-rejects a repeated subject, a repeated `source_key` (two fetches describing one
-location cannot be merged silently), a repeated edge, and an edge leaving an
-unknown subject. Resources sort by subject and relations by their identity
-triple, so two graphs with the same content hash identically no matter what
-order discovery found them in.
+Wire evolution is strict:
 
-Both ends of a relation are `Subject`s, so an edge states a resolved fact. That
-is not the same as a collected one: the target may be external, so the collector
-needs the target's *identity*, not a fetch of it. Where a source names things
-canonically the identity comes out of the link — a Redfish path names its
-collection and id — so an edge can be stated as soon as the link is seen. Where
-it does not, the link is not yet an edge. It stays on the resource as a
-`PropertyValue::Reference`, which holds the location and leaves its `subject`
-empty, until a pass that learns the identity promotes it. That is the difference
-the two forms carry: an edge is a claim about topology, a reference is a link
-the source stated and the collector has not resolved. Inventing a subject to
-force the first would produce one no resource matches, which the graph cannot
-distinguish from a genuine external target.
+- do not send observation fields or enum variants to a reader that does not
+  know them;
+- an integration receiving mixed-version data must reject an unknown
+  observation shape at its schema/version boundary, never deserialize and
+  silently re-emit a value with newer fields removed;
+- adding a required field, changing a field meaning, or changing a wire shape
+  requires an explicit compatibility plan and normally a major version;
+- accepted legacy JSON and CBOR fixtures, and intentional legacy rejections,
+  are kept as compatibility tests.
 
-`GraphLimits` bounds what a graph may hold. It is checked once the input is
-assembled, so it caps the stored snapshot rather than what a source buffers on
-the way there. Limits only tighten `GraphLimits::DEFAULT`: deserialization has
-no caller to take a bound from, so it applies the default, and a looser one
-would let the crate build a graph it encodes and then refuses to read. A bound
-above the default is clamped, which keeps "whatever the model accepts, it can
-read back" true rather than conditional.
-
-## Finite values
-
-Floating-point observations use `Finite`, which rejects `NaN` and the
-infinities at construction. `NaN` compares unequal to itself, so one non-finite
-value would make an observation look changed on every diff and would bar `Eq`
-and `Hash` entirely.
-
-An unmeasurable quantity is absence, not a sentinel float: omit the reading.
-Projections drop non-finite source values. `Finite::new` is `const`, so a
-literal known to be finite can be matched out in a constant and the rejection
-becomes a compile error rather than something to handle at runtime.
-
-## Scope and completeness
-
-Completeness is always relative to `ObservationScope`:
-
-- `Endpoint` covers the declared endpoint, `Subject(subject)` covers one subject.
-- `Complete` says every observation in that scope was obtained.
-- `Partial` says absence must not be inferred for omitted rows.
-
-In a subject-scoped batch every row that names a subject must match the
-declared one, and `ObservationBatch::new` rejects mismatches with
-`BatchError::SubjectOutsideScope`. Logs and states may omit a subject; such a
-row is an endpoint-level observation admissible under any scope. Readings and
-inventory items always name one and are always checked.
-
-A graph is scoped by reachability instead. Requiring every resource to carry
-the scope subject would allow only single-resource graphs, and the natural unit
-of partial collection is a subtree — one chassis and what it contains. So a
-non-empty subject-scoped graph must hold the scope subject
-(`BatchError::MissingScopeRoot`) and every resource in it must be reachable
-from there by following relations (`BatchError::UnreachableFromScopeRoot`).
-An empty graph is accepted under any scope, as an empty row payload is.
-
-Reachability follows relations from source to target, so a subtree has to hang
-off its root by outgoing edges. A projection that emits only `containedBy`
-edges pointing at the parent produces a graph its own root cannot reach.
-
-A complete snapshot establishes absence only inside its declared scope.
-Staleness is not completeness: consumers apply freshness policy using
-observation timestamps.
-
-## Acquisition status
-
-`AcquisitionStatus` is an operational record, not device telemetry. It carries
-the same endpoint, origin, and window as a batch, with an `AcquisitionOutcome`
-of `Succeeded { emitted_batches }` or `Failed { class, retryable }`.
-`FailureClass` gives stable categories — transport, timeout, authentication,
-authorization, rate limiting, unsupported data, invalid response — so a
-dispatcher can act on a failure without it entering the payload.
-
-## Invariants
-
-- `Attributes` sorts keys and rejects duplicates.
-- `Timestamp` and `DurationValue` validate nanoseconds against one bound.
-- `ObservationWindow` rejects an end before its start.
-- `ObservationBatch` validates subject-scoped payloads.
-- `Finite` rejects `NaN` and the infinities.
-- `PropertyMap` rejects duplicate names and nesting past `MAX_DEPTH`.
-- `ResourceGraph` rejects duplicate subjects, source keys, and edges, edges
-  from unknown subjects, and input past its `GraphLimits`.
-
-With the `serde` feature, these types deserialize through their constructors
-rather than the derived field-by-field path, so a value arriving over the wire
-is held to the same rules as one built in process. Each states that as
-`#[serde(try_from = "...")]` over a `TryFrom` that calls the constructor, so
-the rule has one statement and a caller can reach it without serde.
-
-## Field visibility
-
-A field is private when it carries a rule, so the private fields of a struct
-are exactly the ones its constructor cross-checks. The test is per field, not
-per type: `ObservationBatch` keeps `coverage` and `payload` private because
-`new` validates them against each other, while `endpoint`, `origin`, and
-`window` are public. `Attributes`, `Timestamp`, `ObservationWindow`, `Finite`,
-`PropertyMap`, `ResourceGraph`, `DurationValue`, and newtypes such as `Name`
-are private throughout.
-
-Everything else is a plain record with public fields — `Subject`, `Origin`,
-`Coverage`, `Reading`, `SignalDescriptor`, `LogRecord`, `Property`,
-`ObservedResource`, `ResourceRelation`, and the rest. Read them
-as `reading.value`, match with `Subject { kind, .. }`, and build them with the
-`new` and `with_*` methods. They are `#[non_exhaustive]`, so a struct literal
-will not compile outside this crate and a new field is not a breaking change.
+Serde support validates known core values; it is not a version-negotiating
+envelope. Systems that persist or exchange observations should carry an
+external schema/version discriminator and validate it before decoding.
 
 ## Example
 
 ```rust
 use nv_telemetry_core::{
-    Attributes, Coverage, EndpointContext, Finite, ObservationBatch, ObservationWindow,
-    Origin, Payload, Reading, ReadingKind, SignalDescriptor, Subject, Timestamp, Unit,
+    Attributes, Coverage, EndpointContext, Finite, Instance, Metric,
+    ObservationBatch, ObservationWindow, Origin, Payload, Provider, Reading,
+    ReadingKind, RequestClass, SignalDescriptor, SourceKey, Subject, SubjectId,
+    SubjectKind, Timestamp, Unit,
 };
 
 fn build_batch() -> Result<ObservationBatch, Box<dyn std::error::Error>> {
     let observed_at = Timestamp::new(1_700_000_000, 0)?;
-    let subject = Subject::new("sensor", "CPU0Temp");
+    let subject = Subject::new(
+        SubjectKind::from_static("sensor"),
+        SubjectId::from_static("chassis/1/CPU0Temp"),
+    );
     let descriptor = SignalDescriptor::new(
         subject.clone(),
-        "temperature",
-        "CPU0Temp",
+        Metric::from_static("temperature"),
+        Instance::from_static("CPU0Temp"),
         ReadingKind::Gauge,
         Unit::from_static("Cel"),
         observed_at,
     );
+    let reading = Reading::new(
+        SourceKey::from_static("/redfish/v1/Chassis/1/Sensors/CPU0Temp"),
+        descriptor,
+        Finite::new(42.5)?,
+    )
+    .with_observed_at(observed_at);
 
-    let rows = vec![
-        Reading::new(
-            "/redfish/v1/Chassis/1/Sensors/CPU0Temp",
-            descriptor,
-            Finite::new(42.5)?,
-        )
-        .with_observed_at(observed_at),
-    ];
-
-    Ok(ObservationBatch::new(
+    ObservationBatch::new(
         EndpointContext::new("bmc-1", Attributes::empty()),
-        Origin::new("redfish-sensor", "sensor-reading"),
+        Origin::new(
+            Provider::from_static("redfish-sensor"),
+            RequestClass::from_static("sensor-reading"),
+        ),
         ObservationWindow::point(observed_at),
         Coverage::complete_subject(subject),
-        Payload::Readings(rows.into()),
-    )?)
+        Payload::Readings(vec![reading].into_boxed_slice()),
+    )
+    .map_err(Into::into)
 }
 ```
 
-## Features
+## Migration from the pre-0.1 API
 
-The default build is `std`-only with no serialization dependency. The optional
-`serde` feature adds serialization and validated deserialization.
+Intentional source breaks:
+
+- pass typed components to `Subject`, `Origin`, and `SignalDescriptor`
+  constructors instead of interchangeable strings;
+- replace `finite!(value)` with `Finite::new(value)` and handle its
+  `Result`;
+- replace `GraphLimits::new(resources, relations)` with
+  `GraphLimits::default().with_max_resources(resources)
+  .with_max_relations(relations)`;
+- replace reads of `NonFiniteError::value` with matches on its `NaN`,
+  `PositiveInfinity`, and `NegativeInfinity` classifications;
+- replace `resource.establishes_absence()` with
+  `resource.completeness.establishes_absence()`;
+- replace removed row and resource macros/builders with constructors,
+  `with_*` methods, `Vec::into_boxed_slice`, and `ResourceGraph::new`;
+- replace unchecked or post-hoc range validation with the named `ValueRange`
+  constructors;
+- replace direct `PropertyValue::Array(values.into_boxed_slice())` construction
+  with `PropertyValue::array(values)?`; the wire representation remains an
+  ordinary array;
+- replace ambiguous unreachable-resource queries with
+  `reachability_from` and match all `Reachability` outcomes;
+- replace `outcome.retryable()` with `outcome.is_retryable()`, and pass
+  `Retryable::Yes` or `Retryable::No` to `AcquisitionOutcome::failed`; its
+  wire form remains a boolean.
+
+## Package policy
+
+The minimum supported Rust version is Rust 1.89, declared by the workspace and
+checked in CI. The workspace lockfile is committed for reproducible
+development, CI, and instruction-count benchmarks; published libraries still
+use normal semver dependency ranges.
+
+The default build has no serialization dependency. Enable serde with:
 
 ```toml
 [dependencies]
 nv-telemetry-core = { version = "0.1", features = ["serde"] }
 ```
 
-## Development
+Focused checks:
 
-```sh
+```console
 cargo test -p nv-telemetry-core --all-features
-cargo doc -p nv-telemetry-core --all-features --no-deps
+cargo test -p nv-telemetry-core --doc --all-features
+cargo doc -p nv-telemetry-core --all-features --no-deps --document-private-items
 ```
-
-`make all` runs formatting, Clippy, builds, tests, doctests, and documentation
-checks for the whole workspace.

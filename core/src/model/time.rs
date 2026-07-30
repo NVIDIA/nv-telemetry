@@ -31,13 +31,14 @@ const NANOS_PER_SECOND: u32 = 1_000_000_000;
 /// Deserialization goes through this so that a decoded value is admitted by
 /// the same constructor a caller uses, rather than by a second copy of the
 /// rule that could drift from it.
-#[derive(Clone, Copy)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg(feature = "serde")]
+#[derive(Clone, Copy, serde::Deserialize)]
 struct SplitSeconds {
     seconds: i64,
     nanoseconds: u32,
 }
 
+#[cfg(feature = "serde")]
 impl TryFrom<SplitSeconds> for Timestamp {
     type Error = TimeError;
 
@@ -46,6 +47,7 @@ impl TryFrom<SplitSeconds> for Timestamp {
     }
 }
 
+#[cfg(feature = "serde")]
 impl TryFrom<SplitSeconds> for DurationValue {
     type Error = TimeError;
 
@@ -100,6 +102,25 @@ impl Timestamp {
 
     pub const fn nanoseconds(self) -> u32 {
         self.nanoseconds
+    }
+
+    /// Derives the signed duration from `earlier` to this timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::OutOfRange`] when the difference does not fit in a
+    /// [`DurationValue`].
+    pub fn checked_duration_since(self, earlier: Self) -> Result<DurationValue, TimeError> {
+        let nanoseconds = (i128::from(self.seconds) - i128::from(earlier.seconds))
+            * i128::from(NANOS_PER_SECOND)
+            + i128::from(self.nanoseconds)
+            - i128::from(earlier.nanoseconds);
+        let seconds = nanoseconds.div_euclid(i128::from(NANOS_PER_SECOND));
+        let remainder = nanoseconds.rem_euclid(i128::from(NANOS_PER_SECOND));
+        DurationValue::new(
+            i64::try_from(seconds).map_err(|_| TimeError::OutOfRange)?,
+            u32::try_from(remainder).map_err(|_| TimeError::OutOfRange)?,
+        )
     }
 
     /// Converts from a system clock reading.
@@ -250,6 +271,16 @@ impl ObservationWindow {
     pub const fn completed_at(self) -> Timestamp {
         self.completed_at
     }
+
+    /// Returns the elapsed time covered by this window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::OutOfRange`] when the span does not fit in a
+    /// [`DurationValue`].
+    pub fn checked_duration(self) -> Result<DurationValue, TimeError> {
+        self.completed_at.checked_duration_since(self.started_at)
+    }
 }
 
 const fn timestamp_after(left: Timestamp, right: Timestamp) -> bool {
@@ -286,13 +317,14 @@ impl fmt::Display for TimeError {
 impl Error for TimeError {}
 
 /// The unvalidated field pair an [`ObservationWindow`] is built from.
-#[derive(Clone, Copy)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg(feature = "serde")]
+#[derive(Clone, Copy, serde::Deserialize)]
 struct Span {
     started_at: Timestamp,
     completed_at: Timestamp,
 }
 
+#[cfg(feature = "serde")]
 impl TryFrom<Span> for ObservationWindow {
     type Error = TimeError;
 

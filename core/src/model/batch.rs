@@ -24,12 +24,18 @@ use super::LogRecord;
 use super::ObservationScope;
 use super::ObservationWindow;
 use super::Origin;
+use super::Reachability;
 use super::Reading;
 use super::ResourceGraph;
 use super::StateObservation;
 use super::Subject;
 
 /// A homogeneous observation payload.
+///
+/// Row order is part of the identity of readings, logs, states, and inventory.
+/// The model does not assume those domains are unordered and does not sort
+/// them. A producer using batch hashes for change detection should therefore
+/// emit rows in a deterministic source-defined order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -57,6 +63,40 @@ impl Payload {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Checks every row that names a subject against the declared scope.
+    ///
+    /// A log or state without a subject is an endpoint-level observation and
+    /// is admissible under any scope.
+    fn check_within_scope(&self, expected: &Subject) -> Result<(), BatchError> {
+        let stray = match self {
+            Self::Readings(rows) => rows
+                .iter()
+                .map(|row| &row.signal.subject)
+                .find(|subject| *subject != expected),
+            Self::Logs(rows) => rows
+                .iter()
+                .filter_map(|row| row.subject.as_ref())
+                .find(|subject| *subject != expected),
+            Self::States(rows) => rows
+                .iter()
+                .filter_map(|row| row.subject.as_ref())
+                .find(|subject| *subject != expected),
+            Self::Inventory(rows) => rows
+                .iter()
+                .map(|row| &row.subject)
+                .find(|subject| *subject != expected),
+            Self::Resources(graph) => return check_graph_within_scope(graph, expected),
+        };
+
+        match stray {
+            Some(actual) => Err(BatchError::SubjectOutsideScope {
+                expected: expected.clone(),
+                actual: actual.clone(),
+            }),
+            None => Ok(()),
+        }
     }
 }
 
@@ -91,7 +131,7 @@ impl ObservationBatch {
         payload: Payload,
     ) -> Result<Self, BatchError> {
         if let ObservationScope::Subject(expected) = &coverage.scope {
-            validate_subject_scope(expected, &payload)?;
+            payload.check_within_scope(expected)?;
         }
 
         Ok(Self {
@@ -115,64 +155,27 @@ impl ObservationBatch {
 /// Shared immutable batch used for fan-out.
 pub type SharedBatch = Arc<ObservationBatch>;
 
-/// Checks every row that names a subject against the declared scope.
-///
-/// A log or state without a subject is an endpoint-level observation and is
-/// admissible under any scope.
-fn validate_subject_scope(expected: &Subject, payload: &Payload) -> Result<(), BatchError> {
-    let actual = match payload {
-        Payload::Readings(rows) => rows
-            .iter()
-            .map(|row| &row.signal.subject)
-            .find(|subject| *subject != expected),
-        Payload::Logs(rows) => rows
-            .iter()
-            .filter_map(|row| row.subject.as_ref())
-            .find(|subject| *subject != expected),
-        Payload::States(rows) => rows
-            .iter()
-            .filter_map(|row| row.subject.as_ref())
-            .find(|subject| *subject != expected),
-        Payload::Inventory(rows) => rows
-            .iter()
-            .map(|row| &row.subject)
-            .find(|subject| *subject != expected),
-        Payload::Resources(graph) => return validate_graph_scope(expected, graph),
-    };
-
-    match actual {
-        Some(actual) => Err(BatchError::SubjectOutsideScope {
-            expected: expected.clone(),
-            actual: actual.clone(),
-        }),
-        None => Ok(()),
-    }
-}
-
-/// Validates that a graph is exactly the subtree rooted at the scope subject.
+/// Checks that a graph is exactly the subtree rooted at the scope subject.
 ///
 /// Row payloads are scoped by requiring every row to carry the scope subject,
 /// but a graph is a connected structure rather than a list of independent
 /// rows. The natural unit of partial graph collection is a subtree, such as one
 /// chassis and everything it contains, so scope here means reachability from
 /// the root rather than subject equality.
-fn validate_graph_scope(root: &Subject, graph: &ResourceGraph) -> Result<(), BatchError> {
+fn check_graph_within_scope(graph: &ResourceGraph, root: &Subject) -> Result<(), BatchError> {
     // Checked before the root, which an empty graph cannot hold. Observing
     // nothing contradicts no scope, exactly as an empty row payload does not.
     if graph.is_empty() {
         return Ok(());
     }
 
-    if graph.get(root).is_none() {
-        return Err(BatchError::MissingScopeRoot(root.clone()));
-    }
-
-    match graph.first_unreachable_from(root) {
-        Some(subject) => Err(BatchError::UnreachableFromScopeRoot {
+    match graph.reachability_from(root) {
+        Reachability::MissingRoot => Err(BatchError::MissingScopeRoot(root.clone())),
+        Reachability::Unreachable(subject) => Err(BatchError::UnreachableFromScopeRoot {
             root: root.clone(),
             subject: subject.clone(),
         }),
-        None => Ok(()),
+        Reachability::FullyReachable => Ok(()),
     }
 }
 
@@ -223,16 +226,16 @@ mod readings_table {
     use serde::Serialize as _;
 
     use crate::model::Attributes;
-    use crate::model::Name;
     use crate::model::NumericValue;
     use crate::model::Reading;
     use crate::model::ReportedState;
     use crate::model::SignalDescriptor;
+    use crate::model::SourceKey;
     use crate::model::Timestamp;
 
     #[derive(serde::Serialize)]
     struct RowRef<'a> {
-        source_key: &'a Name,
+        source_key: &'a SourceKey,
         signal: usize,
         value: &'a NumericValue,
         observed_at: &'a Option<Timestamp>,
@@ -248,7 +251,7 @@ mod readings_table {
 
     #[derive(serde::Deserialize)]
     struct Row {
-        source_key: Name,
+        source_key: SourceKey,
         signal: usize,
         value: NumericValue,
         observed_at: Option<Timestamp>,
@@ -335,7 +338,8 @@ mod readings_table {
 }
 
 /// The unvalidated fields an [`ObservationBatch`] is assembled from.
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
 struct BatchParts {
     endpoint: Arc<EndpointContext>,
     origin: Origin,
@@ -344,6 +348,7 @@ struct BatchParts {
     payload: Payload,
 }
 
+#[cfg(feature = "serde")]
 impl TryFrom<BatchParts> for ObservationBatch {
     type Error = BatchError;
 

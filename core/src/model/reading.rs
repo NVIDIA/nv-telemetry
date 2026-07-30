@@ -22,6 +22,7 @@ use super::Attributes;
 use super::Finite;
 use super::Name;
 use super::NonFiniteError;
+use super::SourceKey;
 use super::Subject;
 use super::Timestamp;
 
@@ -148,49 +149,80 @@ impl ReportedState {
 /// floor unset rather than inventing one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "ValueRangeParts"))]
 #[non_exhaustive]
 pub struct ValueRange {
-    pub lower: Option<Finite>,
-    pub upper: Option<Finite>,
+    lower: Option<Finite>,
+    upper: Option<Finite>,
 }
 
 impl ValueRange {
-    pub const fn new(lower: Option<Finite>, upper: Option<Finite>) -> Self {
-        Self { lower, upper }
-    }
-
     pub const fn empty() -> Self {
-        Self::new(None, None)
+        Self {
+            lower: None,
+            upper: None,
+        }
     }
 
-    #[must_use]
-    pub const fn with_lower(mut self, value: Finite) -> Self {
-        self.lower = Some(value);
-        self
+    pub const fn at_least(lower: Finite) -> Self {
+        Self {
+            lower: Some(lower),
+            upper: None,
+        }
     }
 
-    #[must_use]
-    pub const fn with_upper(mut self, value: Finite) -> Self {
-        self.upper = Some(value);
-        self
+    pub const fn at_most(upper: Finite) -> Self {
+        Self {
+            lower: None,
+            upper: Some(upper),
+        }
+    }
+
+    /// Builds a closed range, rejecting inverted bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RangeOrderError`] when `lower` exceeds `upper`.
+    pub fn between(lower: Finite, upper: Finite) -> Result<Self, RangeOrderError> {
+        if lower > upper {
+            return Err(RangeOrderError { lower, upper });
+        }
+        Ok(Self {
+            lower: Some(lower),
+            upper: Some(upper),
+        })
+    }
+
+    pub const fn lower(self) -> Option<Finite> {
+        self.lower
+    }
+
+    pub const fn upper(self) -> Option<Finite> {
+        self.upper
     }
 
     pub const fn is_empty(self) -> bool {
         self.lower.is_none() && self.upper.is_none()
     }
+}
 
-    /// Verifies that the reported lower limit does not exceed the upper.
-    ///
-    /// Storage stays permissive; a projection calls this and drops a
-    /// contradictory range rather than publishing one.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RangeOrderError`] if the two edges contradict each other.
-    pub fn checked(self) -> Result<Self, RangeOrderError> {
-        match (self.lower, self.upper) {
-            (Some(lower), Some(upper)) if lower > upper => Err(RangeOrderError { lower, upper }),
-            _ => Ok(self),
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct ValueRangeParts {
+    lower: Option<Finite>,
+    upper: Option<Finite>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<ValueRangeParts> for ValueRange {
+    type Error = RangeOrderError;
+
+    fn try_from(value: ValueRangeParts) -> Result<Self, Self::Error> {
+        match (value.lower, value.upper) {
+            (Some(lower), Some(upper)) => Self::between(lower, upper),
+            (Some(lower), None) => Ok(Self::at_least(lower)),
+            (None, Some(upper)) => Ok(Self::at_most(upper)),
+            (None, None) => Ok(Self::empty()),
         }
     }
 }
@@ -226,14 +258,17 @@ impl Error for RangeOrderError {}
 /// string, so the guard costs an ordinary call site nothing:
 ///
 /// ```
-/// use nv_telemetry_core::{ReadingKind, SignalDescriptor, Subject, Timestamp};
+/// use nv_telemetry_core::{
+///     Instance, Metric, ReadingKind, SignalDescriptor, Subject, SubjectId,
+///     SubjectKind, Timestamp, Unit,
+/// };
 ///
 /// let descriptor = SignalDescriptor::new(
-///     Subject::new("sensor", "CPU0Temp"),
-///     "temperature",
-///     "CPU0Temp",
+///     Subject::new(SubjectKind::from_static("sensor"), SubjectId::from_static("CPU0Temp")),
+///     Metric::from_static("temperature"),
+///     Instance::from_static("CPU0Temp"),
 ///     ReadingKind::Gauge,
-///     "Cel",
+///     Unit::from_static("Cel"),
 ///     Timestamp::new(0, 0).unwrap(),
 /// );
 /// assert_eq!(descriptor.metric.as_str(), "temperature");
@@ -243,16 +278,19 @@ impl Error for RangeOrderError {}
 /// rather than producing a signal that joins to the wrong readings:
 ///
 /// ```compile_fail
-/// use nv_telemetry_core::{Instance, Metric, ReadingKind, SignalDescriptor, Subject, Timestamp};
+/// use nv_telemetry_core::{
+///     Instance, Metric, ReadingKind, SignalDescriptor, Subject, SubjectId,
+///     SubjectKind, Timestamp, Unit,
+/// };
 ///
 /// let metric = Metric::from("temperature");
 /// let instance = Instance::from("CPU0Temp");
 /// let descriptor = SignalDescriptor::new(
-///     Subject::new("sensor", "CPU0Temp"),
+///     Subject::new(SubjectKind::from_static("sensor"), SubjectId::from_static("CPU0Temp")),
 ///     instance,
 ///     metric,
 ///     ReadingKind::Gauge,
-///     "Cel",
+///     Unit::from_static("Cel"),
 ///     Timestamp::new(0, 0).unwrap(),
 /// );
 /// ```
@@ -278,18 +316,18 @@ pub struct SignalDescriptor {
 impl SignalDescriptor {
     pub fn new(
         subject: Subject,
-        metric: impl Into<Metric>,
-        instance: impl Into<Instance>,
+        metric: Metric,
+        instance: Instance,
         kind: ReadingKind,
-        unit: impl Into<Unit>,
+        unit: Unit,
         observed_at: Timestamp,
     ) -> Self {
         Self {
             subject,
-            metric: metric.into(),
-            instance: instance.into(),
+            metric,
+            instance,
             kind,
-            unit: unit.into(),
+            unit,
             observed_at,
             revision: 0,
             attributes: Attributes::empty(),
@@ -349,7 +387,7 @@ impl SignalDescriptor {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct Reading {
-    pub source_key: Name,
+    pub source_key: SourceKey,
     /// Metadata shared with every other reading of the same signal.
     ///
     /// `Arc::ptr_eq` is a fast path for "same signal", not a substitute for
@@ -376,12 +414,12 @@ pub struct Reading {
 impl Reading {
     /// Builds a reading against a signal definition.
     pub fn new(
-        source_key: impl Into<Name>,
+        source_key: SourceKey,
         signal: impl Into<Arc<SignalDescriptor>>,
         value: impl Into<NumericValue>,
     ) -> Self {
         Self {
-            source_key: source_key.into(),
+            source_key,
             signal: signal.into(),
             value: value.into(),
             observed_at: None,

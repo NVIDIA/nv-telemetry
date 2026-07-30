@@ -51,6 +51,7 @@ mod unix {
     use nv_telemetry_core::Reading;
     use nv_telemetry_core::ReadingKind;
     use nv_telemetry_core::SignalDescriptor;
+    use nv_telemetry_core::SourceKey;
     use nv_telemetry_core::Subject;
     use nv_telemetry_core::Timestamp;
     use nv_telemetry_core::Unit;
@@ -62,14 +63,14 @@ mod unix {
     const LABELS: usize = 8;
 
     /// A row's inputs, pre-built so a benchmark measures only assembly.
-    type Row = (Name, Arc<SignalDescriptor>);
+    type Row = (SourceKey, Arc<SignalDescriptor>);
 
     fn timestamp() -> Timestamp {
         Timestamp::new(1_700_000_000, 0).expect("valid timestamp")
     }
 
     fn subject(index: usize) -> Subject {
-        Subject::new("sensor", format!("CPU{index}Temp"))
+        Subject::new("sensor".into(), format!("CPU{index}Temp").into())
     }
 
     /// Labels in the order a projection emits them, which is not sorted:
@@ -88,8 +89,8 @@ mod unix {
         let instance = Name::from(subject.id.as_str());
         Arc::new(SignalDescriptor::new(
             subject,
-            "temperature",
-            instance,
+            "temperature".into(),
+            instance.into(),
             ReadingKind::Gauge,
             Unit::from_static("Cel"),
             timestamp(),
@@ -101,7 +102,7 @@ mod unix {
         let rows = (0..count)
             .map(|index| {
                 (
-                    Name::from(format!("/redfish/v1/Chassis/1/Sensors/CPU{index}Temp")),
+                    format!("/redfish/v1/Chassis/1/Sensors/CPU{index}Temp").into(),
                     descriptor(subject(index)),
                 )
             })
@@ -116,7 +117,7 @@ mod unix {
         let rows = (0..count)
             .map(|index| {
                 (
-                    Name::from(format!("/redfish/v1/Chassis/1/Sensors/CPU0Temp/{index}")),
+                    format!("/redfish/v1/Chassis/1/Sensors/CPU0Temp/{index}").into(),
                     Arc::clone(&signal),
                 )
             })
@@ -152,7 +153,7 @@ mod unix {
         let (payload, endpoint, coverage) = batch_input(rows, Coverage::complete_endpoint());
         ObservationBatch::new(
             endpoint,
-            Origin::new("redfish-sensor", "sensor-reading"),
+            Origin::new("redfish-sensor".into(), "sensor-reading".into()),
             ObservationWindow::point(timestamp()),
             coverage,
             Payload::Readings(payload),
@@ -225,7 +226,7 @@ mod unix {
     ) -> ObservationBatch {
         black_box(ObservationBatch::new(
             endpoint,
-            Origin::new("redfish-sensor", "sensor-reading"),
+            Origin::new("redfish-sensor".into(), "sensor-reading".into()),
             ObservationWindow::point(timestamp()),
             coverage,
             Payload::Readings(payload),
@@ -233,8 +234,9 @@ mod unix {
         .expect("valid batch")
     }
 
-    // Content-addressing a snapshot, the operation that lets a consumer
-    // tell a changed batch from a repeated one without walking it.
+    // Content-addressing a snapshot, the operation that lets a consumer tell
+    // a changed batch from a repeated one without walking it. The fixture's
+    // row order is deterministic because row order is part of batch identity.
     #[library_benchmark]
     #[bench::sensors_256(batch(distinct_rows(SENSORS)))]
     fn hash_batch(batch: ObservationBatch) -> ObservationBatch {
