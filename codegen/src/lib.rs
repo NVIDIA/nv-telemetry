@@ -25,7 +25,6 @@ pub mod lock;
 pub mod options;
 pub mod projection;
 pub mod provenance;
-pub mod validate;
 pub mod wire;
 pub mod wrapper;
 

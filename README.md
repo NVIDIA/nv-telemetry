@@ -56,10 +56,12 @@ code, of which only the transport is hand-written. A REST API is a transport
 rather than a source, so each vendor API gets its own crate and manifest rather
 than sharing one.
 
-Only `schema` and `codegen` carry code today; the other crates are
+`schema`, `codegen`, and `model` carry code today; the other crates are
 placeholders whose doc comments state what belongs in them. The contract's
-first messages exist and every gate runs over them — the generated Rust model
-is the next stage, so the data-plane crates stay empty until it lands.
+messages exist, every gate runs over them, and `model` is the generated
+validated data plane — canonical ordering and content hashing are the next
+stage, and the source and export crates stay empty until there is data to
+move.
 
 Exporters are separate crates because their dependency trees are disjoint;
 `export` holds only what they share, such as joining readings to descriptors

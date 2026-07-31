@@ -744,3 +744,150 @@ fn a_range_needs_a_bound_one_arm_and_order() {
         .build();
     assert!(backwards.is_err(), "min must not exceed max");
 }
+
+/// Maximal wire messages: every optional field set, every payload domain
+/// exercised. `TryFrom` consumes the wire message field by field and `From`
+/// rebuilds it; a field one of them forgets is silent data loss, and sparse
+/// round trips cannot see it. Maps carry a single entry so sorting cannot
+/// reorder them, making byte equality the assertion.
+// Long because it is exhaustive — one construction per payload domain with
+// every field populated. Trimming it to a length limit would reopen exactly
+// the blind spot it exists to close.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn every_field_survives_the_validated_round_trip() {
+    let ts = |seconds: i64| wire::Timestamp {
+        seconds: Some(seconds),
+        nanos: Some(7),
+    };
+    let subject = |id: &str| wire::Subject {
+        kind: Some("sensor".into()),
+        scope: vec!["1U".into()],
+        id: Some(id.into()),
+    };
+    let key = |id: &str| wire::SignalKey {
+        subject: Some(subject(id)),
+        facet: Some("state/counters".into()),
+    };
+    let map = wire::value::Map {
+        entries: vec![wire::value::map::Entry {
+            key: Some("serial".into()),
+            value: Some(wire::Value {
+                kind: Some(wire::value::Kind::StringValue("SN-1".into())),
+            }),
+        }],
+    };
+    let numeric = |value: f64| wire::NumericValue {
+        kind: Some(wire::numeric_value::Kind::DoubleValue(value)),
+    };
+
+    let payloads = vec![
+        wire::observation_batch::Payload::Readings(wire::Readings {
+            descriptors: vec![wire::SignalDescriptor {
+                key: Some(key("CPU1Temp")),
+                kind: Some("temperature".into()),
+                unit: Some("Cel".into()),
+                range: Some(wire::ValueRange {
+                    min: Some(numeric(0.0)),
+                    max: Some(numeric(100.0)),
+                }),
+            }],
+            samples: vec![wire::Reading {
+                key: Some(key("CPU1Temp")),
+                value: Some(numeric(47.5)),
+                observed_at: Some(ts(10)),
+            }],
+        }),
+        wire::observation_batch::Payload::Logs(wire::Logs {
+            records: vec![wire::LogRecord {
+                occurred_at: Some(ts(20)),
+                severity: Some(3),
+                message: Some("fan failed".into()),
+                subject: Some(subject("Fan1")),
+                entry_id: Some("sel-41".into()),
+                attributes: Some(map.clone()),
+            }],
+        }),
+        wire::observation_batch::Payload::States(wire::States {
+            observations: vec![wire::StateObservation {
+                subject: Some(subject("Fan1")),
+                name: Some("health".into()),
+                value: Some(wire::Value {
+                    kind: Some(wire::value::Kind::StringValue("OK".into())),
+                }),
+                observed_at: Some(ts(30)),
+            }],
+        }),
+        wire::observation_batch::Payload::Inventory(wire::Inventory {
+            items: vec![wire::InventoryItem {
+                subject: Some(subject("PSU1")),
+                attributes: Some(map.clone()),
+                source_key: Some("/redfish/v1/PSU1".into()),
+            }],
+        }),
+        wire::observation_batch::Payload::Resources(wire::ResourceGraph {
+            resources: vec![wire::ObservedResource {
+                subject: Some(subject("1U")),
+                source_key: Some("/redfish/v1/Chassis/1U".into()),
+                source_schema: Some("#Chassis.v1_2_0.Chassis".into()),
+                entity_tag: Some("W/\"e-1\"".into()),
+                observed_at: Some(ts(40)),
+                properties: Some(map.clone()),
+                properties_complete: Some(true),
+                unresolved: vec![wire::UnresolvedReference {
+                    location: Some("/redfish/v1/Chassis/2U".into()),
+                    property: Some("Links.ContainedBy".into()),
+                }],
+            }],
+            relations: vec![wire::ResourceRelation {
+                source: Some(subject("1U")),
+                target: Some(subject("2U")),
+                kind: Some("contains".into()),
+            }],
+        }),
+    ];
+
+    for payload in payloads {
+        let maximal = wire::ObservationBatch {
+            endpoint: Some(wire::EndpointContext {
+                endpoint_id: Some("bmc-lab-07".into()),
+                attributes: Some(map.clone()),
+            }),
+            origin: Some(wire::Origin {
+                provider: Some("redfish".into()),
+                request_class: Some("read".into()),
+            }),
+            window: Some(wire::ObservationWindow {
+                start: Some(ts(1)),
+                end: Some(ts(2)),
+            }),
+            coverage: Some(wire::Coverage {
+                completeness: Some(wire::Completeness::Partial as i32),
+                scope: Some(subject("1U")),
+            }),
+            payload: Some(payload),
+        };
+
+        let validated = ObservationBatch::try_from(maximal.clone()).expect("maximal batch valid");
+        let rebuilt = wire::ObservationBatch::from(validated);
+        assert_eq!(rebuilt, maximal, "a field was dropped on the round trip");
+    }
+
+    let status = wire::AcquisitionStatus {
+        endpoint_id: Some("bmc-lab-07".into()),
+        provider: Some("redfish".into()),
+        request_class: Some("read".into()),
+        outcome: Some(2),
+        failure_class: Some(3),
+        retryable: Some(true),
+        started_at: Some(ts(50)),
+        duration_nanos: Some(125_000),
+        detail: Some("timed out".into()),
+    };
+    let validated = AcquisitionStatus::try_from(status.clone()).expect("maximal status valid");
+    assert_eq!(
+        wire::AcquisitionStatus::from(validated),
+        status,
+        "a status field was dropped on the round trip"
+    );
+}

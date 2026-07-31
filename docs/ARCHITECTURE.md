@@ -507,18 +507,23 @@ Generated wire types are plain structs with public fields and no invariants;
 nothing about them prevents a non-finite reading or an unsorted graph. The
 model therefore distinguishes wire types from validated types.
 
-A message annotated as validated gets a generated wrapper: a newtype holding
-the wire message privately, constructed only through generated builders or
-fallible conversion from the wire type, both of which run validation and
-canonicalization. Accessors read through. Messages whose every state is valid
-ship as raw generated types with no wrapper tax. By convention the wire types
-live in a generated module and the validated wrappers take the public names.
+A message annotated as validated gets a generated owned type with private
+fields, constructed only through a generated builder or fallible conversion
+from the wire type, both of which run the same checks. Owned rather than a
+newtype over the wire struct, because ownership is what permits reshaping,
+and reshaping is where the invariants become the type: a `required` field is
+a plain value rather than an `Option`, a required oneof is an enum rather
+than an `Option` of one, an enum field cannot carry the unspecified value,
+and a recursive value is a real tree with a sorted, duplicate-free map. What
+the schema forbids is unrepresentable after conversion instead of checked at
+each use; encoding rebuilds the wire form from the validated one. The wire
+types stay crate-internal and the validated types take the public names.
 
 The in-process unit of flow is an `Arc` of a validated type. Fan-out shares by
 reference and never re-encodes; encoding happens once per process boundary.
 Everything downstream of validated ingress may assume the invariants hold.
 
-Because a wrapper's inner representation is private, it can change without
+Because a validated type's representation is private, it can change without
 breaking the public contract; that is where storage-layout freedom lives. The
 generated representation is the baseline layout, and alternatives are adopted
 behind wrappers only where measurements show material benefit. Raw, unwrapped
