@@ -1,0 +1,89 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// The counterweight to the other fixtures: everything here is a legitimate use
+// of the vocabulary, and the assertion is that the compiler reports nothing.
+//
+// Every other fixture plants violations, so a rule that fired on far too much
+// would still make them pass. The shipped contract is the only other check in
+// that direction, and it does not exercise the whole vocabulary — it contains
+// no `zero_is_meaningful` field at all, and no uniqueness key that mixes a
+// message with a scalar. Those are exactly the combinations where a rule
+// written to catch one mistake is most likely to reject something sound.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+
+enum Grade {
+  GRADE_UNSPECIFIED = 0;
+  GRADE_ONE = 1;
+}
+
+message Key {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional string id = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    non_empty: true
+    max_len: 64
+  }];
+}
+
+message Item {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // A message key: present on every element, and validated, so equal content
+  // compares equal.
+  optional Key key = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // The other way a key is always present. `required` cannot be written
+  // alongside this, which is why the key rule has to accept it on its own.
+  uint32 slot = 2 [(nv.telemetry.options.v1.field_invariant) = {zero_is_meaningful: true}];
+
+  // `non_empty` per element, on a list that may itself be empty — the shape
+  // `Subject.scope` relies on.
+  repeated string tags = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    unordered: true
+    max_items: 8
+    max_len: 32
+  }];
+
+  // Absent is allowed; unspecified is not.
+  optional Grade grade = 4 [(nv.telemetry.options.v1.field_invariant) = {reject_unspecified: true}];
+
+  optional double reading = 5 [(nv.telemetry.options.v1.field_invariant) = {finite: true}];
+}
+
+message Bag {
+  // Self-referential through `nested`, so the recursion bound bounds something.
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+    max_depth: 4
+  };
+
+  // A two-part key mixing a validated message with a zero_is_meaningful
+  // scalar.
+  repeated Item items = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    unique_by: [
+      "key",
+      "slot"
+    ]
+    max_items: 128
+  }];
+
+  // Collection metadata on a field a hashable message reaches, carrying a
+  // content constraint of its own.
+  optional string etag = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 128
+    collection_metadata: true
+  }];
+
+  optional Bag nested = 3;
+}

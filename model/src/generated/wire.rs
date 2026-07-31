@@ -47,9 +47,17 @@ pub struct Subject {
     /// is deliberately not `unordered`: a reversed scope names a different
     /// thing. Structured rather than embedded in the id, so a scope element
     /// containing a separator cannot corrupt the identity.
+    ///
+    /// The list may be empty — a top-level chassis is contained by nothing — but
+    /// an element may not, which is what `non_empty` states here. An empty
+    /// element is a scope the walk failed to name, and it would place the subject
+    /// under a container that does not exist.
     #[prost(string, repeated, tag = "2")]
     pub scope: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// The identifier within that scope.
+    /// The identifier within that scope. Non-empty as well as required: "" would
+    /// be a well-formed identity, and since Subject is hashable, every sensor
+    /// whose id could not be read would hash equal to every other one and join to
+    /// the same resource.
     #[prost(string, optional, tag = "3")]
     pub id: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -69,6 +77,11 @@ pub struct Timestamp {
 /// The null type's one inhabitant. A property that is present and explicitly
 /// null is a different fact from a property that is absent, and the resource
 /// graph preserves the difference.
+///
+/// The one message in the contract without `validated`, and deliberately so: it
+/// has no fields, so there is nothing to check and nothing to canonicalize, and
+/// a wrapper around it would be a type whose only value is itself. The arm that
+/// carries it needs no payload.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Null {}
 /// A numeric sample.
@@ -123,8 +136,8 @@ pub mod value {
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Map {
         /// Key-sorted: canonicalization orders entries by key, which also makes
-        /// duplicate keys adjacent, and validation rejects them. An entry list
-        /// rather than a proto map because a proto map has no wire order to
+        /// duplicate keys adjacent, and `unique_by` is what rejects them. An entry
+        /// list rather than a proto map because a proto map has no wire order to
         /// canonicalize, silently keeps the last duplicate, and its synthetic
         /// entry fields cannot carry bounds.
         #[prost(message, repeated, tag = "1")]
@@ -175,7 +188,9 @@ pub mod value {
 /// walk honest.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnresolvedReference {
-    /// Where the link points, in the source's own location grammar.
+    /// Where the link points, in the source's own location grammar. An empty
+    /// location is a link that was not read, and recording one would assert an
+    /// unresolved reference that does not exist.
     #[prost(string, optional, tag = "1")]
     pub location: ::core::option::Option<::prost::alloc::string::String>,
     /// The property that held the link, when one did.
@@ -215,6 +230,11 @@ pub struct ObservedResource {
     /// attempt to write it.
     #[prost(bool, optional, tag = "7")]
     pub properties_complete: ::core::option::Option<bool>,
+    /// Deliberately no uniqueness key. Two properties of one resource may name
+    /// the same location — a Redfish resource whose Links.Chassis and
+    /// Links.ContainedBy both point at /redfish/v1/Chassis/1U — so keying on
+    /// `location` alone would call two distinct unresolved links duplicates, and
+    /// adding `property` names a field the source may not supply.
     #[prost(message, repeated, tag = "8")]
     pub unresolved: ::prost::alloc::vec::Vec<UnresolvedReference>,
 }
@@ -247,8 +267,15 @@ pub struct ResourceRelation {
 /// graphs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceGraph {
+    /// One resource per subject. Two entries for one identity would give a
+    /// convergence consumer two property sets to reconcile with no rule for
+    /// choosing, and the graph is hashed, so the pair would also hash as a state
+    /// no single device was ever in.
     #[prost(message, repeated, tag = "1")]
     pub resources: ::prost::alloc::vec::Vec<ObservedResource>,
+    /// An edge is its endpoints and its meaning, so all three fields form the
+    /// key: the same pair of subjects may be joined by both containment and
+    /// management, and those are different edges.
     #[prost(message, repeated, tag = "2")]
     pub relations: ::prost::alloc::vec::Vec<ResourceRelation>,
 }
@@ -269,6 +296,9 @@ pub struct InventoryItem {
 /// The inventory payload domain.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Inventory {
+    /// One item per subject. Inventory answers "what exists", and a complete
+    /// batch is used to establish that previously known items are gone — so a
+    /// subject appearing twice makes the count of what exists ambiguous.
     #[prost(message, repeated, tag = "1")]
     pub items: ::prost::alloc::vec::Vec<InventoryItem>,
 }
@@ -279,8 +309,18 @@ pub struct LogRecord {
     /// source does not stamp entries.
     #[prost(message, optional, tag = "1")]
     pub occurred_at: ::core::option::Option<Timestamp>,
+    /// Absent when the source does not state one, or states one the mapping does
+    /// not cover. Never UNSPECIFIED: a record claiming a severity of "not stated"
+    /// would sort into the ladder below debug.
     #[prost(enumeration = "Severity", optional, tag = "2")]
     pub severity: ::core::option::Option<i32>,
+    /// Deliberately not `non_empty`, unlike every other required string here.
+    /// This is the one that carries verbatim device text rather than an
+    /// identifier or a projected vocabulary token, and a Redfish LogEntry whose
+    /// human-readable Message is empty because the text lives in a message
+    /// registry under MessageId is ordinary, not malformed. Rejecting it would
+    /// fail the whole batch and discard every other record the device did report,
+    /// to punish one field for saying what the device said.
     #[prost(string, optional, tag = "3")]
     pub message: ::core::option::Option<::prost::alloc::string::String>,
     /// The resource the record is about, when the source names one — a Redfish
@@ -289,7 +329,10 @@ pub struct LogRecord {
     #[prost(message, optional, tag = "4")]
     pub subject: ::core::option::Option<Subject>,
     /// The source's identifier for this entry, when it has one, so incremental
-    /// collection can resume and consumers can deduplicate.
+    /// collection can resume and consumers can deduplicate. Deliberately no
+    /// uniqueness constraint on the records list: sources that do not stamp
+    /// entries leave this absent, and a key that can be absent cannot decide
+    /// duplicates.
     #[prost(string, optional, tag = "5")]
     pub entry_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "6")]
@@ -303,8 +346,8 @@ pub struct Logs {
 }
 /// The contract's own severity ladder. Source severities are mapped into it by
 /// projection; a value the mapping does not cover is a projection issue rather
-/// than a guess. UNSPECIFIED is rejected by validation on records that carry a
-/// severity at all.
+/// than a guess, which is why a record may carry no severity but never carries
+/// UNSPECIFIED.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum Severity {
@@ -354,7 +397,9 @@ pub struct SignalKey {
     pub subject: ::core::option::Option<Subject>,
     /// Which of the resource's signals, where one resource carries several — a
     /// power supply reporting both watts and kilowatt-hours. Absent when the
-    /// resource carries a single signal.
+    /// resource carries a single signal, which is a different key from a facet
+    /// that is present and empty — hence `non_empty` rather than a convention
+    /// that treats the two alike.
     #[prost(string, optional, tag = "2")]
     pub facet: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -382,7 +427,7 @@ pub struct SignalDescriptor {
     #[prost(string, optional, tag = "2")]
     pub kind: ::core::option::Option<::prost::alloc::string::String>,
     /// Unit of every sample under this key, in UCUM. Absent for dimensionless
-    /// signals.
+    /// signals — which is the encoding for that, rather than the empty string.
     #[prost(string, optional, tag = "3")]
     pub unit: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "4")]
@@ -409,8 +454,18 @@ pub struct Readings {
     /// a batch is self-describing to a consumer that arrives mid-stream or reads
     /// it out of storage. Units and bounds repeat per batch, not per sample; the
     /// in-process catalog deduplicates descriptors across batches.
+    ///
+    /// One descriptor per key: two descriptors for one signal contradict each
+    /// other exactly when it matters — different units for the same samples —
+    /// and a consumer given both has no way to choose, so the batch is rejected
+    /// rather than resolved by arrival order.
     #[prost(message, repeated, tag = "1")]
     pub descriptors: ::prost::alloc::vec::Vec<SignalDescriptor>,
+    /// Deliberately not unique by key, unlike the descriptors above: a metric
+    /// report legitimately carries a series of samples for one signal, separated
+    /// only by their own timestamps. Keying on the timestamp too would name a
+    /// field that may be absent, which is a duplicate verdict the vocabulary
+    /// refuses to draw.
     #[prost(message, repeated, tag = "2")]
     pub samples: ::prost::alloc::vec::Vec<Reading>,
 }
@@ -436,6 +491,12 @@ pub struct StateObservation {
 /// The state payload domain.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct States {
+    /// Deliberately not unique by subject and name. A batch reporting one facet
+    /// twice looks like a contradiction from a polled source, but a streaming one
+    /// — a gNMI ON_CHANGE subscription whose window covers an interface going
+    /// down and back up — is reporting a series, and each observation carries its
+    /// own timestamp to say so. Rejecting the pair would discard a real
+    /// transition to enforce a snapshot shape only some sources have.
     #[prost(message, repeated, tag = "1")]
     pub observations: ::prost::alloc::vec::Vec<StateObservation>,
 }
@@ -443,8 +504,9 @@ pub struct States {
 /// inside the declared scope of a complete batch.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Coverage {
-    /// UNSPECIFIED is rejected by validation: a batch that does not know its own
-    /// completeness cannot be used to reason about absence.
+    /// A batch that does not know its own completeness cannot be used to reason
+    /// about absence, so UNSPECIFIED is rejected as well as absence: `required`
+    /// alone would accept a producer that set the field to "not stated".
     #[prost(enumeration = "Completeness", optional, tag = "1")]
     pub completeness: ::core::option::Option<i32>,
     /// The subtree observed; absent means the whole endpoint. On a graph
@@ -554,10 +616,11 @@ pub struct AcquisitionStatus {
     pub provider: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "3")]
     pub request_class: ::core::option::Option<::prost::alloc::string::String>,
-    /// UNSPECIFIED is rejected by validation.
     #[prost(enumeration = "acquisition_status::Outcome", optional, tag = "4")]
     pub outcome: ::core::option::Option<i32>,
-    /// Present exactly when the outcome is a failure — a wrapper rule.
+    /// Present exactly when the outcome is a failure — a wrapper rule. Optional
+    /// rather than required, but a failure that classifies itself as "not stated"
+    /// tells the planner nothing it can act on, so when present it must be real.
     #[prost(enumeration = "acquisition_status::FailureClass", optional, tag = "5")]
     pub failure_class: ::core::option::Option<i32>,
     /// Whether retrying could plausibly succeed. Meaningful only on failure.

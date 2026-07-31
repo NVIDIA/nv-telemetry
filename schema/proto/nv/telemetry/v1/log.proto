@@ -17,8 +17,8 @@ option java_package = "com.nvidia.nvtelemetry.v1";
 
 // The contract's own severity ladder. Source severities are mapped into it by
 // projection; a value the mapping does not cover is a projection issue rather
-// than a guess. UNSPECIFIED is rejected by validation on records that carry a
-// severity at all.
+// than a guess, which is why a record may carry no severity but never carries
+// UNSPECIFIED.
 enum Severity {
   SEVERITY_UNSPECIFIED = 0;
   SEVERITY_DEBUG = 1;
@@ -36,8 +36,18 @@ message LogRecord {
   // source does not stamp entries.
   optional Timestamp occurred_at = 1;
 
-  optional Severity severity = 2;
+  // Absent when the source does not state one, or states one the mapping does
+  // not cover. Never UNSPECIFIED: a record claiming a severity of "not stated"
+  // would sort into the ladder below debug.
+  optional Severity severity = 2 [(nv.telemetry.options.v1.field_invariant) = {reject_unspecified: true}];
 
+  // Deliberately not `non_empty`, unlike every other required string here.
+  // This is the one that carries verbatim device text rather than an
+  // identifier or a projected vocabulary token, and a Redfish LogEntry whose
+  // human-readable Message is empty because the text lives in a message
+  // registry under MessageId is ordinary, not malformed. Rejecting it would
+  // fail the whole batch and discard every other record the device did report,
+  // to punish one field for saying what the device said.
   optional string message = 3 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
     max_len: 65536
@@ -49,8 +59,14 @@ message LogRecord {
   optional Subject subject = 4;
 
   // The source's identifier for this entry, when it has one, so incremental
-  // collection can resume and consumers can deduplicate.
-  optional string entry_id = 5 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+  // collection can resume and consumers can deduplicate. Deliberately no
+  // uniqueness constraint on the records list: sources that do not stamp
+  // entries leave this absent, and a key that can be absent cannot decide
+  // duplicates.
+  optional string entry_id = 5 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 256
+  }];
 
   optional Value.Map attributes = 6;
 }

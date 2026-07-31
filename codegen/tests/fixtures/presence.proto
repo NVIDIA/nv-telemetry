@@ -47,4 +47,9 @@ message WrapperFixture {
   };
 
   optional double value = 1;
+
+  // Self-referential, so `max_depth` above bounds something. Without this the
+  // fixture would carry a recursion bound on a type that cannot recurse, and
+  // trip a rule it is not here to exercise.
+  optional WrapperFixture nested = 2;
 }

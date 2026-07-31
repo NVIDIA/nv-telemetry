@@ -49,24 +49,31 @@ message AcquisitionStatus {
 
   optional string endpoint_id = 1 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 256
   }];
 
   optional string provider = 2 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 128
   }];
 
   optional string request_class = 3 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 128
   }];
 
-  // UNSPECIFIED is rejected by validation.
-  optional Outcome outcome = 4 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+  optional Outcome outcome = 4 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    reject_unspecified: true
+  }];
 
-  // Present exactly when the outcome is a failure — a wrapper rule.
-  optional FailureClass failure_class = 5;
+  // Present exactly when the outcome is a failure — a wrapper rule. Optional
+  // rather than required, but a failure that classifies itself as "not stated"
+  // tells the planner nothing it can act on, so when present it must be real.
+  optional FailureClass failure_class = 5 [(nv.telemetry.options.v1.field_invariant) = {reject_unspecified: true}];
 
   // Whether retrying could plausibly succeed. Meaningful only on failure.
   optional bool retryable = 6;
@@ -78,5 +85,8 @@ message AcquisitionStatus {
   optional uint64 duration_nanos = 8;
 
   // Operator-facing detail. Never carries credentials or device secrets.
-  optional string detail = 9 [(nv.telemetry.options.v1.field_invariant) = {max_len: 4096}];
+  optional string detail = 9 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 4096
+  }];
 }

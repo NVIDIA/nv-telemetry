@@ -83,9 +83,16 @@ field, not emitted with an empty scope. An empty scope means "no containing
 scope", and guessing produces a subject that silently joins to the wrong
 resource.
 
-`scope` is deliberately not marked `unordered` — it is the one repeated field
-in the contract whose order is data. `["1U", "PSU1"]` is a different location
-from `["PSU1", "1U"]`.
+`scope` is deliberately not marked `unordered`: `["1U", "PSU1"]` is a different
+location from `["PSU1", "1U"]`, so canonicalization must not sort it. It is one
+of only two repeated fields in the contract whose order is data — the other is
+`Value.List.values`, which reports what the device reported in the order the
+device reported it. Every other repeated field is `unordered`.
+
+The elements are `non_empty` even though the list itself may be empty. An empty
+list means "no containing scope", which a top-level chassis genuinely has; an
+empty *element* means a scope the walk failed to name, which would place the
+subject under a container that does not exist.
 
 ## Signals: `SignalKey` and `SignalDescriptor`
 
@@ -140,11 +147,13 @@ and it cannot represent bytes or timestamps at all.
 
 **`Map` is a sorted entry list, not a proto `map`.** A proto map has no wire
 order to canonicalize, silently keeps the last duplicate key, and its
-synthetic key/value fields cannot carry bounds. The entry list sorts by key,
-which makes duplicates adjacent and rejectable.
+synthetic key/value fields cannot carry bounds. The entry list is `unordered`,
+so canonicalization sorts it by key, which makes duplicates adjacent; the
+`unique_by: ["key"]` annotation is what rejects them.
 
-**`List` order is data; `Map` order is not.** `List.values` is the one
-repeated field in the whole contract that canonicalization must not sort.
+**`List` order is data; `Map` order is not.** `List.values` is one of the two
+repeated fields in the contract that canonicalization must not sort — the other
+is `Subject.scope`.
 
 Depth is bounded at 16 logical levels. That number is derived, not chosen for
 roundness: prost admits 100 nested message levels, one logical level of map
@@ -426,6 +435,9 @@ before generating anything. See `docs/EXTENSIONS.md` for the numbering.
 | `unordered` | field | this repeated field's order is not semantic, so canonicalization sorts it |
 | `max_items` / `max_len` | field | bounds; `0` is a real bound, which is why they are `optional` |
 | `collection_metadata` | field | records how a fact was collected, not what was observed — skipped by hashing |
+| `non_empty` | field | a string or bytes value must carry something; per element on a repeated field |
+| `reject_unspecified` | field | an enum field must not carry the zero value |
+| `unique_by` | field | element fields that identify an element of this repeated field; duplicates are rejected |
 | `validated` | message | emit a wrapper that owns the invariants |
 | `hashable` | message | emit logical content hashing; requires `validated` |
 | `max_depth` | message | recursion bound for a self-referential type |
@@ -444,6 +456,65 @@ scalars are never checked — `google.protobuf.DoubleValue` is the trap), and
 proto2 files (a `required` scalar reports as having presence but generates as
 a bare value).
 
+## Presence is not content
+
+`required` proves a field was set, which is a weaker claim than it looks. The
+empty string sets a string; `UNSPECIFIED` sets an enum. Both satisfy `required`
+while carrying no information, and both are what a projection produces when a
+read half-failed. `non_empty` and `reject_unspecified` close that gap on the
+declarations where the difference matters — identity, naming, and the enums a
+consumer branches on.
+
+Two boundaries are deliberate. `non_empty` is absent from every field carrying
+verbatim device text — `Value.string_value`, `Value.bytes_value`, and
+`LogRecord.message`. A device that reported `"SerialNumber": ""` reported
+something, and a Redfish `LogEntry` whose `Message` is empty because the text
+lives in a registry under `MessageId` is ordinary; calling either invalid would
+be fabrication pointing the other way, and would fail a whole batch over it.
+The rule holds for identifiers, projected vocabulary tokens, and
+library-generated values, where an empty string is only ever a failed read. And
+`reject_unspecified` rejects the zero value only, never an unrecognised one —
+a value this build does not know is a newer producer naming something real, so
+rejecting it would make every added enum value a breaking change for older
+consumers. Unknown values decode; what to do about one is the consumer's call.
+
+`unique_by` names the fields that identify an element rather than comparing
+whole elements, because the contradictions worth catching are the ones where
+the rest of the element differs: two `SignalDescriptor`s for one key with
+different units are a batch a consumer cannot interpret, and comparing whole
+elements would call them distinct. Every named key must be one the element
+always carries — `required`, or `zero_is_meaningful` and so having no absent
+state at all — because a key that can be absent would make two elements that
+both omit it duplicates of each other.
+
+It applies only where a repeat is genuinely incoherent rather than merely
+surprising:
+
+| Collection | Key | Why |
+| --- | --- | --- |
+| `Value.Map.entries` | `key` | a map with two values for one key has no reading |
+| `Readings.descriptors` | `key` | two definitions of one signal, and no rule for choosing |
+| `ResourceGraph.resources` | `subject` | a graph node is its identity |
+| `ResourceGraph.relations` | `source`, `target`, `kind` | edges are a set; the same pair may hold several *kinds* of edge |
+| `Inventory.items` | `subject` | inventory is the set of what exists |
+
+Every other repeated field is deliberately excluded, and for a reason:
+
+| Collection | Why not |
+| --- | --- |
+| `Readings.samples` | a metric report carries a series for one signal, separated by their own optional timestamps |
+| `States.observations` | a gNMI `ON_CHANGE` window can carry an interface going down and back up |
+| `Logs.records` | `entry_id` is optional — many sources do not stamp entries at all |
+| `ObservedResource.unresolved` | two distinct properties may name the same URI, and adding `property` to the key names an optional field |
+| `Value.List.values` | a list reports what the device reported; repeats are data |
+| `Subject.scope` | a scalar list, so there are no element fields to key on |
+
+The pattern is that a uniqueness key must be `required` on the element type. In
+every excluded case the field that would separate the elements — a timestamp, a
+source entry id, the property that held a link — is one the source may not
+supply, and a key that can be absent would call two elements duplicates
+precisely when the source was least informative.
+
 ---
 
 # Known limitations
@@ -451,12 +522,20 @@ a bare value).
 Honest list. These are catalogued, not hidden, and none is a bug in the
 implementation — they are places the model does not yet reach.
 
-**Rules that live in comments.** The vocabulary cannot express non-emptiness,
-minimum item counts, enum-zero rejection, uniqueness, or at-least-one-of. So
-`Subject{kind: "sensor", scope: [], id: ""}` is currently valid, and because
-`Subject` is hashable, every sensor whose id failed to project would collapse
-into one identity. Likewise an empty payload with `COMPLETE` is a valid batch
-asserting total absence. Treat these as conventions until the vocabulary grows.
+**Rules that live in comments.** The vocabulary still cannot express
+cross-field constraints, and those are stated in schema comments as "wrapper
+rules": `ValueRange` needs at least one bound with min not exceeding max,
+`ObservationWindow`'s end must follow its start, `AcquisitionStatus` carries a
+`failure_class` exactly when it failed, `Timestamp.nanos` is bounded below one
+second, every `SignalKey` a sample references must resolve in the same batch,
+and a complete `ResourceGraph` must be reachable from its scope subject.
+Validators will enforce them; the vocabulary cannot state them, because each
+relates one field to another.
+
+Two absolute bounds are also missing: a minimum item count, and a value range
+for numbers. The first is why an empty payload with `COMPLETE` is a valid batch
+asserting total absence — though that is partly semantic, since a genuinely
+empty complete collection is a real observation.
 
 **No projection-issue type.** The missing-versus-invalid distinction the design
 rests on has no wire representation yet, so "the device answered NaN" and "the

@@ -29,14 +29,20 @@ option java_package = "com.nvidia.nvtelemetry.v1";
 message UnresolvedReference {
   option (nv.telemetry.options.v1.message_invariant) = {validated: true};
 
-  // Where the link points, in the source's own location grammar.
+  // Where the link points, in the source's own location grammar. An empty
+  // location is a link that was not read, and recording one would assert an
+  // unresolved reference that does not exist.
   optional string location = 1 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 1024
   }];
 
   // The property that held the link, when one did.
-  optional string property = 2 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+  optional string property = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 256
+  }];
 }
 
 message ObservedResource {
@@ -49,17 +55,22 @@ message ObservedResource {
   // merging collapses two observation times and two entity tags into one.
   optional string source_key = 2 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 1024
   }];
 
   // The source's schema and version for this resource, such as
   // "#Sensor.v1_2_0.Sensor".
-  optional string source_schema = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+  optional string source_schema = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 256
+  }];
 
   // The source's change marker for this resource, such as an entity tag.
   // Collection metadata: a source free to regenerate it would otherwise make
   // an unchanged resource hash differently.
   optional string entity_tag = 4 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
     max_len: 256
     collection_metadata: true
   }];
@@ -79,6 +90,11 @@ message ObservedResource {
   // attempt to write it.
   optional bool properties_complete = 7 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
 
+  // Deliberately no uniqueness key. Two properties of one resource may name
+  // the same location — a Redfish resource whose Links.Chassis and
+  // Links.ContainedBy both point at /redfish/v1/Chassis/1U — so keying on
+  // `location` alone would call two distinct unresolved links duplicates, and
+  // adding `property` names a field the source may not supply.
   repeated UnresolvedReference unresolved = 8 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
     max_items: 1024
@@ -104,6 +120,7 @@ message ResourceRelation {
   // form one universal tree.
   optional string kind = 3 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 128
   }];
 }
@@ -122,13 +139,26 @@ message ResourceGraph {
     hashable: true
   };
 
+  // One resource per subject. Two entries for one identity would give a
+  // convergence consumer two property sets to reconcile with no rule for
+  // choosing, and the graph is hashed, so the pair would also hash as a state
+  // no single device was ever in.
   repeated ObservedResource resources = 1 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
+    unique_by: ["subject"]
     max_items: 65536
   }];
 
+  // An edge is its endpoints and its meaning, so all three fields form the
+  // key: the same pair of subjects may be joined by both containment and
+  // management, and those are different edges.
   repeated ResourceRelation relations = 2 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
+    unique_by: [
+      "source",
+      "target",
+      "kind"
+    ]
     max_items: 131072
   }];
 }
