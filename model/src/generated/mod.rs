@@ -13,4 +13,10 @@
 // and the staleness gate would then report a schema problem that does not
 // exist. This attribute does not depend on a config file being honoured.
 #[rustfmt::skip]
+pub mod limits;
+
+#[rustfmt::skip]
+pub mod model;
+
+#[rustfmt::skip]
 pub mod wire;

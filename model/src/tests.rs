@@ -18,7 +18,14 @@ use prost_reflect::DescriptorPool;
 use prost_reflect::DynamicMessage;
 use prost_reflect::Value as V;
 
+use crate::generated::limits;
 use crate::generated::wire;
+use crate::Finite;
+use crate::NumericValue;
+use crate::Timestamp;
+use crate::Value;
+use crate::ValueKind;
+use crate::Violation;
 
 #[test]
 fn an_absent_reading_and_a_zero_reading_are_different_bytes() {
@@ -277,4 +284,463 @@ fn oneof_arms_carry_the_field_numbers_the_schema_declares() {
 /// tests do not depend on it — the dependency runs the other way.
 fn pool() -> DescriptorPool {
     DescriptorPool::decode(nv_telemetry_schema::DESCRIPTOR_SET).expect("shipped schema decodes")
+}
+
+#[test]
+fn finite_refuses_what_would_break_total_equality() {
+    assert!(Finite::new(f64::NAN).is_none());
+    assert!(Finite::new(f64::INFINITY).is_none());
+    assert!(Finite::new(f64::NEG_INFINITY).is_none());
+
+    // The two zeros collapse to one representation, so equal values cannot
+    // hash unequal.
+    let positive = Finite::new(0.0).unwrap();
+    let negative = Finite::new(-0.0).unwrap();
+    assert_eq!(positive, negative);
+    assert_eq!(positive.get().to_bits(), negative.get().to_bits());
+}
+
+#[test]
+fn a_timestamp_carries_its_second_in_one_representation() {
+    assert!(Timestamp::new(1_722_000_000, 999_999_999).is_ok());
+
+    let overflow = Timestamp::new(1_722_000_000, 1_000_000_000).unwrap_err();
+    assert_eq!(overflow.path(), "nanos");
+
+    // The wire form round-trips through the same constructor, so a decoded
+    // timestamp passes exactly what a built one does.
+    let wire = wire::Timestamp {
+        seconds: Some(5),
+        nanos: None,
+    };
+    let error = Timestamp::try_from(wire).unwrap_err();
+    assert_eq!(error.violation(), &Violation::Absent);
+}
+
+#[test]
+fn a_numeric_value_refuses_a_fabricated_reading() {
+    let error = NumericValue::double(f64::NAN).unwrap_err();
+    assert_eq!(error.violation(), &Violation::NotFinite);
+
+    let absent = wire::NumericValue { kind: None };
+    let error = NumericValue::try_from(absent).unwrap_err();
+    assert_eq!(error.path(), "kind");
+    assert_eq!(error.violation(), &Violation::Absent);
+}
+
+#[test]
+fn value_bounds_are_the_schemas_bounds() {
+    let oversize = "x".repeat(limits::VALUE_STRING_VALUE_MAX_LEN as usize + 1);
+    let error = Value::string(oversize).unwrap_err();
+    assert_eq!(
+        error.violation(),
+        &Violation::TooLong {
+            limit: limits::VALUE_STRING_VALUE_MAX_LEN,
+            actual: limits::VALUE_STRING_VALUE_MAX_LEN as usize + 1,
+        }
+    );
+
+    let at_bound = "x".repeat(limits::VALUE_STRING_VALUE_MAX_LEN as usize);
+    assert!(Value::string(at_bound).is_ok());
+}
+
+#[test]
+fn a_map_rejects_a_duplicate_key_instead_of_choosing() {
+    let entries = vec![
+        ("fan".to_owned(), Value::int(1)),
+        ("fan".to_owned(), Value::int(2)),
+    ];
+    let error = Value::map(entries).unwrap_err();
+    assert_eq!(error.path(), "entries[1].key");
+    assert_eq!(error.violation(), &Violation::Duplicate);
+
+    let empty_key = vec![(String::new(), Value::int(1))];
+    let error = Value::map(empty_key).unwrap_err();
+    assert_eq!(error.violation(), &Violation::Empty);
+}
+
+#[test]
+fn depth_is_logical_and_bounded_where_the_schema_says() {
+    // A chain of nested lists: depth 16 is the schema's bound, inclusive.
+    let mut value = Value::int(0);
+    for _ in 0..(limits::VALUE_MAX_DEPTH - 1) {
+        value = Value::list(vec![value]).unwrap();
+    }
+    assert_eq!(value.depth(), limits::VALUE_MAX_DEPTH);
+
+    let error = Value::list(vec![value]).unwrap_err();
+    assert_eq!(
+        error.violation(),
+        &Violation::TooDeep {
+            limit: limits::VALUE_MAX_DEPTH
+        }
+    );
+}
+
+#[test]
+fn a_decoded_value_is_canonicalized_and_round_trips() {
+    // Wire entries arrive unsorted; the validated form sorts them, so the
+    // rebuilt wire message is the canonical representation of the same value.
+    let unsorted = wire::Value {
+        kind: Some(wire::value::Kind::MapValue(wire::value::Map {
+            entries: vec![
+                wire::value::map::Entry {
+                    key: Some("outer".to_owned()),
+                    value: Some(wire::Value {
+                        kind: Some(wire::value::Kind::ListValue(wire::value::List {
+                            values: vec![wire::Value {
+                                kind: Some(wire::value::Kind::StringValue("deep".to_owned())),
+                            }],
+                        })),
+                    }),
+                },
+                wire::value::map::Entry {
+                    key: Some("alpha".to_owned()),
+                    value: Some(wire::Value {
+                        kind: Some(wire::value::Kind::DoubleValue(-0.0)),
+                    }),
+                },
+            ],
+        })),
+    };
+
+    let validated = Value::try_from(unsorted).unwrap();
+    assert_eq!(validated.depth(), 3);
+
+    let ValueKind::Map(entries) = validated.kind() else {
+        panic!("a map decoded as something else");
+    };
+    let keys: Vec<&str> = entries.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["alpha", "outer"], "entries did not sort");
+
+    let rebuilt = wire::Value::from(validated.clone());
+    let redecoded = Value::try_from(rebuilt).unwrap();
+    assert_eq!(redecoded, validated, "round trip changed the value");
+}
+
+#[test]
+fn an_invalid_deep_in_a_tree_names_its_path() {
+    let wire = wire::Value {
+        kind: Some(wire::value::Kind::ListValue(wire::value::List {
+            values: vec![wire::Value {
+                kind: Some(wire::value::Kind::MapValue(wire::value::Map {
+                    entries: vec![wire::value::map::Entry {
+                        key: Some("reading".to_owned()),
+                        value: Some(wire::Value {
+                            kind: Some(wire::value::Kind::DoubleValue(f64::NAN)),
+                        }),
+                    }],
+                })),
+            }],
+        })),
+    };
+
+    let error = Value::try_from(wire).unwrap_err();
+    assert_eq!(
+        error.path(),
+        "values[0].map_value.entries[0].value.double_value"
+    );
+    assert_eq!(error.violation(), &Violation::NotFinite);
+}
+
+use crate::AcquisitionStatus;
+use crate::Completeness;
+use crate::Coverage;
+use crate::EndpointContext;
+use crate::FailureClass;
+use crate::ObservationBatch;
+use crate::ObservationWindow;
+use crate::ObservedResource;
+use crate::Origin;
+use crate::Outcome;
+use crate::Payload;
+use crate::Reading;
+use crate::Readings;
+use crate::ResourceGraph;
+use crate::ResourceRelation;
+use crate::SignalDescriptor;
+use crate::SignalKey;
+use crate::Subject;
+use crate::ValueRange;
+
+fn built_subject(kind: &str, id: &str) -> Subject {
+    Subject::builder()
+        .kind(kind)
+        .id(id)
+        .build()
+        .expect("a valid subject")
+}
+
+fn built_key(id: &str) -> SignalKey {
+    SignalKey::builder()
+        .subject(built_subject("sensor", id))
+        .build()
+        .expect("a valid signal key")
+}
+
+#[test]
+fn an_empty_identity_is_unrepresentable() {
+    // The case the vocabulary branch was for: "" is a well-formed identity
+    // that every failed read would collapse into, and Subject is hashable.
+    let error = Subject::builder()
+        .kind("sensor")
+        .id("")
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "id");
+    assert_eq!(error.violation(), &Violation::Empty);
+
+    let error = Subject::builder().id("x").build().unwrap_err();
+    assert_eq!(error.path(), "kind");
+    assert_eq!(error.violation(), &Violation::Absent);
+}
+
+fn valid_batch() -> ObservationBatch {
+    let key = built_key("CPU1Temp");
+    let descriptor = SignalDescriptor::builder()
+        .key(key.clone())
+        .kind("temperature")
+        .unit("Cel")
+        .build()
+        .expect("a valid descriptor");
+    let sample = Reading::builder()
+        .key(key)
+        .value(NumericValue::double(47.5).expect("finite"))
+        .build()
+        .expect("a valid reading");
+    let readings = Readings::builder()
+        .descriptors(vec![descriptor])
+        .samples(vec![sample])
+        .build()
+        .expect("a valid readings payload");
+
+    ObservationBatch::builder()
+        .endpoint(
+            EndpointContext::builder()
+                .endpoint_id("bmc-lab-07")
+                .build()
+                .expect("a valid endpoint"),
+        )
+        .origin(
+            Origin::builder()
+                .provider("redfish.sensor.odata")
+                .request_class("sensor-read")
+                .build()
+                .expect("a valid origin"),
+        )
+        .window(
+            ObservationWindow::builder()
+                .start(Timestamp::new(1_785_621_243, 0).expect("a valid instant"))
+                .build()
+                .expect("a valid window"),
+        )
+        .coverage(
+            Coverage::builder()
+                .completeness(Completeness::Partial)
+                .build()
+                .expect("valid coverage"),
+        )
+        .payload(Payload::Readings(readings))
+        .build()
+        .expect("a valid batch")
+}
+
+#[test]
+fn a_batch_round_trips_through_the_validated_boundary() {
+    let batch = valid_batch();
+    let bytes = batch.encode_to_vec();
+    let decoded = ObservationBatch::decode(&bytes).expect("wire round trip");
+    assert_eq!(decoded, batch);
+}
+
+#[test]
+fn a_sample_without_its_descriptor_is_rejected() {
+    // "Every key referenced by a sample must resolve here — a wrapper rule."
+    let sample = Reading::builder()
+        .key(built_key("CPU1Temp"))
+        .value(NumericValue::double(1.0).expect("finite"))
+        .build()
+        .expect("a valid reading");
+    let error = Readings::builder()
+        .samples(vec![sample])
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "samples[0]");
+}
+
+#[test]
+fn two_descriptors_for_one_key_are_rejected() {
+    // The unique_by case the annotation was written for: same key, different
+    // units, and a consumer with no rule for choosing.
+    let descriptor = |unit: &str| {
+        SignalDescriptor::builder()
+            .key(built_key("PSU1"))
+            .unit(unit)
+            .build()
+            .expect("a valid descriptor")
+    };
+    let error = Readings::builder()
+        .descriptors(vec![descriptor("W"), descriptor("kW.h")])
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "descriptors[1]");
+    assert_eq!(error.violation(), &Violation::Duplicate);
+}
+
+#[test]
+fn a_failure_carries_its_class_and_a_success_does_not() {
+    let base = || {
+        AcquisitionStatus::builder()
+            .endpoint_id("bmc-lab-07")
+            .provider("redfish.sensor.odata")
+            .request_class("sensor-read")
+            .started_at(Timestamp::new(1_785_621_243, 0).expect("a valid instant"))
+    };
+
+    let error = base().outcome(Outcome::Failed).build().unwrap_err();
+    assert_eq!(error.path(), "failure_class");
+
+    let error = base()
+        .outcome(Outcome::Succeeded)
+        .failure_class(FailureClass::Timeout)
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "failure_class");
+
+    assert!(base()
+        .outcome(Outcome::Failed)
+        .failure_class(FailureClass::Timeout)
+        .build()
+        .is_ok());
+}
+
+#[test]
+fn a_window_end_must_follow_its_start() {
+    let start = Timestamp::new(100, 0).expect("a valid instant");
+
+    // Equal would be a second spelling of a point, which omitting the end
+    // already spells.
+    let error = ObservationWindow::builder()
+        .start(start)
+        .end(start)
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "end");
+
+    assert!(ObservationWindow::builder()
+        .start(start)
+        .end(Timestamp::new(100, 1).expect("a valid instant"))
+        .build()
+        .is_ok());
+}
+
+#[test]
+fn an_unrecognized_enum_value_survives_and_unspecified_does_not() {
+    let ahead = wire::Coverage {
+        completeness: Some(99),
+        scope: None,
+    };
+    let coverage = Coverage::try_from(ahead).expect("a newer producer's value decodes");
+    assert_eq!(coverage.completeness(), Completeness::Unrecognized(99));
+
+    let rebuilt = wire::Coverage::from(coverage);
+    assert_eq!(rebuilt.completeness, Some(99), "re-encoding lost the value");
+
+    let unspecified = wire::Coverage {
+        completeness: Some(0),
+        scope: None,
+    };
+    let error = Coverage::try_from(unspecified).unwrap_err();
+    assert_eq!(error.violation(), &Violation::Unspecified);
+}
+
+#[test]
+fn a_complete_scoped_graph_must_hang_off_its_root() {
+    let chassis = built_subject("chassis", "1U");
+    let sensor = built_subject("sensor", "Inlet");
+    let resource = |subject: &Subject| {
+        ObservedResource::builder()
+            .subject(subject.clone())
+            .source_key(format!("/redfish/v1/{}", subject.id()))
+            .properties_complete(true)
+            .build()
+            .expect("a valid resource")
+    };
+
+    let batch = |graph: ResourceGraph| {
+        ObservationBatch::builder()
+            .endpoint(
+                EndpointContext::builder()
+                    .endpoint_id("bmc-lab-07")
+                    .build()
+                    .expect("a valid endpoint"),
+            )
+            .origin(
+                Origin::builder()
+                    .provider("redfish.walker")
+                    .request_class("subtree")
+                    .build()
+                    .expect("a valid origin"),
+            )
+            .window(
+                ObservationWindow::builder()
+                    .start(Timestamp::new(1_785_621_243, 0).expect("a valid instant"))
+                    .build()
+                    .expect("a valid window"),
+            )
+            .coverage(
+                Coverage::builder()
+                    .completeness(Completeness::Complete)
+                    .scope(chassis.clone())
+                    .build()
+                    .expect("valid coverage"),
+            )
+            .payload(Payload::Resources(graph))
+            .build()
+    };
+
+    // "A walk recording only each child naming its parent produces a graph
+    // its own root cannot reach": no chassis->sensor edge, so the sensor is
+    // unreachable and the complete claim is refused.
+    let disconnected = ResourceGraph::builder()
+        .resources(vec![resource(&chassis), resource(&sensor)])
+        .build()
+        .expect("structurally valid graph");
+    let error = batch(disconnected).unwrap_err();
+    assert_eq!(error.path(), "payload.resources[1]");
+
+    let edge = ResourceRelation::builder()
+        .source(chassis.clone())
+        .target(sensor.clone())
+        .kind("contains")
+        .build()
+        .expect("a valid relation");
+    let connected = ResourceGraph::builder()
+        .resources(vec![resource(&chassis), resource(&sensor)])
+        .relations(vec![edge])
+        .build()
+        .expect("structurally valid graph");
+    assert!(batch(connected).is_ok());
+}
+
+#[test]
+fn a_range_needs_a_bound_one_arm_and_order() {
+    assert!(ValueRange::builder().build().is_err(), "no bound at all");
+
+    assert!(ValueRange::builder()
+        .min(NumericValue::Int(0))
+        .build()
+        .is_ok());
+
+    let mixed = ValueRange::builder()
+        .min(NumericValue::Int(0))
+        .max(NumericValue::double(5.0).expect("finite"))
+        .build();
+    assert!(mixed.is_err(), "bounds must share the signal's arm");
+
+    let backwards = ValueRange::builder()
+        .min(NumericValue::Int(5))
+        .max(NumericValue::Int(1))
+        .build();
+    assert!(backwards.is_err(), "min must not exceed max");
 }

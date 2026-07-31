@@ -15,10 +15,23 @@
 //! This crate has no protocol, I/O, async-runtime, dispatcher, or exporter
 //! dependencies.
 
+mod finite;
 mod generated;
+mod invalid;
+mod rules;
+mod value;
 
 #[cfg(test)]
 mod tests;
+
+pub use finite::Finite;
+/// The validated model: one type per contract message, plus the reshaped
+/// enums and the batch payload. Everything here upholds the schema's
+/// invariants for as long as it exists.
+pub use generated::model::*;
+pub use invalid::DecodeError;
+pub use invalid::Invalid;
+pub use invalid::Violation;
 /// The protobuf runtime the wire types were generated against.
 ///
 /// Re-exported because a consumer cannot encode or decode without
@@ -26,3 +39,7 @@ mod tests;
 /// consumer's version drift from the one these types derive against — a
 /// mismatch that shows up as a trait the generated types do not implement.
 pub use prost;
+pub use value::NumericValue;
+pub use value::Timestamp;
+pub use value::Value;
+pub use value::ValueKind;
