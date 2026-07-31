@@ -1,0 +1,492 @@
+# The data model
+
+A working guide to `nv.telemetry.v1`: what the messages are, how identity
+works, and what real Redfish and gNMI payloads look like once projected.
+
+`docs/ARCHITECTURE.md` explains why the design is shaped this way. This file
+explains how to use it. Where the two disagree, the schema itself is the
+source of truth — every field name, number, and bound below is quoted from
+`schema/proto/nv/telemetry/v1/`.
+
+## The shape of an observation
+
+Everything the library emits is an `ObservationBatch`. A batch is one
+acquisition's worth of data from one endpoint, and it carries four required
+pieces of context plus exactly one payload:
+
+```
+ObservationBatch
+├── endpoint   EndpointContext   which device, and its static attributes
+├── origin     Origin            which provider and request class produced this
+├── window     ObservationWindow when it was observed
+├── coverage   Coverage          how much of the endpoint this covers
+└── payload    oneof, required   readings | logs | states | inventory | resources
+```
+
+The payload is a `oneof` and the schema requires a case to be set, so a batch
+always carries a domain. One acquisition that yields two domains — a sensor
+catalog fetch that produces both readings and inventory — becomes two batches
+sharing the same endpoint, origin, and window. They are never mixed.
+
+Endpoint context is carried once per batch rather than on every item. A
+million readings from one BMC repeat the endpoint identity zero times.
+
+### Coverage is the part people get wrong
+
+```proto
+message Coverage {
+  optional Completeness completeness = 1;  // required
+  optional Subject      scope        = 2;  // absent means the whole endpoint
+}
+```
+
+`COMPLETENESS_COMPLETE` is a claim: *within this scope, what you see is
+everything there is.* A consumer is entitled to conclude that anything it knew
+about inside that scope and does not see here is gone. `COMPLETENESS_PARTIAL`
+makes no such claim — it updates what it contains and says nothing about what
+it omits.
+
+Get this wrong in the safe direction. If a walk was truncated, a request
+partially failed, or you are unsure, emit `PARTIAL`. A wrong `COMPLETE`
+deletes real inventory from a consumer's view.
+
+## Identity: `Subject`
+
+Every observed thing is named by a `Subject`, and the same physical thing gets
+the same subject regardless of which protocol or route observed it. That is
+what lets a reading from Redfish and a state observation from a vendor API
+join.
+
+```proto
+message Subject {
+  optional string kind  = 1;  // required, ≤128   what the thing IS
+  repeated string scope = 2;  // ≤16 elements, ≤256 each, ORDER IS SEMANTIC
+  optional string id    = 3;  // required, ≤256   identifier within that scope
+}
+```
+
+Three rules:
+
+**A subject names what a thing is, never where it was read from.** The URI
+stays in `source_key` on the graph, or in `InventoryItem.source_key`. It is
+provenance, not identity — because the same sensor read through two different
+URIs is one sensor.
+
+**Scope carries containment when an id is not globally unique.** Redfish
+`Sensor.Id` repeats across chassis: `/Chassis/1U/Sensors/Inlet` and
+`/Chassis/2U/Sensors/Inlet` are different sensors with the same `Id`. So the
+subject is `kind: "sensor"`, `scope: ["1U"]`, `id: "Inlet"`.
+
+**If the scope cannot be determined, that is an error, not a guess.** A sensor
+whose containing chassis could not be resolved must be reported as an invalid
+field, not emitted with an empty scope. An empty scope means "no containing
+scope", and guessing produces a subject that silently joins to the wrong
+resource.
+
+`scope` is deliberately not marked `unordered` — it is the one repeated field
+in the contract whose order is data. `["1U", "PSU1"]` is a different location
+from `["PSU1", "1U"]`.
+
+## Signals: `SignalKey` and `SignalDescriptor`
+
+Readings are split into *what a signal is* (metadata) and *what it read*
+(samples), joined by a key.
+
+```proto
+message SignalKey {
+  optional Subject subject = 1;  // required
+  optional string  facet   = 2;  // ≤128, absent when the resource has one signal
+}
+
+message SignalDescriptor {
+  optional SignalKey  key   = 1;  // required
+  optional string     kind  = 2;  // ≤128,  what it measures
+  optional string     unit  = 3;  // ≤64,   UCUM
+  optional ValueRange range = 4;  //        what the sensor CAN read
+}
+```
+
+`facet` exists for resources carrying more than one signal — a power supply
+reporting both instantaneous watts and cumulative kilowatt-hours is one
+subject, two facets.
+
+The descriptor carries only what a signal **is**. It deliberately does not
+carry thresholds. A Redfish `Threshold.Reading` is writable — the DMTF schema
+marks it `readonly: false` — which makes it a convergence target, not reading
+metadata. Thresholds are observed as `StateObservation`s instead. Carrying
+them in both places would give one fact two representations that can disagree.
+
+A `Readings` payload carries its descriptors alongside its samples, so a batch
+is self-describing: a consumer arriving mid-stream, or reading one batch out
+of storage, needs no prior state to interpret it.
+
+## Values: the recursive type
+
+`Value` is the contract's own tagged union, used wherever a source hands over
+schemaless or semi-structured data — resource properties, log attributes,
+endpoint attributes.
+
+```proto
+Value = null | bool | sint64 | uint64 | double(finite)
+      | string(≤4096) | bytes(≤4096) | Timestamp
+      | List(≤1024 values) | Map(≤1024 entries, key-sorted)
+```
+
+Three things to know:
+
+**It is not `google.protobuf.Struct`.** Struct collapses every number to a
+double, which silently corrupts a 64-bit counter or serial number above 2⁵³,
+and it cannot represent bytes or timestamps at all.
+
+**`Map` is a sorted entry list, not a proto `map`.** A proto map has no wire
+order to canonicalize, silently keeps the last duplicate key, and its
+synthetic key/value fields cannot carry bounds. The entry list sorts by key,
+which makes duplicates adjacent and rejectable.
+
+**`List` order is data; `Map` order is not.** `List.values` is the one
+repeated field in the whole contract that canonicalization must not sort.
+
+Depth is bounded at 16 logical levels. That number is derived, not chosen for
+roundness: prost admits 100 nested message levels, one logical level of map
+nesting costs three (`Value` → `Map` → `Entry`), and the deepest batch path
+adds four before the first `Value`, so 16 costs 50 of 100 and leaves the same
+again in margin. `codegen/tests/depth.rs` pins it.
+
+## Which payload domain?
+
+| The fact is… | Domain | Message |
+| --- | --- | --- |
+| a number a sensor measured | `readings` | `Reading` |
+| a device-reported condition, status, or writable setting | `states` | `StateObservation` |
+| a log or event record | `logs` | `LogRecord` |
+| a flat "this exists" fact | `inventory` | `InventoryItem` |
+| structured device state with relationships | `resources` | `ResourceGraph` |
+
+The line between `readings` and `states` is whether it is a measured number.
+A temperature is a reading. `Status.Health: "OK"` is a state. A threshold is a
+state, because it is writable. A sensor that answered without a value is
+reporting state, not a reading — `Reading.value` is required, so there is no
+such thing as a reading without a number.
+
+The line between `inventory` and `resources` is structure. Inventory answers
+"what exists" and is flat. The graph answers "how is it arranged" and carries
+typed relationships, source keys, entity tags, and per-resource completeness.
+
+---
+
+# Worked example 1 — a Redfish sensor
+
+Source: `GET /redfish/v1/Chassis/1U/Sensors/CPU1Temp`
+
+```json
+{
+  "@odata.id": "/redfish/v1/Chassis/1U/Sensors/CPU1Temp",
+  "@odata.type": "#Sensor.v1_2_0.Sensor",
+  "@odata.etag": "W/\"1A2B3C\"",
+  "Id": "CPU1Temp",
+  "Name": "CPU 1 Temperature",
+  "ReadingType": "Temperature",
+  "Reading": 47.5,
+  "ReadingUnits": "Cel",
+  "ReadingRangeMin": 0,
+  "ReadingRangeMax": 105,
+  "PhysicalContext": "CPU",
+  "Status": { "State": "Enabled", "Health": "OK" },
+  "Thresholds": {
+    "UpperCritical": { "Reading": 95, "Activation": "Increasing" }
+  }
+}
+```
+
+This one document produces **two batches**, because it carries two domains.
+
+### Batch 1 — readings
+
+```
+ObservationBatch
+  endpoint:  { endpoint_id: "bmc-lab-07" }
+  origin:    { provider: "redfish.sensor.odata", request_class: "sensor-read" }
+  window:    { start: 2026-07-30T21:14:03Z }
+  coverage:  { completeness: PARTIAL }        # one sensor, not a full walk
+  readings:
+    descriptors: [
+      { key:   { subject: { kind: "sensor", scope: ["1U"], id: "CPU1Temp" } },
+        kind:  "temperature",
+        unit:  "Cel",
+        range: { min: { double_value: 0 }, max: { double_value: 105 } } }
+    ]
+    samples: [
+      { key:   { subject: { kind: "sensor", scope: ["1U"], id: "CPU1Temp" } },
+        value: { double_value: 47.5 } }
+    ]
+```
+
+Note what happened to identity: `@odata.id` did **not** become the subject.
+The chassis segment `1U` became the scope, `Id` became the id, and the URI is
+kept as provenance only on the graph route.
+
+### Batch 2 — states
+
+```
+  coverage: { completeness: PARTIAL }
+  states:
+    observations: [
+      { subject: { kind: "sensor", scope: ["1U"], id: "CPU1Temp" },
+        name:    "state",
+        value:   { string_value: "Enabled" } },
+      { subject: { kind: "sensor", scope: ["1U"], id: "CPU1Temp" },
+        name:    "health",
+        value:   { string_value: "OK" } },
+      { subject: { kind: "sensor", scope: ["1U"], id: "CPU1Temp" },
+        name:    "threshold.upper-critical",
+        value:   { map_value: { entries: [
+                    { key: "activation", value: { string_value: "Increasing" } },
+                    { key: "reading",    value: { double_value: 95 } } ] } } }
+    ]
+```
+
+The threshold lands here rather than in the descriptor because it is writable.
+A convergence consumer reads it as observed state and may drive it toward a
+desired value; a classification consumer joins it to the reading by subject.
+
+### When `Reading` is `null`
+
+Redfish types `Sensor.Reading` as `["number", "null"]`, and a null reading is
+routine — a PSU bay with no supply installed, a fan mid-spin-up, a sensor in
+`UnavailableOffline`.
+
+`Reading.value` is required and `NumericValue` has no null arm, so **no sample
+is emitted**. Emit the `SignalDescriptor` anyway, so the signal is known to
+exist, and put the condition in `states`. Then mark the batch `PARTIAL` unless
+you genuinely walked everything — a `COMPLETE` readings batch missing this
+sample tells a consumer the sensor is gone.
+
+---
+
+# Worked example 2 — a Redfish chassis subtree
+
+Source: a walk of `/redfish/v1/Chassis/1U` and its links.
+
+```
+ObservationBatch
+  origin:   { provider: "redfish.graph", request_class: "chassis-walk" }
+  coverage: { completeness: COMPLETE,
+              scope: { kind: "chassis", id: "1U" } }
+  resources:
+    resources: [
+      { subject:             { kind: "chassis", id: "1U" },
+        source_key:          "/redfish/v1/Chassis/1U",
+        source_schema:       "#Chassis.v1_25_0.Chassis",
+        entity_tag:          "W/\"9F8E\"",
+        observed_at:         2026-07-30T21:14:03Z,
+        properties:          { entries: [
+                                 { key: "manufacturer", value: { string_value: "NVIDIA" } },
+                                 { key: "model",        value: { string_value: "HGX" } },
+                                 { key: "serial_number",value: { string_value: "SN-4417" } } ] },
+        properties_complete: true,
+        unresolved:          [ { location: "/redfish/v1/Chassis/1U/Drives", property: "Drives" } ] },
+
+      { subject:             { kind: "sensor", scope: ["1U"], id: "CPU1Temp" },
+        source_key:          "/redfish/v1/Chassis/1U/Sensors/CPU1Temp",
+        properties_complete: false }        # only identity was collected
+    ]
+    relations: [
+      { source: { kind: "chassis", id: "1U" },
+        target: { kind: "sensor", scope: ["1U"], id: "CPU1Temp" },
+        kind:   "contains" }
+    ]
+```
+
+Four things this example is demonstrating:
+
+**Scope on a graph means reachability, not subject equality.** The batch is
+complete for chassis `1U`, meaning everything reachable from that subject by
+outgoing edges. This constrains projections: a walk that records only the
+inverse relation — each child naming its parent — produces a graph its own
+root cannot reach, and the completeness claim becomes meaningless.
+
+**`properties_complete` is required and it matters.** `true` means "this is
+the device's full representation" — a property absent here is one the device
+does not implement. `false` means "I collected some properties" — absent tells
+you nothing. A convergence consumer that conflated the two would read an
+uncollected property as unset and try to write it.
+
+**A link you cannot yet name stays unresolved.** The `Drives` collection was
+not walked, so it is an `UnresolvedReference` carrying the location with no
+identity attached — not a `ResourceRelation` with an invented target. That
+distinction is what keeps a partial walk honest: an invented identity is
+indistinguishable from a real external target.
+
+**`entity_tag` and `observed_at` are excluded from the content hash.** They
+carry `collection_metadata: true`. `ResourceGraph` is `hashable` so a
+convergence adapter can compare two polls exactly; if the ETag and the read
+time were hashed, an idle device would report a change on every single poll —
+the one thing the hash exists to prevent.
+
+---
+
+# Worked example 3 — a gNMI subscription update
+
+Source: a `SubscribeResponse` carrying a `Notification`.
+
+```
+timestamp: 1785621243000000000
+prefix:    { target: "switch-3", elem: [ {name:"interfaces"},
+                                         {name:"interface", key:{"name":"Ethernet1/1"}} ] }
+update: [
+  { path: {elem:[{name:"state"},{name:"counters"},{name:"in-octets"}]},
+    val:  { uint_val: 91827364554433 } },
+  { path: {elem:[{name:"state"},{name:"oper-status"}]},
+    val:  { string_val: "UP" } }
+]
+```
+
+One notification, two domains again — a counter and a status.
+
+```
+# Batch 1
+  endpoint: { endpoint_id: "switch-3" }
+  origin:   { provider: "gnmi.subscribe", request_class: "interface-counters" }
+  window:   { start: 2026-07-30T21:14:03.000000000Z }   # Notification.timestamp
+  coverage: { completeness: PARTIAL }                   # ON_CHANGE/SAMPLE stream
+  readings:
+    descriptors: [ { key: { subject: { kind: "interface", scope: ["switch-3"],
+                                       id: "Ethernet1/1" },
+                            facet: "state/counters/in-octets" },
+                     kind: "counter" } ]
+    samples:     [ { key: <same>, value: { uint_value: 91827364554433 } } ]
+
+# Batch 2
+  states:
+    observations: [ { subject: { kind: "interface", scope: ["switch-3"],
+                                 id: "Ethernet1/1" },
+                      name:    "state/oper-status",
+                      value:   { string_value: "UP" } } ]
+```
+
+**`uint_value`, not `double_value`.** This is exactly why `NumericValue` is a
+union. 91827364554433 fits a double today, but interface counters run to 2⁶⁴
+and a double loses integer precision above 2⁵³ — a silently wrong counter is a
+fabricated observation with extra steps.
+
+**Which arm is fixed by the source's declared type, not by the value.** YANG
+says `in-octets` is a `uint64`, so it is always `uint_value`, even when the
+value happens to be small. Choosing by value would move a signal between arms
+as a reading crossed zero or lost its fraction, and every such move registers
+as a content change to a consumer comparing hashes.
+
+**No unit.** OpenConfig rarely carries a `units` statement, so
+`SignalDescriptor.unit` is absent. Absent means dimensionless, which is a
+known weakness of the current model — see the limitations below.
+
+**Streams are `PARTIAL`.** A subscription update reports what changed; it
+never asserts what else exists.
+
+---
+
+# Failures are not observations
+
+A collection failure is not a batch. It is an `AcquisitionStatus`, on a
+separate stream:
+
+```
+AcquisitionStatus
+  endpoint_id:   "bmc-lab-07"
+  provider:      "redfish.sensor.odata"
+  request_class: "sensor-read"
+  outcome:       OUTCOME_FAILED
+  failure_class: FAILURE_CLASS_TIMEOUT
+  retryable:     true
+  started_at:    2026-07-30T21:14:03Z
+  duration_nanos: 30000000000
+```
+
+A failed request emits **no batch at all** — never an empty one, never one
+with zeroes. Three facts stay distinct and a consumer needs all three:
+observation absence (a `COMPLETE` batch that omits something), collection
+failure (this stream), and staleness (derived from batch timestamps by the
+consumer's own policy).
+
+`failure_class` drives dispatcher policy: connectivity and authentication
+failures may trip the endpoint breaker, while unsupported and protocol
+failures affect only their request class.
+
+---
+
+# The annotation vocabulary
+
+Rules live on the schema as custom options, and the compiler enforces them
+before generating anything. See `docs/EXTENSIONS.md` for the numbering.
+
+| Option | On | Means |
+| --- | --- | --- |
+| `zero_is_meaningful` | field | this scalar's zero is real data, so it needs no `optional` |
+| `finite` | field | doubles must be finite; a NaN is an invalid field, not a missing one |
+| `required` | field | validators reject a message where this is absent |
+| `unordered` | field | this repeated field's order is not semantic, so canonicalization sorts it |
+| `max_items` / `max_len` | field | bounds; `0` is a real bound, which is why they are `optional` |
+| `collection_metadata` | field | records how a fact was collected, not what was observed — skipped by hashing |
+| `validated` | message | emit a wrapper that owns the invariants |
+| `hashable` | message | emit logical content hashing; requires `validated` |
+| `max_depth` | message | recursion bound for a self-referential type |
+| `required` | oneof | a case must be set |
+
+The headline rule the compiler enforces: **every scalar the contract can reach
+either declares `optional` or annotates `zero_is_meaningful`.** proto3 encodes
+an unset scalar as its zero, so without this a reading of 0.0 and a reading
+that was never taken are the same bytes. Nothing in `nv.telemetry.v1` currently
+needs the exemption — every scalar has explicit presence.
+
+The compiler also rejects the indirect routes to the same failure: a map with
+a scalar value type (an entry carrying only its key decodes the value as
+zero), a field whose message type is declared outside the contract (its
+scalars are never checked — `google.protobuf.DoubleValue` is the trap), and
+proto2 files (a `required` scalar reports as having presence but generates as
+a bare value).
+
+---
+
+# Known limitations
+
+Honest list. These are catalogued, not hidden, and none is a bug in the
+implementation — they are places the model does not yet reach.
+
+**Rules that live in comments.** The vocabulary cannot express non-emptiness,
+minimum item counts, enum-zero rejection, uniqueness, or at-least-one-of. So
+`Subject{kind: "sensor", scope: [], id: ""}` is currently valid, and because
+`Subject` is hashable, every sensor whose id failed to project would collapse
+into one identity. Likewise an empty payload with `COMPLETE` is a valid batch
+asserting total absence. Treat these as conventions until the vocabulary grows.
+
+**No projection-issue type.** The missing-versus-invalid distinction the design
+rests on has no wire representation yet, so "the device answered NaN" and "the
+device did not answer" reach a cross-process consumer identically.
+
+**gNMI JSON payloads.** `json_ietf_val` is the dominant production encoding and
+cannot currently be carried: `Value.bytes_value` caps at 4096 bytes and a
+single `/interfaces` subtree is far larger. `Notification.delete[]` has no
+representation either.
+
+**Redfish `Power`/`Thermal` fragments.** One document containing separately
+addressable array elements has no non-lossy encoding — split it and N
+resources share one ETag and one fetch time; keep it whole and the elements
+lose their subjects.
+
+**Dual sensor routes.** The same physical sensor reached via `/Sensors` and via
+`/Thermal#/Temperatures` produces different `SignalKey`s today.
+
+**Units on thresholds.** A threshold in `states` carries no unit; the unit
+lives on a `SignalDescriptor` in a different batch.
+
+---
+
+# Rules of thumb
+
+- Never fabricate. No sample is better than a zero, and no batch is better
+  than an empty one.
+- Prefer `PARTIAL`. `COMPLETE` is a deletion instruction.
+- The subject is what the thing is. The URI is provenance.
+- Pick the numeric arm from the source's declared type, once, and never vary
+  it per poll.
+- Thresholds and anything else writable are state, not metadata.
+- If the scope cannot be derived, report an invalid field. Do not guess.

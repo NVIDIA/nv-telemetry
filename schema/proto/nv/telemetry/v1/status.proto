@@ -1,13 +1,82 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Acquisition status: operational outcome, retryability, duration,
-// endpoint, provider, and request class. Distinct from device state.
+// Acquisition status: operational outcomes, so the embedder can operate the
+// collection pipeline without confusing pipeline failure with device state.
+// Observation absence, collection failure, and stale prior data are three
+// different facts, and this stream carries the middle one.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+message AcquisitionStatus {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_SUCCEEDED = 1;
+    OUTCOME_FAILED = 2;
+  }
+
+  // Classified far enough for dispatcher and planner policy, and no further.
+  // Connectivity and authentication failures may trip the endpoint breaker;
+  // unsupported and protocol failures affect only their request class.
+  enum FailureClass {
+    FAILURE_CLASS_UNSPECIFIED = 0;
+    // The endpoint could not be reached.
+    FAILURE_CLASS_CONNECTIVITY = 1;
+    // The endpoint refused the credentials.
+    FAILURE_CLASS_AUTHENTICATION = 2;
+    // The request ran out of time.
+    FAILURE_CLASS_TIMEOUT = 3;
+    // The endpoint answered with something the provider could not parse.
+    FAILURE_CLASS_PROTOCOL = 4;
+    // The endpoint does not support what the provider asked of it.
+    FAILURE_CLASS_UNSUPPORTED = 5;
+    // The endpoint reported an internal error of its own.
+    FAILURE_CLASS_DEVICE = 6;
+    // The failure was ours.
+    FAILURE_CLASS_INTERNAL = 7;
+  }
+
+  optional string endpoint_id = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 256
+  }];
+
+  optional string provider = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 128
+  }];
+
+  optional string request_class = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 128
+  }];
+
+  // UNSPECIFIED is rejected by validation.
+  optional Outcome outcome = 4 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Present exactly when the outcome is a failure — a wrapper rule.
+  optional FailureClass failure_class = 5;
+
+  // Whether retrying could plausibly succeed. Meaningful only on failure.
+  optional bool retryable = 6;
+
+  optional Timestamp started_at = 7 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // How long the attempt took. Absent when the request never ran, such as an
+  // admission that was refused.
+  optional uint64 duration_nanos = 8;
+
+  // Operator-facing detail. Never carries credentials or device secrets.
+  optional string detail = 9 [(nv.telemetry.options.v1.field_invariant) = {max_len: 4096}];
+}

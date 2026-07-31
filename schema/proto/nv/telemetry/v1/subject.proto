@@ -1,0 +1,51 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// The protocol-neutral identity of a thing.
+//
+// A subject names what a thing *is*, never where it was read from: the URI
+// stays a resource's source key. Where an identifier is unique only within a
+// collection, the subject carries enough of the containing scope to separate
+// them — a Redfish `Sensor.Id` repeats across chassis, so a sensor's subject
+// is kind `sensor`, scope `[chassis]`, id. A location that does not yield the
+// scope is reported as an invalid field rather than guessed at, because a
+// wrong subject silently joins to the wrong resource.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+
+option csharp_namespace = "Nvidia.NvTelemetry.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
+option java_package = "com.nvidia.nvtelemetry.v1";
+
+message Subject {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+  };
+
+  // What the thing is — sensor, chassis, log-service — in the contract's own
+  // vocabulary rather than the source's resource type.
+  optional string kind = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 128
+  }];
+
+  // The containing scope, outermost first. Order is semantic, so this field
+  // is deliberately not `unordered`: a reversed scope names a different
+  // thing. Structured rather than embedded in the id, so a scope element
+  // containing a separator cannot corrupt the identity.
+  repeated string scope = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    max_items: 16
+    max_len: 256
+  }];
+
+  // The identifier within that scope.
+  optional string id = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 256
+  }];
+}

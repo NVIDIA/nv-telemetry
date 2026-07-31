@@ -7,6 +7,35 @@ syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/subject.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// One inventoried thing — a firmware component, a sensor's metadata, a
+// discovered device — flat by design. Structure and relationships belong to
+// the resource graph; inventory answers "what exists", and a complete
+// inventory batch may establish that previously known items are gone.
+message InventoryItem {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional Subject subject = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional Value.Map attributes = 2;
+
+  // Where it was read from, kept as provenance; identity stays the subject.
+  optional string source_key = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 1024}];
+}
+
+// The inventory payload domain.
+message Inventory {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  repeated InventoryItem items = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 65536
+  }];
+}

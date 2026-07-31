@@ -377,11 +377,16 @@ Observation batches, payload domains, the resource graph, subjects, signal
 metadata, and acquisition status are protobuf messages, and the Rust model is
 generated from them.
 
-The package is currently empty: the rules, the annotation vocabulary, and the
-compatibility gates are in place, and the messages they govern are the next
-thing to write. Everything below describes the contract those messages must
-satisfy rather than code that exists. The schema is the source of truth; hand-written types
-never define the contract.
+The schema is the source of truth; hand-written types never define the
+contract.
+
+Not every rule is expressible as an annotation. A reading's signal key must
+resolve against a descriptor in the same batch, a relationship's source must
+name a resource present in its graph, a range's minimum must not exceed its
+maximum, a window's end must follow its start, and a failure class is present
+exactly when the outcome is a failure. These are cross-field rules, carried by
+the validated wrappers rather than by the vocabulary, and the schema marks
+each one where it applies.
 
 The model must preserve:
 
@@ -397,8 +402,9 @@ The model must preserve:
 ### Schema and annotations
 
 The schema carries two kinds of annotation. Invariant and semantic options
-state what a valid message is: presence requirements, finite-float
-constraints, size and depth bounds, canonical ordering, subject scoping.
+state what a valid message is — presence requirements, finite-float
+constraints, size and depth bounds, canonical ordering — and how it is
+compared, which is where the collection-metadata exclusion lives.
 Where an established vocabulary exists the schema uses it rather than
 inventing one. The exception is value constraints, where protovalidate would
 otherwise be the obvious choice: the compiler is a component this project owns
@@ -456,9 +462,11 @@ signed and unsigned 64-bit integers, finite double, string, bytes, timestamp,
 list, and key-sorted map. `google.protobuf.Struct` is not used because it
 collapses every number to double, silently corrupting 64-bit identifiers, and
 cannot represent bytes or timestamps. Depth is bounded by an annotation on
-`Value` itself rather than on each field that holds one: a decoder's recursion
-limit is a property of the parse, global to it, so a per-field bound could
-never be enforced on the decode side and the two halves would disagree.
+`Value` itself rather than on each field that holds one, because recursion is
+a property of the type. The bound does not translate into a decoder setting —
+runtimes fix their own recursion limit, and one logical level of a recursive
+type costs several message levels — so it is chosen to fit underneath the
+runtime's limit with margin, and the type carrying it records the arithmetic.
 Lengths and element counts are bounded per field, where a decoder can be given
 nothing to enforce and validators do the work.
 
@@ -503,7 +511,19 @@ Validation is symmetric between construction and decode: a decoded batch
 passes the same validators as a built one, so the model cannot produce what it
 cannot consume. Structural bounds are enforced twice — at decode by message
 size and recursion limits, and by validators on logical size such as graph
-resource counts and value nesting. A caller may tighten the bounds but not
+resource counts and value nesting.
+
+Symmetry does not follow from the per-field bounds alone, and this is the one
+place it has to be arranged deliberately. Those bounds are local: a resource
+count, a map's entry count, and a string's length are each modest, while their
+product is not, so a batch can satisfy every one of them and still be far
+larger than any decoder will accept. Nor does a recursion bound translate into
+a decoder setting, because runtimes fix their own limit and one logical level
+of a recursive type costs several message levels. The aggregate ceiling is
+therefore a single limit the validated wrappers apply at construction, chosen
+to match what decoding accepts, and recursive types carry a depth bound
+selected to fit underneath the runtime's fixed limit rather than to look
+round. A caller may tighten the bounds but not
 loosen them, because decoding has no caller to take a bound from and applies
 the default. An acquisition reading an endpoint incrementally owns its own
 buffering ceiling, and collection policy owns request-level limits.
@@ -519,17 +539,26 @@ and a message-level flag would either corrupt the first or leave the second
 uncanonicalized.
 
 Sorting repeated messages needs a total order over messages, which has to be
-defined rather than assumed. The order is the same traversal the content hash
-uses: fields in field-number order, comparing present values pairwise, where an
-absent field sorts before a present one and each value type compares within
-itself — integers numerically, strings and bytes lexicographically, booleans
-false first, doubles numerically with only finite values admitted, nested
-messages recursively. Encoded bytes are not used, for the same reason they are
-not hashed. Two elements that compare equal under this order have equal
-content, so their relative order cannot be observed.
+defined rather than assumed. The order compares hash-visible fields first, in
+the hash's own traversal: fields in field-number order, comparing present
+values pairwise, where an absent field sorts before a present one and each
+value type compares within itself — integers numerically, strings and bytes
+lexicographically, booleans false first, doubles numerically with only finite
+values admitted, nested messages recursively. Collection-metadata fields are
+compared only after every hash-visible field, as a final tiebreaker. The split
+is what keeps both properties at once: elements that tie on hash-visible
+fields contribute identical hash streams in either order, so the tiebreaker
+cannot move the hash, while still making canonical bytes deterministic.
+Encoded bytes are not used in the comparison, for the same reason they are not
+hashed.
 
 Content hashes are computed by a generated logical traversal of present known
-fields, labeled by field number. Encoded bytes are never hashed: protobuf
+fields, labeled by field number, skipping fields annotated as collection
+metadata — an observation timestamp or an entity tag records how a fact was
+collected rather than what was observed, and hashing it would report that an
+unchanged device changed. The exclusion is transitive: the traversal inherits
+it through nested messages whether or not they are hashable themselves, so a
+resource inside a hashable graph still has its collection metadata skipped. Encoded bytes are never hashed: protobuf
 encoding is not canonical across implementations, and unknown fields would
 make equal graphs hash unequal. Absent fields contribute nothing, so a schema
 revision that adds fields changes a hash only when those fields carry data —
@@ -537,13 +566,14 @@ an upgrade that observes nothing new reports no change. Field numbers are
 never reused, which the breaking-change checks enforce, so a number labels the
 same meaning forever.
 
-A field whose zero value is declared meaningful is the exception: it has no
-"present" to test, so it is hashed unconditionally. Adding one to a message
-that is already hashable therefore changes every existing hash. Nothing catches that
-automatically — the compatibility check compares numbers, types, and
-cardinality, not the values of custom options — so it is a review obligation,
-and the contract lock records annotations partly so that the diff makes it
-visible. Hashing also requires validated construction, since equal
+A field whose zero value is declared meaningful is the exception in the other
+direction: it has no "present" to test, so it is hashed unconditionally.
+Either kind of annotation change on a field a hashable message reaches —
+declaring a zero meaningful, marking collection metadata, or removing either —
+changes every existing hash. Nothing catches that automatically: the
+compatibility check compares numbers, types, and cardinality, not the values
+of custom options, so it is a review obligation, and the contract lock records
+annotations so that the diff makes it visible. Hashing also requires validated construction, since equal
 content only hashes equal once canonicalization has run.
 
 The hash is a generated capability computed where comparison happens, not a
@@ -569,9 +599,10 @@ would have to grow a case at a time for reserved ranges, enum changes, JSON
 names, and oneof moves, and would be wrong in the interval before each one was
 noticed.
 
-A separate, checked-in contract lock records every message and field with its
-number, type, cardinality, and presence. Its job is staleness, not
-compatibility: regenerating it and finding the tree unchanged is what proves a
+A separate, checked-in contract lock records every declaration: messages and
+fields with their numbers, types, cardinality, presence, and annotations, enum
+values with their numbers, and oneofs with their members and invariants. Its
+job is staleness, not compatibility: regenerating it and finding the tree unchanged is what proves a
 schema edit arrived with its generated output.
 
 Wire compatibility is not source compatibility: adding a field regenerates a
@@ -589,10 +620,10 @@ build-time, descriptor-driven plugin that consumes:
 - schema indexes describing source fields, whether emitted by a source
   generator or read from a protobuf descriptor pool.
 
-It emits, in the order these are being built:
+It emits:
 
-- the invariant rules and annotation validation, and the contract lock that
-  makes a schema edit without its generated output fail the build *(built)*;
+- annotation validation and the invariant rules, and the contract lock that
+  makes a schema edit without its generated output fail the build;
 - wire types on the standard Rust protobuf substrate;
 - invariant validators and canonicalization;
 - validated wrappers, builders, and accessors;
@@ -602,10 +633,6 @@ It emits, in the order these are being built:
   answer where a reading originated — the planner's explainability
   requirement, extended to data.
 
-The stages after the first are not written yet. Nothing downstream depends on
-them, so the contract can be filled in and the invariant rules exercised
-against it before any code is generated at all.
-
 Annotation errors fail the build, attributed to the declaration that caused
 them: a field, message, or extension by fully-qualified name, and a file by
 path where the rule is about the file itself. They do not carry a file and line: source
@@ -614,8 +641,9 @@ would put every comment in the schema into an artifact that ships to
 consumers. A name identifies the declaration uniquely, which is what a fix
 needs. The compiler never emits silently
 degraded code: an annotation it cannot honor is an error, not a warning.
-Generated output is deterministic and unchanged output is not rewritten.
-Golden tests over it arrive with the first generator that emits code.
+Generated output is deterministic and unchanged output is not rewritten, so a
+codegen change is reviewable as a schema-shaped diff and can be golden-tested
+against one.
 
 Generation covers the mechanical majority and is not a universal vocabulary.
 A projection or validator the annotation vocabulary cannot express cleanly is
@@ -643,9 +671,9 @@ The compiler never resolves a path against a protocol directly. It resolves
 against a schema index: a backend-neutral description of a source field — its
 path, type, cardinality, presence, and the schema version range it exists in.
 An index is either generated from a source's schema bundle, or read from a
-protobuf descriptor pool where the payload really is proto-described. Building
-that seam now rather than later is deliberate: a second source is already on
-the roadmap, so the alternative is a retrofit.
+protobuf descriptor pool where the payload really is proto-described. The seam
+is what makes the second kind of source an added index rather than a rewritten
+compiler.
 
 Being proto-native is not the same as being its own index, and gNMI is the
 case that shows the difference. Its descriptor pool describes the transport
@@ -663,9 +691,9 @@ protobuf runtime rather than hand-written parsing, there is no vendor-leniency
 layer, and capability probing is a native call rather than an inference from
 which resources happen to exist.
 
-The compiler will validate every manifest against its index at build time; no
-manifest and no index exists yet. A mistyped path or a type mismatch is a build error carrying the
-manifest location and the schema versions checked. Redfish is the standing
+The compiler validates every manifest against its index at build time. A
+mistyped path or a type mismatch is a build error carrying the manifest
+location and the schema versions checked. Redfish is the standing
 example: the Redfish crate's generator, also owned, emits its index from the
 DMTF schema bundle.
 
@@ -861,10 +889,10 @@ encode what the data must mean, which no general linter can know, while the
 things buf checks are exactly the ones a general linter already knows better
 than we would. The cost is one more binary a contributor installs.
 
-Tiers one and three depend on generated code and arrive with it. The corpus
-does not: it is collected from real devices, so it is the long-lead item and
-the one most easily deferred into never. Collecting it should start before
-there is code to replay it through.
+The corpus differs from the other two in where it comes from. Goldens and
+properties are derived from the schema, so they follow it automatically; the
+corpus is collected from real devices, and no amount of schema work produces
+it.
 
 ## Modularity
 
@@ -892,39 +920,47 @@ and generated projection code — and only the first is hand-written. Its size
 tracks how messy the protocol is, which is why Redfish is the large one and a
 proto-described source is small.
 
-## Open decisions
+## Unconstrained by this design
 
 ### Streamed acquisition placement
 
-Polled work maps directly to dispatcher tasks. Streamed sources still require
-a concrete design choice:
+Polled work maps directly to dispatcher tasks. Streamed sources admit two
+placements, and the architecture constrains neither:
 
-- represent stream reads with an adapter inside the dispatcher graph, keeping
-  more activity under common fairness control; or
-- run subscriptions beside the dispatcher while admitting connection and
-  reconnection attempts through it.
+- a stream-read adapter inside the dispatcher graph, keeping more activity
+  under common fairness control; or
+- subscriptions beside the dispatcher, with connection and reconnection
+  attempts admitted through it.
 
-gNMI settles this rather than Redfish SSE. A `Subscribe` in STREAM mode is a
-long-lived gRPC stream, and gNMI is on the roadmap, so the decision has a named
-driver and a date rather than waiting for a prototype that might not be built.
-It must account for cancellation, reconnect backoff, fairness, shutdown, and
-output backpressure.
+The source abstraction is expressive enough for both, and whichever is chosen
+has to account for cancellation, reconnect backoff, fairness, shutdown, and
+output backpressure. gNMI is the source that exercises the question, because a
+`Subscribe` in STREAM mode is a long-lived gRPC stream rather than a request
+and a response.
 
-## Design validation
+## Falsifiable claims
 
-Before freezing the schema and public APIs, validate the architecture with:
+The design asserts properties that no amount of review establishes, because
+they are claims about a running system rather than about a schema. Each is
+falsifiable by one scenario:
 
-1. one polled need implemented by two providers, such as Redfish
-   TelemetryService and Sensor OData;
-2. one streamed provider;
-3. endpoint and policy changes that rebuild only affected graph subtrees;
-4. complete, partial, failed, stale, and slow-consumer scenarios;
-5. a payload corpus spanning multiple vendors and firmware revisions replayed
-   through projection;
-6. a cross-process consumer decoding batches produced under a newer minor
-   schema revision;
-7. a schema revision that adds fields, showing the compatibility check accepts
-   it while rejecting a removal, a reused number, and a field that loses
-   explicit presence;
-8. representative allocation, memory-retention, and throughput measurements,
-   including in-process fan-out against encode-at-boundary costs.
+1. a provider can be swapped without changing public reading identity — one
+   polled need served by two providers, such as Redfish TelemetryService and
+   Sensor OData, yielding the same signal keys;
+2. streamed and polled acquisition share one source abstraction — one streamed
+   provider alongside a polled one;
+3. planning is incremental — an endpoint or policy change rebuilds only the
+   affected dispatcher subtrees;
+4. absence, failure, and staleness stay distinct — complete, partial, failed,
+   stale, and slow-consumer scenarios each reaching consumers as a different
+   fact;
+5. projection survives real devices rather than their schemas — a payload
+   corpus spanning vendors and firmware revisions replayed through it;
+6. the contract is a wire contract, not a Rust one — a cross-process consumer
+   decoding batches produced under a newer minor revision;
+7. evolution is additive-only in practice — a revision adding fields accepted
+   while a removal, a reused number, and a field losing explicit presence are
+   each rejected;
+8. sharing by reference costs nothing until a boundary — allocation,
+   memory-retention, and throughput measurements, with in-process fan-out
+   measured against encode-at-boundary costs.

@@ -151,6 +151,7 @@ const FIELD_SHAPE: &[(&str, Scalar)] = &[
     ("unordered", Scalar::Bool),
     ("max_items", Scalar::Uint32),
     ("max_len", Scalar::Uint32),
+    ("collection_metadata", Scalar::Bool),
 ];
 
 const MESSAGE_SHAPE: &[(&str, Scalar)] = &[
@@ -186,6 +187,8 @@ pub struct FieldInvariant {
     pub max_items: Option<u32>,
     /// Upper bound on a string or bytes length.
     pub max_len: Option<u32>,
+    /// The field is collection metadata, so content hashing skips it.
+    pub collection_metadata: bool,
 }
 
 /// Constraints declared on a message as a whole.
@@ -221,6 +224,11 @@ impl Vocabulary {
     /// the fields it is about to read with types it can read, and round-trips
     /// the canary to prove option values survived encoding.
     ///
+    /// A vocabulary field that is used in-tree fails earlier and louder — the
+    /// schema build cannot compile the use sites against a renamed
+    /// declaration — so these checks guard the field with no uses yet, which
+    /// is exactly the one whose silent default would otherwise go unnoticed.
+    ///
     /// # Errors
     ///
     /// Returns [`VocabularyError`] describing the first annotation that is
@@ -245,6 +253,7 @@ impl Vocabulary {
             unordered: boolean(&annotation, "unordered"),
             max_items: unsigned(&annotation, "max_items"),
             max_len: unsigned(&annotation, "max_len"),
+            collection_metadata: boolean(&annotation, "collection_metadata"),
         })
     }
 
@@ -301,6 +310,32 @@ impl Vocabulary {
             .ok_or_else(|| fault("the canary's `labels` carries no annotation"))?;
         if labels.max_items != Some(4) || labels.max_len != Some(32) {
             return Err(fault("the canary's numeric bounds read back changed"));
+        }
+        if !labels.unordered {
+            return Err(fault("the canary's `unordered` read back false"));
+        }
+
+        let trace = canary
+            .get_field_by_name("trace")
+            .ok_or_else(|| fault("the canary has no `trace` field"))?;
+        let trace = self
+            .field_invariant(&trace)
+            .ok_or_else(|| fault("the canary's `trace` carries no annotation"))?;
+        if !trace.collection_metadata {
+            return Err(fault("the canary's `collection_metadata` read back false"));
+        }
+
+        // OneofOptions are a separate options message on their own encoding
+        // path, so proving FieldOptions survived says nothing about them.
+        let probe = canary
+            .oneofs()
+            .find(|oneof| oneof.name() == "probe")
+            .ok_or_else(|| fault("the canary has no `probe` oneof"))?;
+        let probe = self
+            .oneof_invariant(&probe)
+            .ok_or_else(|| fault("the canary's `probe` carries no annotation"))?;
+        if !probe.required {
+            return Err(fault("the canary's oneof `required` read back false"));
         }
 
         let revision = canary

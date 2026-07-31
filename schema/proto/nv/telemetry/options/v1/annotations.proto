@@ -61,6 +61,23 @@ message FieldInvariant {
   // Upper bound on a string's length in bytes, or a bytes field's length.
   // On a repeated field the bound is per element.
   optional uint32 max_len = 6;
+
+  // The field records how or when a fact was collected rather than what was
+  // observed, so content hashing skips it, and canonical sorting compares it
+  // only as a final tiebreaker after every hash-visible field.
+  //
+  // Without this a hashable message cannot hold collection metadata at all.
+  // An observation timestamp or an entity tag changes on every poll, so a
+  // hash over them reports that an unchanged device changed — which is the
+  // one thing a convergence adapter must never see, and the reason the hash
+  // exists. Identity and observed properties are content; when the read
+  // happened, and what the source called that representation, are not.
+  //
+  // Like `zero_is_meaningful`, adding or removing this on a field a hashable
+  // message reaches changes existing hashes, and `buf breaking` cannot see
+  // option values. The contract lock records it so the diff is the review
+  // surface.
+  bool collection_metadata = 7;
 }
 
 // Constraints on a message as a whole.
@@ -71,23 +88,34 @@ message MessageInvariant {
   bool validated = 1;
 
   // Emit logical content hashing: a traversal of present known fields
-  // labeled by field number. Encoded bytes are never hashed, because
-  // protobuf encoding is not canonical across implementations.
+  // labeled by field number, skipping fields marked `collection_metadata`.
+  // The exclusion is transitive: the traversal inherits it through nested
+  // messages whether or not they are hashable themselves, so a non-hashable
+  // message inside a hashable one still has its collection metadata skipped.
+  // Encoded bytes are never hashed, because protobuf encoding is not
+  // canonical across implementations.
   //
   // Requires `validated`, because equal content only hashes equal once
   // canonicalization has run.
   bool hashable = 2;
 
-  // Recursion bound for a self-referential message such as Value. Stated on
-  // the type so that one decoder limit can be derived from it, which is the
-  // only granularity a decoder can enforce.
+  // Recursion bound for a self-referential message such as Value, counted in
+  // logical levels of that type rather than in encoded message levels: one
+  // logical level can cost two or three message levels depending on which
+  // variant nests. It is stated on the type because a decoder's own limit is
+  // a property of the parse, not of one field.
+  //
+  // It does not translate into a decoder setting. Decoder limits are fixed by
+  // the runtime, so this bound has to be chosen to fit underneath one, and
+  // the type that carries it should record the arithmetic.
   optional uint32 max_depth = 3;
 }
 
 // Constraints on a oneof.
 //
-// Read by the validator generator rather than by the schema rules: whether a
-// case is set is a property of a message instance, not of the schema.
+// Whether a case is set is a property of a message instance rather than of
+// the schema, so the schema rules do not check it. The contract lock records
+// it, and generated validators enforce it.
 message OneofInvariant {
   // Validators reject a message in which no case is set. Without this, an
   // empty Value is indistinguishable from an explicit null.
@@ -113,6 +141,8 @@ extend google.protobuf.OneofOptions {
 // invariant then reads as its default and silently switches off. The compiler
 // asserts these values read back exactly as declared, so that failure mode
 // cannot reach a build.
+// The values here are arbitrary — the canary proves values survive encoding,
+// and no arithmetic backs its max_depth the way one backs Value's.
 message Canary {
   option (message_invariant) = {
     validated: true
@@ -132,4 +162,14 @@ message Canary {
   }];
 
   uint64 revision = 3 [(field_invariant) = {zero_is_meaningful: true}];
+
+  optional string trace = 4 [(field_invariant) = {collection_metadata: true}];
+
+  // OneofOptions ride a different options message than FieldOptions and
+  // MessageOptions, so the round trip has to cover that path separately.
+  oneof probe {
+    option (oneof_invariant) = {required: true};
+
+    bool probe_flag = 5;
+  }
 }

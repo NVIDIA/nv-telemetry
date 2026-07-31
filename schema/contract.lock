@@ -4,3 +4,131 @@
 # so that a schema change reads as a diff. `make check-codegen` fails if this
 # file disagrees with the schema. Backward compatibility is checked separately,
 # by `make proto-breaking`.
+message nv.telemetry.v1.AcquisitionStatus validated
+message nv.telemetry.v1.Coverage validated
+message nv.telemetry.v1.EndpointContext validated
+message nv.telemetry.v1.Inventory validated
+message nv.telemetry.v1.InventoryItem validated
+message nv.telemetry.v1.LogRecord validated
+message nv.telemetry.v1.Logs validated
+message nv.telemetry.v1.Null
+message nv.telemetry.v1.NumericValue validated
+message nv.telemetry.v1.ObservationBatch validated
+message nv.telemetry.v1.ObservationWindow validated
+message nv.telemetry.v1.ObservedResource validated
+message nv.telemetry.v1.Origin validated
+message nv.telemetry.v1.Reading validated
+message nv.telemetry.v1.Readings validated
+message nv.telemetry.v1.ResourceGraph validated hashable
+message nv.telemetry.v1.ResourceRelation validated
+message nv.telemetry.v1.SignalDescriptor validated
+message nv.telemetry.v1.SignalKey validated hashable
+message nv.telemetry.v1.StateObservation validated
+message nv.telemetry.v1.States validated
+message nv.telemetry.v1.Subject validated hashable
+message nv.telemetry.v1.Timestamp validated
+message nv.telemetry.v1.UnresolvedReference validated
+message nv.telemetry.v1.Value validated max_depth=16
+message nv.telemetry.v1.Value.List validated
+message nv.telemetry.v1.Value.Map validated
+message nv.telemetry.v1.Value.Map.Entry validated
+message nv.telemetry.v1.ValueRange validated
+enum nv.telemetry.v1.AcquisitionStatus.FailureClass FAILURE_CLASS_UNSPECIFIED=0 FAILURE_CLASS_CONNECTIVITY=1 FAILURE_CLASS_AUTHENTICATION=2 FAILURE_CLASS_TIMEOUT=3 FAILURE_CLASS_PROTOCOL=4 FAILURE_CLASS_UNSUPPORTED=5 FAILURE_CLASS_DEVICE=6 FAILURE_CLASS_INTERNAL=7
+enum nv.telemetry.v1.AcquisitionStatus.Outcome OUTCOME_UNSPECIFIED=0 OUTCOME_SUCCEEDED=1 OUTCOME_FAILED=2
+enum nv.telemetry.v1.Completeness COMPLETENESS_UNSPECIFIED=0 COMPLETENESS_COMPLETE=1 COMPLETENESS_PARTIAL=2
+enum nv.telemetry.v1.Severity SEVERITY_UNSPECIFIED=0 SEVERITY_DEBUG=1 SEVERITY_INFO=2 SEVERITY_WARNING=3 SEVERITY_ERROR=4 SEVERITY_CRITICAL=5
+oneof nv.telemetry.v1.NumericValue.kind [1,2,3] required
+oneof nv.telemetry.v1.ObservationBatch.payload [10,11,12,13,14] required
+oneof nv.telemetry.v1.Value.kind [1,2,3,4,5,6,7,8,9,10] required
+field nv.telemetry.v1.AcquisitionStatus 1 endpoint_id string single explicit required max_len=256
+field nv.telemetry.v1.AcquisitionStatus 2 provider string single explicit required max_len=128
+field nv.telemetry.v1.AcquisitionStatus 3 request_class string single explicit required max_len=128
+field nv.telemetry.v1.AcquisitionStatus 4 outcome nv.telemetry.v1.AcquisitionStatus.Outcome single explicit required
+field nv.telemetry.v1.AcquisitionStatus 5 failure_class nv.telemetry.v1.AcquisitionStatus.FailureClass single explicit
+field nv.telemetry.v1.AcquisitionStatus 6 retryable bool single explicit
+field nv.telemetry.v1.AcquisitionStatus 7 started_at nv.telemetry.v1.Timestamp single explicit required
+field nv.telemetry.v1.AcquisitionStatus 8 duration_nanos uint64 single explicit
+field nv.telemetry.v1.AcquisitionStatus 9 detail string single explicit max_len=4096
+field nv.telemetry.v1.Coverage 1 completeness nv.telemetry.v1.Completeness single explicit required
+field nv.telemetry.v1.Coverage 2 scope nv.telemetry.v1.Subject single explicit
+field nv.telemetry.v1.EndpointContext 1 endpoint_id string single explicit required max_len=256
+field nv.telemetry.v1.EndpointContext 2 attributes nv.telemetry.v1.Value.Map single explicit
+field nv.telemetry.v1.Inventory 1 items nv.telemetry.v1.InventoryItem repeated implicit unordered max_items=65536
+field nv.telemetry.v1.InventoryItem 1 subject nv.telemetry.v1.Subject single explicit required
+field nv.telemetry.v1.InventoryItem 2 attributes nv.telemetry.v1.Value.Map single explicit
+field nv.telemetry.v1.InventoryItem 3 source_key string single explicit max_len=1024
+field nv.telemetry.v1.LogRecord 1 occurred_at nv.telemetry.v1.Timestamp single explicit
+field nv.telemetry.v1.LogRecord 2 severity nv.telemetry.v1.Severity single explicit
+field nv.telemetry.v1.LogRecord 3 message string single explicit required max_len=65536
+field nv.telemetry.v1.LogRecord 4 subject nv.telemetry.v1.Subject single explicit
+field nv.telemetry.v1.LogRecord 5 entry_id string single explicit max_len=256
+field nv.telemetry.v1.LogRecord 6 attributes nv.telemetry.v1.Value.Map single explicit
+field nv.telemetry.v1.Logs 1 records nv.telemetry.v1.LogRecord repeated implicit unordered max_items=65536
+field nv.telemetry.v1.NumericValue 1 double_value double single explicit finite
+field nv.telemetry.v1.NumericValue 2 int_value sint64 single explicit
+field nv.telemetry.v1.NumericValue 3 uint_value uint64 single explicit
+field nv.telemetry.v1.ObservationBatch 1 endpoint nv.telemetry.v1.EndpointContext single explicit required
+field nv.telemetry.v1.ObservationBatch 2 origin nv.telemetry.v1.Origin single explicit required
+field nv.telemetry.v1.ObservationBatch 3 window nv.telemetry.v1.ObservationWindow single explicit required
+field nv.telemetry.v1.ObservationBatch 4 coverage nv.telemetry.v1.Coverage single explicit required
+field nv.telemetry.v1.ObservationBatch 10 readings nv.telemetry.v1.Readings single explicit
+field nv.telemetry.v1.ObservationBatch 11 logs nv.telemetry.v1.Logs single explicit
+field nv.telemetry.v1.ObservationBatch 12 states nv.telemetry.v1.States single explicit
+field nv.telemetry.v1.ObservationBatch 13 inventory nv.telemetry.v1.Inventory single explicit
+field nv.telemetry.v1.ObservationBatch 14 resources nv.telemetry.v1.ResourceGraph single explicit
+field nv.telemetry.v1.ObservationWindow 1 start nv.telemetry.v1.Timestamp single explicit required
+field nv.telemetry.v1.ObservationWindow 2 end nv.telemetry.v1.Timestamp single explicit
+field nv.telemetry.v1.ObservedResource 1 subject nv.telemetry.v1.Subject single explicit required
+field nv.telemetry.v1.ObservedResource 2 source_key string single explicit required max_len=1024
+field nv.telemetry.v1.ObservedResource 3 source_schema string single explicit max_len=256
+field nv.telemetry.v1.ObservedResource 4 entity_tag string single explicit max_len=256 collection_metadata
+field nv.telemetry.v1.ObservedResource 5 observed_at nv.telemetry.v1.Timestamp single explicit collection_metadata
+field nv.telemetry.v1.ObservedResource 6 properties nv.telemetry.v1.Value.Map single explicit
+field nv.telemetry.v1.ObservedResource 7 properties_complete bool single explicit required
+field nv.telemetry.v1.ObservedResource 8 unresolved nv.telemetry.v1.UnresolvedReference repeated implicit unordered max_items=1024
+field nv.telemetry.v1.Origin 1 provider string single explicit required max_len=128
+field nv.telemetry.v1.Origin 2 request_class string single explicit required max_len=128
+field nv.telemetry.v1.Reading 1 key nv.telemetry.v1.SignalKey single explicit required
+field nv.telemetry.v1.Reading 2 value nv.telemetry.v1.NumericValue single explicit required
+field nv.telemetry.v1.Reading 3 observed_at nv.telemetry.v1.Timestamp single explicit
+field nv.telemetry.v1.Readings 1 descriptors nv.telemetry.v1.SignalDescriptor repeated implicit unordered max_items=65536
+field nv.telemetry.v1.Readings 2 samples nv.telemetry.v1.Reading repeated implicit unordered max_items=65536
+field nv.telemetry.v1.ResourceGraph 1 resources nv.telemetry.v1.ObservedResource repeated implicit unordered max_items=65536
+field nv.telemetry.v1.ResourceGraph 2 relations nv.telemetry.v1.ResourceRelation repeated implicit unordered max_items=131072
+field nv.telemetry.v1.ResourceRelation 1 source nv.telemetry.v1.Subject single explicit required
+field nv.telemetry.v1.ResourceRelation 2 target nv.telemetry.v1.Subject single explicit required
+field nv.telemetry.v1.ResourceRelation 3 kind string single explicit required max_len=128
+field nv.telemetry.v1.SignalDescriptor 1 key nv.telemetry.v1.SignalKey single explicit required
+field nv.telemetry.v1.SignalDescriptor 2 kind string single explicit max_len=128
+field nv.telemetry.v1.SignalDescriptor 3 unit string single explicit max_len=64
+field nv.telemetry.v1.SignalDescriptor 4 range nv.telemetry.v1.ValueRange single explicit
+field nv.telemetry.v1.SignalKey 1 subject nv.telemetry.v1.Subject single explicit required
+field nv.telemetry.v1.SignalKey 2 facet string single explicit max_len=128
+field nv.telemetry.v1.StateObservation 1 subject nv.telemetry.v1.Subject single explicit required
+field nv.telemetry.v1.StateObservation 2 name string single explicit required max_len=256
+field nv.telemetry.v1.StateObservation 3 value nv.telemetry.v1.Value single explicit required
+field nv.telemetry.v1.StateObservation 4 observed_at nv.telemetry.v1.Timestamp single explicit
+field nv.telemetry.v1.States 1 observations nv.telemetry.v1.StateObservation repeated implicit unordered max_items=65536
+field nv.telemetry.v1.Subject 1 kind string single explicit required max_len=128
+field nv.telemetry.v1.Subject 2 scope string repeated implicit max_items=16 max_len=256
+field nv.telemetry.v1.Subject 3 id string single explicit required max_len=256
+field nv.telemetry.v1.Timestamp 1 seconds int64 single explicit required
+field nv.telemetry.v1.Timestamp 2 nanos uint32 single explicit required
+field nv.telemetry.v1.UnresolvedReference 1 location string single explicit required max_len=1024
+field nv.telemetry.v1.UnresolvedReference 2 property string single explicit max_len=256
+field nv.telemetry.v1.Value 1 null_value nv.telemetry.v1.Null single explicit
+field nv.telemetry.v1.Value 2 bool_value bool single explicit
+field nv.telemetry.v1.Value 3 int_value sint64 single explicit
+field nv.telemetry.v1.Value 4 uint_value uint64 single explicit
+field nv.telemetry.v1.Value 5 double_value double single explicit finite
+field nv.telemetry.v1.Value 6 string_value string single explicit max_len=4096
+field nv.telemetry.v1.Value 7 bytes_value bytes single explicit max_len=4096
+field nv.telemetry.v1.Value 8 timestamp_value nv.telemetry.v1.Timestamp single explicit
+field nv.telemetry.v1.Value 9 list_value nv.telemetry.v1.Value.List single explicit
+field nv.telemetry.v1.Value 10 map_value nv.telemetry.v1.Value.Map single explicit
+field nv.telemetry.v1.Value.List 1 values nv.telemetry.v1.Value repeated implicit max_items=1024
+field nv.telemetry.v1.Value.Map 1 entries nv.telemetry.v1.Value.Map.Entry repeated implicit unordered max_items=1024
+field nv.telemetry.v1.Value.Map.Entry 1 key string single explicit required max_len=256
+field nv.telemetry.v1.Value.Map.Entry 2 value nv.telemetry.v1.Value single explicit required
+field nv.telemetry.v1.ValueRange 1 min nv.telemetry.v1.NumericValue single explicit
+field nv.telemetry.v1.ValueRange 2 max nv.telemetry.v1.NumericValue single explicit

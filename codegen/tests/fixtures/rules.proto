@@ -25,6 +25,31 @@ message Extendable {
   extensions 100 to 200;
 }
 
+// Hash-reachable via HashRoot, so only the contradiction rule fires here.
+message HashRoot {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+  };
+
+  optional Conflicted child = 1;
+}
+
+message Conflicted {
+  uint64 counter = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    zero_is_meaningful: true
+    collection_metadata: true
+  }];
+}
+
+// Reached by no hashable message, so its collection_metadata is a no-op.
+message Island {
+  optional string tag = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    collection_metadata: true
+    max_len: 64
+  }];
+}
+
 // A declaration site the invariant rules do not reach.
 extend Extendable {
   optional double sneaky = 100;

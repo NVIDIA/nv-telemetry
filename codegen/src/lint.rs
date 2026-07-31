@@ -9,6 +9,8 @@
 //! routes as well — a scalar hidden inside a foreign message, a map value, a
 //! proto2 `required` field that prost lowers to a bare scalar.
 
+use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::fmt;
 
 use prost_reflect::DescriptorPool;
@@ -144,21 +146,53 @@ pub fn presence(pool: &DescriptorPool, vocabulary: &Vocabulary) -> Vec<Violation
         }
     }
 
+    let hash_reachable = hash_reachable(pool, vocabulary);
+
     for message in pool.all_messages() {
         if !is_contract_package(message.package_name()) || message.is_map_entry() {
             continue;
         }
 
-        check_message(&message, vocabulary, &mut violations);
+        let hash_visible = hash_reachable.contains(message.full_name());
+        check_message(&message, vocabulary, hash_visible, &mut violations);
     }
 
     violations.sort_by(|left, right| left.subject.cmp(&right.subject));
     violations
 }
 
+/// Every message a hashable message can reach through fields, including map
+/// entries. `collection_metadata` outside this set is a no-op: nothing ever
+/// hashes the field, so nothing ever skips it.
+fn hash_reachable(pool: &DescriptorPool, vocabulary: &Vocabulary) -> BTreeSet<String> {
+    let mut reachable = BTreeSet::new();
+    let mut queue: VecDeque<MessageDescriptor> = pool
+        .all_messages()
+        .filter(|message| {
+            vocabulary
+                .message_invariant(message)
+                .is_some_and(|invariant| invariant.hashable)
+        })
+        .collect();
+
+    while let Some(message) = queue.pop_front() {
+        if !reachable.insert(message.full_name().to_owned()) {
+            continue;
+        }
+        for field in message.fields() {
+            if let Kind::Message(nested) = field.kind() {
+                queue.push_back(nested);
+            }
+        }
+    }
+
+    reachable
+}
+
 fn check_message(
     message: &MessageDescriptor,
     vocabulary: &Vocabulary,
+    hash_visible: bool,
     violations: &mut Vec<Violation>,
 ) {
     if let Some(invariant) = vocabulary.message_invariant(message) {
@@ -173,7 +207,7 @@ fn check_message(
     for field in message.fields() {
         let invariant = vocabulary.field_invariant(&field);
         if let Some(invariant) = invariant {
-            check_applicability(&field, invariant, violations);
+            check_applicability(&field, invariant, hash_visible, violations);
         }
 
         // A map entry is an ordinary two-field message on the wire, and both
@@ -237,6 +271,7 @@ fn check_message(
 fn check_applicability(
     field: &FieldDescriptor,
     invariant: FieldInvariant,
+    hash_visible: bool,
     violations: &mut Vec<Violation>,
 ) {
     let mut reject = |option, applies_to| {
@@ -276,6 +311,22 @@ fn check_applicability(
         reject(
             "required",
             "fields that can be absent, which a zero_is_meaningful field cannot",
+        );
+    }
+    // A zero_is_meaningful field is hashed unconditionally — there is no
+    // "present" to test — so excluding it from the hash contradicts the other
+    // annotation, and whichever generator ran first would silently win.
+    if invariant.zero_is_meaningful && invariant.collection_metadata {
+        reject(
+            "collection_metadata",
+            "fields hashing can skip, which a zero_is_meaningful field is not",
+        );
+    }
+    if invariant.collection_metadata && !hash_visible {
+        reject(
+            "collection_metadata",
+            "fields of messages a hashable message reaches; nothing hashes \
+             this one, so there is nothing to skip",
         );
     }
 }

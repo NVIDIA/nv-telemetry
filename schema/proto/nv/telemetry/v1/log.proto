@@ -1,12 +1,66 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Log records and severity.
+// Log records.
 
 syntax = "proto3";
 
 package nv.telemetry.v1;
 
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/subject.proto";
+import "nv/telemetry/v1/value.proto";
+
 option csharp_namespace = "Nvidia.NvTelemetry.V1";
 option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
 option java_package = "com.nvidia.nvtelemetry.v1";
+
+// The contract's own severity ladder. Source severities are mapped into it by
+// projection; a value the mapping does not cover is a projection issue rather
+// than a guess. UNSPECIFIED is rejected by validation on records that carry a
+// severity at all.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_DEBUG = 1;
+  SEVERITY_INFO = 2;
+  SEVERITY_WARNING = 3;
+  SEVERITY_ERROR = 4;
+  SEVERITY_CRITICAL = 5;
+}
+
+message LogRecord {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  // When the device says it happened, which is a different fact from when it
+  // was collected; the batch window carries the latter. Absent when the
+  // source does not stamp entries.
+  optional Timestamp occurred_at = 1;
+
+  optional Severity severity = 2;
+
+  optional string message = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    max_len: 65536
+  }];
+
+  // The resource the record is about, when the source names one — a Redfish
+  // OriginOfCondition — as opposed to the service it was collected from,
+  // which is provenance and lives on the batch.
+  optional Subject subject = 4;
+
+  // The source's identifier for this entry, when it has one, so incremental
+  // collection can resume and consumers can deduplicate.
+  optional string entry_id = 5 [(nv.telemetry.options.v1.field_invariant) = {max_len: 256}];
+
+  optional Value.Map attributes = 6;
+}
+
+// The logs payload domain.
+message Logs {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  repeated LogRecord records = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    max_items: 65536
+  }];
+}
