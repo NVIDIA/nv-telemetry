@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds against freshly resolved dependencies rather than the committed
+# lockfile.
+#
+# `Cargo.lock` is committed here, which is not the default for a library. The
+# reason is narrow: `model/src/generated/` is checked in and byte-compared, and
+# the formatter that decides those bytes — prettyplease — reaches this
+# workspace only through prost-build. No manifest entry can pin a transitive
+# dependency, so the lockfile is the only mechanism that can. Without it, an
+# upstream patch release rewrites a checked-in file and fails a pull request
+# that touched nothing.
+#
+# The cost of that choice is that every other build sees exactly one
+# resolution, so a semver-compatible upstream break, or a change in what the
+# generator emits, stays invisible. This job is where those are meant to
+# surface: on a schedule, under a name that says what happened, rather than
+# under a contributor whose unrelated change went red.
+
+name: Latest dependencies
+
+on:
+  schedule:
+    # Monday morning UTC, so a failure is waiting at the start of the week
+    # rather than discovered mid-review.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  latest-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the schema's backward-compatibility check compares
+      # against origin/main.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+
+      # Deliberately uncached. The point of this job is a cold, fresh
+      # resolution; a warm cache keyed on the old lockfile would defeat it.
+      - name: Install buf
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=1.72.0
+          mkdir -p "$RUNNER_TEMP/buf/bin"
+          curl -fsSL --retry 3 \
+            "https://github.com/bufbuild/buf/releases/download/v$version/buf-Linux-$(uname -m)" \
+            -o "$RUNNER_TEMP/buf/bin/buf"
+          chmod +x "$RUNNER_TEMP/buf/bin/buf"
+          echo "$RUNNER_TEMP/buf/bin" >> "$GITHUB_PATH"
+
+      - name: Update every dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update
+          git --no-pager diff --stat -- Cargo.lock || true
+
+      # Run before the pipeline, so that generator drift is reported as itself
+      # rather than as the staleness gate failing. `make codegen` regenerates
+      # from the schema; anything that moves here moved because a dependency
+      # changed, not because the schema did.
+      - name: Regenerate and detect generator drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          make codegen cargo-locked=
+          if git diff --quiet -- schema/contract.lock model/src/generated; then
+            echo "generated output is unchanged under updated dependencies"
+          else
+            echo "::warning title=Generator output drifted::updated dependencies \
+          changed the generated tree; the checked-in files need regenerating"
+            git --no-pager diff --stat -- schema/contract.lock model/src/generated
+            echo "GENERATOR_DRIFT=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Full pipeline against latest dependencies
+        shell: bash
+        run: make ci cargo-locked=
+
+      # Last, so that a genuine build or test failure above is reported on its
+      # own terms first. Drift is not a broken build, but it is a decision
+      # someone has to make, so it must not pass silently.
+      - name: Fail on generator drift
+        if: env.GENERATOR_DRIFT == '1'
+        shell: bash
+        run: |
+          echo "Updated dependencies change what the generator emits." >&2
+          echo "Bump the lockfile deliberately and commit the regenerated tree." >&2
+          exit 1
