@@ -149,12 +149,26 @@ fn rules_other_than_presence_are_reachable() {
     assert_eq!(
         found,
         [
+            // Derived from the stance columns: `zero_is_meaningful` hashes
+            // unconditionally, `collection_metadata` skips hashing, and no
+            // rule names the pair.
             (
                 "nv.telemetry.v1.Conflicted.counter".to_owned(),
+                lint::Reason::Conflicting {
+                    first: "zero_is_meaningful",
+                    second: "collection_metadata",
+                    axis: lint::Contradiction::Hashing,
+                }
+            ),
+            // `Nest` carries the same bound and is deliberately absent: it
+            // reaches itself through `Branch`, so the bound means something.
+            // Without that pair, a rule that flagged every `max_depth` would
+            // pass this test.
+            (
+                "nv.telemetry.v1.Flat".to_owned(),
                 lint::Reason::NotApplicable {
-                    option: "collection_metadata",
-                    applies_to: "fields hashing can skip, which a \
-                                 zero_is_meaningful field is not",
+                    option: "max_depth",
+                    applies_to: "messages that can contain themselves",
                 }
             ),
             (
@@ -171,10 +185,196 @@ fn rules_other_than_presence_are_reachable() {
                 }
             ),
             (
+                "nv.telemetry.v1.Trace.tag".to_owned(),
+                lint::Reason::NotApplicable {
+                    option: "collection_metadata",
+                    applies_to: "fields of messages a hashable message \
+                                 reaches; nothing hashes this one, so there \
+                                 is nothing to skip",
+                }
+            ),
+            (
                 "nv.telemetry.v1.sneaky".to_owned(),
                 lint::Reason::ContractExtension
             ),
         ]
+    );
+}
+
+// The expected set is exhaustive on purpose: it fails on a rule that stopped
+// firing *and* on one that fired where it should not, which is what makes it
+// worth more than a dozen separate assertions. Splitting it to satisfy a line
+// count would trade that away, since each half would then see the other half's
+// violations and have to ignore them.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn an_annotation_that_would_do_nothing_is_rejected() {
+    let (pool, vocabulary) = fixture("vocabulary.proto");
+    let found: Vec<_> = lint::presence(&pool, &vocabulary)
+        .into_iter()
+        .map(|violation| (violation.subject().to_owned(), violation.reason().clone()))
+        .collect();
+
+    let not_applicable = |option, applies_to| lint::Reason::NotApplicable { option, applies_to };
+    let unique_by_applies_to_lists = not_applicable("unique_by", "repeated message fields");
+
+    assert_eq!(
+        found,
+        [
+            // On the element type rather than on a `unique_by` field: a oneof
+            // member cannot be `required`, because a sibling arm holding the
+            // value is exactly what a oneof is for.
+            (
+                "nv.telemetry.v1.Element.left".to_owned(),
+                not_applicable(
+                    "required",
+                    "fields outside a oneof; a oneof states that some arm must \
+                     be set with its own `required`"
+                )
+            ),
+            // `required` on a repeated field, which is never absent — derived
+            // from the option table's applicability column rather than from a
+            // rule anyone wrote, and unenforced before the table existed.
+            (
+                "nv.telemetry.v1.Misapplied.always".to_owned(),
+                not_applicable(
+                    "required",
+                    "fields that can be absent; a repeated field is empty \
+                     rather than absent, and an implicit scalar is zero \
+                     rather than absent"
+                )
+            ),
+            // And the key rule refuses the oneof member independently, rather
+            // than trusting the `required` above to have been caught.
+            (
+                "nv.telemetry.v1.Misapplied.armed".to_owned(),
+                lint::Reason::OptionalUniqueKey("left".to_owned())
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.blank".to_owned(),
+                not_applicable(
+                    "non_empty",
+                    "fields that may hold something, which `max_len: 0` forbids"
+                )
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.count".to_owned(),
+                not_applicable("non_empty", "string and bytes fields")
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.doubled".to_owned(),
+                lint::Reason::DuplicateUniqueKey("id".to_owned())
+            ),
+            // The two zero-value contradictions are one derived rule: the
+            // options' stance columns disagree, in the string spelling here
+            // and the enum spelling below, and neither pair is named anywhere
+            // in the compiler.
+            (
+                "nv.telemetry.v1.Misapplied.implicit".to_owned(),
+                lint::Reason::Conflicting {
+                    first: "zero_is_meaningful",
+                    second: "non_empty",
+                    axis: lint::Contradiction::ZeroValue,
+                }
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.label".to_owned(),
+                not_applicable("reject_unspecified", "enum fields")
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.level".to_owned(),
+                lint::Reason::Conflicting {
+                    first: "zero_is_meaningful",
+                    second: "reject_unspecified",
+                    axis: lint::Contradiction::ZeroValue,
+                }
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.listy".to_owned(),
+                lint::Reason::RepeatedUniqueKey("parts".to_owned())
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.loose".to_owned(),
+                lint::Reason::OptionalUniqueKey("note".to_owned())
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.one".to_owned(),
+                unique_by_applies_to_lists.clone()
+            ),
+            // Both keys named, in declaration order. Two violations on one
+            // subject that rendered identically would say a list has a
+            // problem without saying which key.
+            (
+                "nv.telemetry.v1.Misapplied.pair".to_owned(),
+                lint::Reason::RepeatedUniqueKey("parts".to_owned())
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.pair".to_owned(),
+                lint::Reason::RepeatedUniqueKey("bits".to_owned())
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.tags".to_owned(),
+                unique_by_applies_to_lists
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.typo".to_owned(),
+                lint::Reason::UnknownUniqueKey("idd".to_owned())
+            ),
+            // Every other half of the key rule passes here — present, content,
+            // not repeated — and only equality is unsound.
+            (
+                "nv.telemetry.v1.Misapplied.unstable".to_owned(),
+                lint::Reason::UnvalidatedUniqueKey("loose".to_owned())
+            ),
+            // Reported per annotation and in a fixed order, so the message
+            // names which one to delete rather than saying the field has a
+            // problem.
+            (
+                "nv.telemetry.v1.Misapplied.vacuous".to_owned(),
+                not_applicable(
+                    "unordered",
+                    "fields that can hold an element, which `max_items: 0` \
+                     forbids"
+                )
+            ),
+            (
+                "nv.telemetry.v1.Misapplied.vacuous".to_owned(),
+                not_applicable(
+                    "unique_by",
+                    "fields that can hold an element, which `max_items: 0` \
+                     forbids"
+                )
+            ),
+            // Present on every element, so the presence half of the key rule
+            // passes; rejected because identity must rest on content, and
+            // `collection_metadata` declares the field not to be content.
+            (
+                "nv.telemetry.v1.Stamps.stamped".to_owned(),
+                lint::Reason::MetadataUniqueKey("etag".to_owned())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_legitimate_use_of_the_whole_vocabulary_is_permitted() {
+    // The only assertion in this suite that fails when a rule is too eager
+    // rather than too lax. Every other fixture plants violations, so a rule
+    // that rejected far too much would leave them all passing, and the shipped
+    // contract does not reach the combinations most at risk — it has no
+    // `zero_is_meaningful` field, and no uniqueness key mixing a message with
+    // a scalar.
+    let (pool, vocabulary) = fixture("permitted.proto");
+
+    let violations: Vec<String> = lint::presence(&pool, &vocabulary)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+
+    assert!(
+        violations.is_empty(),
+        "a rule rejected something sound: {}",
+        violations.join("; ")
     );
 }
 
@@ -229,9 +429,249 @@ fn a_widened_bound_is_an_error_rather_than_a_silent_zero() {
         error.kind(),
         VocabularyErrorKind::WrongType {
             field: "max_items",
-            expected: "uint32"
+            expected: "optional uint32"
         }
     );
+}
+
+#[test]
+fn a_bound_losing_explicit_presence_is_an_error() {
+    // Dropping `optional` keeps the type and the number, so `buf breaking`
+    // sees a compatible edit — but it collapses `max_items: 0`, meaning "must
+    // be empty", into "no bound at all". The vocabulary has had exactly this
+    // bug once already.
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "lostpresence",
+            &[("optional uint32 max_items = 5;", "uint32 max_items = 5;")],
+        )),
+    );
+    let error = Vocabulary::resolve(&pool).expect_err("max_items can no longer express zero");
+
+    assert_eq!(
+        error.kind(),
+        VocabularyErrorKind::WrongType {
+            field: "max_items",
+            expected: "optional uint32"
+        }
+    );
+}
+
+#[test]
+fn a_key_list_narrowed_to_one_key_is_an_error() {
+    // `repeated string` -> `optional string` is the quietest shape change in
+    // the vocabulary: the reader asks for a list, gets nothing, and returns an
+    // empty one — which is exactly how "no uniqueness constraint" is spelled,
+    // so every collection would silently stop being checked.
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "narrowedkeys",
+            &[
+                (
+                    "repeated string unique_by = 10;",
+                    "optional string unique_by = 10;",
+                ),
+                ("unique_by: [\"id\"]", "unique_by: \"id\""),
+            ],
+        )),
+    );
+    let error = Vocabulary::resolve(&pool).expect_err("unique_by is unreadable as declared");
+
+    assert_eq!(
+        error.kind(),
+        VocabularyErrorKind::WrongType {
+            field: "unique_by",
+            expected: "repeated string"
+        }
+    );
+}
+
+#[test]
+fn an_option_nothing_reads_is_rejected() {
+    // The mirror of the shape check: that one proves every option the compiler
+    // reads is declared, this proves every option declared is read. It is the
+    // quieter of the two — a renamed option is at least reported, while one
+    // nobody reads produces no error anywhere and can be written across the
+    // contract while generating nothing. It is also how a withdrawn option
+    // comes back; EXTENSIONS.md records 52004 for exactly that reason.
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "unread",
+            &[(
+                "// Constraints on a oneof.",
+                "message EnumInvariant {\n  bool closed = 1;\n}\n\n\
+                 extend google.protobuf.EnumOptions {\n  \
+                 EnumInvariant enum_invariant = 52004;\n}\n\n\
+                 // Constraints on a oneof.",
+            )],
+        )),
+    );
+    let error = Vocabulary::resolve(&pool).expect_err("the vocabulary declares an unread option");
+
+    assert_eq!(error.kind(), VocabularyErrorKind::NotRead);
+    assert_eq!(error.name(), "nv.telemetry.options.v1.enum_invariant");
+}
+
+#[test]
+fn an_unread_field_inside_an_annotation_is_rejected() {
+    // The same hole as the extension check, one level down, and the likelier
+    // of the two: adding a field to `FieldInvariant` is an ordinary edit,
+    // adding a whole `extend` block is not. A field the shape table does not
+    // name is read by nothing and recorded by nothing, so it can be written
+    // across the contract and leave only schema text that reads as a rule.
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "unreadfield",
+            &[(
+                "  repeated string unique_by = 10;",
+                "  repeated string unique_by = 10;\n\n  bool ignored = 11;",
+            )],
+        )),
+    );
+    let error = Vocabulary::resolve(&pool).expect_err("the annotation declares an unread field");
+
+    assert_eq!(error.kind(), VocabularyErrorKind::NotRead);
+    assert_eq!(
+        error.name(),
+        "nv.telemetry.options.v1.FieldInvariant.ignored"
+    );
+}
+
+#[test]
+fn an_unread_option_in_a_vocabulary_sub_package_is_rejected() {
+    // The sub-package is the interesting case: matching the vocabulary package
+    // for equality would leave one silently unchecked, which is the hole the
+    // rule exists to close, moved down a level. `is_contract_package` already
+    // matches by prefix for this reason.
+    let root =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{}-subpkg", std::process::id()));
+    let vocabulary = root.join("nv/telemetry/options/v1");
+    let nested = vocabulary.join("experimental");
+    std::fs::create_dir_all(&nested).expect("fixture directories are writable");
+
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let real = manifest.join("../schema/proto/nv/telemetry/options/v1/annotations.proto");
+    let source = std::fs::read_to_string(&real).expect("the vocabulary is readable");
+    let anchor = "import \"google/protobuf/descriptor.proto\";";
+    assert!(
+        source.contains(anchor),
+        "the vocabulary no longer imports descriptor.proto"
+    );
+    std::fs::write(
+        vocabulary.join("annotations.proto"),
+        source.replace(
+            anchor,
+            &format!("{anchor}\nimport \"nv/telemetry/options/v1/experimental/extra.proto\";"),
+        ),
+    )
+    .expect("fixture is writable");
+
+    std::fs::write(
+        nested.join("extra.proto"),
+        "syntax = \"proto3\";\n\
+         package nv.telemetry.options.v1.experimental;\n\
+         import \"google/protobuf/descriptor.proto\";\n\
+         message Extra {\n  bool closed = 1;\n}\n\
+         extend google.protobuf.EnumOptions {\n  Extra extra = 52050;\n}\n",
+    )
+    .expect("fixture is writable");
+
+    let pool = pool_with_vocabulary("minimal.proto", Some(root));
+    let error = Vocabulary::resolve(&pool).expect_err("the sub-package declares an unread option");
+
+    assert_eq!(error.kind(), VocabularyErrorKind::NotRead);
+    assert_eq!(error.name(), "nv.telemetry.options.v1.experimental.extra");
+}
+
+#[test]
+fn the_canary_exercises_every_option_the_compiler_reads() {
+    // Belt and braces: the option table's probes already enforce this at
+    // `resolve`, since a probe reads a named canary field and fails when the
+    // option is not declared on it. What this adds is independence — it walks
+    // the canary through the descriptor API rather than through the probes, so
+    // a probe pointed at the wrong field and the canary drifting together
+    // still fail here.
+    let pool = nv_telemetry_codegen::pool().expect("shipped schema decodes");
+    let vocabulary = Vocabulary::resolve(&pool).expect("shipped schema defines the vocabulary");
+    let canary = pool
+        .get_message_by_name("nv.telemetry.options.v1.Canary")
+        .expect("the canary is present");
+
+    // Nested types count: the canary's own element type carries `required`,
+    // and a rule that only looked at the top level would call it uncovered.
+    let messages = std::iter::once(canary.clone()).chain(canary.child_messages());
+    let fields: Vec<_> = messages
+        .flat_map(|message| message.fields().collect::<Vec<_>>())
+        .collect();
+
+    for option in Vocabulary::field_option_names() {
+        assert!(
+            fields
+                .iter()
+                .any(|field| vocabulary.field_option_is_set(field, option)),
+            "no canary field sets `{option}`, so nothing proves its value \
+             survives the encoding path"
+        );
+    }
+
+    for option in Vocabulary::message_option_names() {
+        assert!(
+            vocabulary.message_option_is_set(&canary, option),
+            "the canary does not set `{option}`"
+        );
+    }
+}
+
+#[test]
+fn the_canary_catches_a_boolean_invariant_switched_off() {
+    // Each boolean the canary asserts needs its own mutation. Without one, the
+    // assertion in `check_canary` can be deleted and the whole suite stays
+    // green — which is the state `the_canary_can_actually_fail` exists to
+    // prevent, and it does not generalize to assertions added later.
+    for (option, from, to) in [
+        ("nonempty", "non_empty: true", "non_empty: false"),
+        (
+            "rejectunspecified",
+            "reject_unspecified: true",
+            "reject_unspecified: false",
+        ),
+    ] {
+        let pool = pool_with_vocabulary(
+            "minimal.proto",
+            Some(mutated_vocabulary(option, &[(from, to)])),
+        );
+        let error =
+            Vocabulary::resolve(&pool).expect_err("the canary declares the invariant switched off");
+
+        assert!(
+            matches!(error.kind(), VocabularyErrorKind::CanaryFailed { .. }),
+            "`{from}` turned off in the canary went undetected"
+        );
+    }
+}
+
+#[test]
+fn the_canary_catches_a_changed_key_list() {
+    // The shape check above proves the declaration is right; this proves the
+    // values survive the encoding path, which is a separate failure with the
+    // same silent outcome.
+    let pool = pool_with_vocabulary(
+        "minimal.proto",
+        Some(mutated_vocabulary(
+            "changedkeys",
+            &[("unique_by: [\"id\"]", "unique_by: [\"other\"]")],
+        )),
+    );
+    let error = Vocabulary::resolve(&pool).expect_err("the canary declares different keys");
+
+    assert!(matches!(
+        error.kind(),
+        VocabularyErrorKind::CanaryFailed { .. }
+    ));
 }
 
 #[test]

@@ -31,6 +31,7 @@ message Subject {
   // vocabulary rather than the source's resource type.
   optional string kind = 1 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 128
   }];
 
@@ -38,14 +39,24 @@ message Subject {
   // is deliberately not `unordered`: a reversed scope names a different
   // thing. Structured rather than embedded in the id, so a scope element
   // containing a separator cannot corrupt the identity.
+  //
+  // The list may be empty — a top-level chassis is contained by nothing — but
+  // an element may not, which is what `non_empty` states here. An empty
+  // element is a scope the walk failed to name, and it would place the subject
+  // under a container that does not exist.
   repeated string scope = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
     max_items: 16
     max_len: 256
   }];
 
-  // The identifier within that scope.
+  // The identifier within that scope. Non-empty as well as required: "" would
+  // be a well-formed identity, and since Subject is hashable, every sensor
+  // whose id could not be read would hash equal to every other one and join to
+  // the same resource.
   optional string id = 3 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 256
   }];
 }

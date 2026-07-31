@@ -25,6 +25,32 @@ message Extendable {
   extensions 100 to 200;
 }
 
+// A recursion bound on a type no chain of fields leads back to. Nothing
+// recurses, so nothing is bounded.
+message Flat {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    max_depth: 4
+  };
+
+  optional string a = 1;
+}
+
+// The same bound where it means something: Nest reaches itself through Branch,
+// so this must not be flagged.
+message Nest {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    max_depth: 4
+  };
+
+  optional Branch branch = 1;
+}
+
+message Branch {
+  repeated Nest children = 1;
+}
+
 // Hash-reachable via HashRoot, so only the contradiction rule fires here.
 message HashRoot {
   option (nv.telemetry.options.v1.message_invariant) = {
@@ -33,6 +59,12 @@ message HashRoot {
   };
 
   optional Conflicted child = 1;
+
+  optional Trace trace = 2 [(nv.telemetry.options.v1.field_invariant) = {collection_metadata: true}];
+}
+
+message Trace {
+  optional string tag = 1 [(nv.telemetry.options.v1.field_invariant) = {collection_metadata: true}];
 }
 
 message Conflicted {

@@ -49,25 +49,48 @@ service owned by neither team.
 
 ## Adding one
 
-For a new extension number, all five steps; for a new field inside an existing
-option message, steps 3–5.
+An option is defined exactly once, as a row of the option tables in
+`codegen/src/options.rs` (`FIELD_OPTIONS`, `MESSAGE_OPTIONS`, `ONEOF_OPTIONS`).
+The row carries the option's declared shape, the fields it may be written on,
+its semantic stances, its contract-lock rendering, and what the canary must
+read back — and the reader, the lint, the lock, and the canary all consume the
+rows. The decisions an option demands are therefore columns the compiler will
+not build without, not steps a review has to remember; this replaced a
+seven-step checklist whose steps kept being found half-done.
 
-1. Add a row above, naming the extendee.
-2. Declare the `extend` block in
-   `schema/proto/nv/telemetry/options/v1/annotations.proto`.
-3. If the compiler reads it, add its shape to the tables in
-   `codegen/src/options.rs`, so a rename or a widened integer is a build error
-   rather than a silently defaulted value.
-4. If it carries an invariant, extend the canary in `annotations.proto` and the
-   assertions in `Vocabulary::check_canary`, so the annotation self-test covers
-   it. A canary field nothing asserts about proves nothing.
-5. Give numeric options explicit presence (`optional uint32`). A bare proto3
-   scalar cannot distinguish a bound of zero from no bound, which is the same
-   collapse the contract rules exist to prevent.
+1. Add a row to the allocation table above, naming the extendee — for a new
+   extension number only.
+2. Declare the field in
+   `schema/proto/nv/telemetry/options/v1/annotations.proto`, and give the
+   canary a field that uses it.
+3. Add the struct field, the reader line, and the table row in
+   `codegen/src/options.rs`.
+4. Add the row to the vocabulary table in `docs/DATA-MODEL.md` — the one step
+   nothing checks.
+
+Every half-done state between 2 and 3 fails the build naming the option: a
+declaration with no table row is `NotRead`, a row with no declaration is
+`MissingField`, a shape the row does not match is `WrongType`, a missing
+reader line does not compile, and a canary that does not exercise the option
+fails its probe. Two conventions are enforced by the columns themselves:
+numeric options are `optional uint32`, because a bare proto3 scalar cannot
+distinguish a bound of zero from no bound; and where the option applies is the
+`Applies` column, so writing it somewhere it means nothing is rejected without
+a hand-written rule.
+
+Only genuinely contextual rules live outside the table, in
+`codegen/src/lint.rs`, each commented with why a column cannot carry it:
+reachability from a hashable message, oneof membership, value-dependent
+clashes such as `non_empty` with `max_len: 0`, recursion for `max_depth`, and
+the `unique_by` key checks.
 
 ## Removing one
 
-Reserve both halves: `reserved 6;` **and** `reserved "max_len";`. A number
+Delete the declaration, the canary field, the struct field, the reader line,
+and the table row together; the compiler holds the halves to each other, in
+both directions, with the same errors as above.
+
+Then reserve both halves: `reserved 6;` **and** `reserved "max_len";`. A number
 reservation alone leaves the name free, so a later field can take the old name
 at a new number and collide with stored JSON and text-format data, which is
 exactly where old and new tooling meet.

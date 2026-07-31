@@ -39,11 +39,22 @@ message Readings {
   // a batch is self-describing to a consumer that arrives mid-stream or reads
   // it out of storage. Units and bounds repeat per batch, not per sample; the
   // in-process catalog deduplicates descriptors across batches.
+  //
+  // One descriptor per key: two descriptors for one signal contradict each
+  // other exactly when it matters — different units for the same samples —
+  // and a consumer given both has no way to choose, so the batch is rejected
+  // rather than resolved by arrival order.
   repeated SignalDescriptor descriptors = 1 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
+    unique_by: ["key"]
     max_items: 65536
   }];
 
+  // Deliberately not unique by key, unlike the descriptors above: a metric
+  // report legitimately carries a series of samples for one signal, separated
+  // only by their own timestamps. Keying on the timestamp too would name a
+  // field that may be absent, which is a duplicate verdict the vocabulary
+  // refuses to draw.
   repeated Reading samples = 2 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
     max_items: 65536

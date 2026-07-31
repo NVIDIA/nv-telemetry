@@ -33,6 +33,7 @@ message StateObservation {
   // in the contract's vocabulary once projection has mapped it.
   optional string name = 2 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 256
   }];
 
@@ -47,6 +48,12 @@ message StateObservation {
 message States {
   option (nv.telemetry.options.v1.message_invariant) = {validated: true};
 
+  // Deliberately not unique by subject and name. A batch reporting one facet
+  // twice looks like a contradiction from a polled source, but a streaming one
+  // — a gNMI ON_CHANGE subscription whose window covers an interface going
+  // down and back up — is reporting a series, and each observation carries its
+  // own timestamp to say so. Rejecting the pair would discard a real
+  // transition to enforce a snapshot shape only some sources have.
   repeated StateObservation observations = 1 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
     max_items: 65536

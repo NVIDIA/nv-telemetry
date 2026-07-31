@@ -1,0 +1,178 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Fixture for the applicability rules covering `non_empty`,
+// `reject_unspecified`, and `unique_by`.
+//
+// Every field here carries an annotation that would do nothing, or would do
+// something its author did not mean, if the compiler accepted it. That is the
+// failure mode worth a fixture: an annotation that is rejected is a build
+// error somebody fixes, while an annotation that is silently ignored reads in
+// review as a constraint that is being enforced.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+
+enum Level {
+  LEVEL_UNSPECIFIED = 0;
+  LEVEL_ONE = 1;
+}
+
+// A hashable root of its own, kept apart from Misapplied so that making
+// `collection_metadata` applicable here does not make it applicable there.
+message Stamps {
+  option (nv.telemetry.options.v1.message_invariant) = {
+    validated: true
+    hashable: true
+  };
+
+  // Keys on a field the hash is defined to ignore.
+  repeated Stamped stamped = 1 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "etag" ]}];
+}
+
+message Stamped {
+  optional string id = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Present on every element, so it passes the presence half of the key rule.
+  // It is still not content.
+  optional string etag = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    collection_metadata: true
+  }];
+}
+
+// Not `validated`, so nothing canonicalizes it and its `unordered` field is
+// only sorted by a wrapper that does not exist. Two instances naming the same
+// thing can differ structurally.
+message Loose {
+  optional string name = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  repeated string tags = 2 [(nv.telemetry.options.v1.field_invariant) = {unordered: true}];
+}
+
+message Element {
+  optional string id = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Not required, so it cannot decide whether two elements are the same one.
+  optional string note = 2;
+
+  repeated string parts = 3;
+
+  repeated string bits = 4;
+
+  // The other spelling of "always carries a value". A field whose zero is real
+  // data has no absent state, so it is a sound key — and `required` cannot be
+  // written alongside it, which is why the key rule must accept this on its
+  // own.
+  uint32 index = 5 [(nv.telemetry.options.v1.field_invariant) = {zero_is_meaningful: true}];
+
+  optional Loose loose = 8 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // A member of a declared oneof, claiming to be required. The claim cannot
+  // hold: the arm is absent whenever a sibling carries the value.
+  oneof arm {
+    string left = 6 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+    string right = 7;
+  }
+}
+
+message Misapplied {
+  // Emptiness means nothing on a number.
+  optional uint32 count = 1 [(nv.telemetry.options.v1.field_invariant) = {non_empty: true}];
+
+  // Must hold something, and may hold nothing.
+  optional string blank = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 0
+  }];
+
+  // The empty string is declared to be real data and also to be invalid.
+  string implicit = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    zero_is_meaningful: true
+    non_empty: true
+  }];
+
+  // A string has no unspecified value to reject.
+  optional string label = 4 [(nv.telemetry.options.v1.field_invariant) = {reject_unspecified: true}];
+
+  // The enum spelling of `implicit` above, and the worse of the two: the
+  // presence exemption is granted on the claim that the unspecified value is
+  // data, and then every message carrying it is rejected.
+  Level level = 14 [(nv.telemetry.options.v1.field_invariant) = {
+    zero_is_meaningful: true
+    reject_unspecified: true
+  }];
+
+  // `required` rejects absence, and a repeated field is never absent — it is
+  // empty, which is data. What this would actually mean is a minimum item
+  // count wearing the wrong name.
+  repeated string always = 18 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // Keys on a oneof member that claims to be required. Rejected on the key
+  // regardless of that claim, because the arm is absent whenever its sibling
+  // holds the value.
+  repeated Element armed = 16 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "left" ]}];
+
+  // Keys on a message type nothing canonicalizes. The key is present on every
+  // element, is content, and is not repeated — so every other half of the rule
+  // passes, and only equality is unsound.
+  repeated Element unstable = 17 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "loose" ]}];
+
+  // Every element rule below describes an element this field cannot hold.
+  repeated Element vacuous = 15 [(nv.telemetry.options.v1.field_invariant) = {
+    max_items: 0
+    unordered: true
+    unique_by: [ "id" ]
+  }];
+
+  // Scalars have no fields to key on.
+  repeated string tags = 5 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "whatever" ]}];
+
+  // One element cannot collide with itself.
+  optional Element one = 6 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "id" ]}];
+
+  // Names a field Element does not declare, so nothing would be compared.
+  repeated Element typo = 7 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "idd" ]}];
+
+  // Names a field that may be absent, so two elements omitting it would be
+  // called duplicates.
+  repeated Element loose = 8 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "note" ]}];
+
+  // Names a repeated field, whose own element order would decide identity.
+  repeated Element listy = 9 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "parts" ]}];
+
+  // Names one key twice. The repeat narrows nothing, so half the annotation
+  // is decorative.
+  repeated Element doubled = 11 [(nv.telemetry.options.v1.field_invariant) = {
+    unique_by: [
+      "id",
+      "id"
+    ]
+  }];
+
+  // Two bad keys at once. Each must be named, or the report says the same
+  // thing twice and identifies neither.
+  repeated Element pair = 12 [(nv.telemetry.options.v1.field_invariant) = {
+    unique_by: [
+      "parts",
+      "bits"
+    ]
+  }];
+
+  // Accepted, and pinned on purpose. On a repeated string `non_empty` is a
+  // per-element rule, as `max_len` is, and `Subject.scope` relies on that. A
+  // guard narrowed to reject repeated fields would leave every violation above
+  // unchanged and break the contract instead, so this field's absence from the
+  // expected list is the assertion.
+  repeated string labels = 10 [(nv.telemetry.options.v1.field_invariant) = {non_empty: true}];
+
+  // Accepted for the same reason: a `zero_is_meaningful` key is never absent,
+  // so it is a sound one. If the key rule tested `required` alone, this would
+  // be rejected and there would be no way to write it, since `required` is
+  // itself refused on a `zero_is_meaningful` field.
+  repeated Element indexed = 13 [(nv.telemetry.options.v1.field_invariant) = {unique_by: [ "index" ]}];
+}

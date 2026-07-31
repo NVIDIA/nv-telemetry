@@ -27,15 +27,22 @@ message InventoryItem {
   optional Value.Map attributes = 2;
 
   // Where it was read from, kept as provenance; identity stays the subject.
-  optional string source_key = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 1024}];
+  optional string source_key = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 1024
+  }];
 }
 
 // The inventory payload domain.
 message Inventory {
   option (nv.telemetry.options.v1.message_invariant) = {validated: true};
 
+  // One item per subject. Inventory answers "what exists", and a complete
+  // batch is used to establish that previously known items are gone — so a
+  // subject appearing twice makes the count of what exists ambiguous.
   repeated InventoryItem items = 1 [(nv.telemetry.options.v1.field_invariant) = {
     unordered: true
+    unique_by: ["subject"]
     max_items: 65536
   }];
 }

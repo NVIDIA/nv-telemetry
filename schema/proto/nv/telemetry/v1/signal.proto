@@ -40,8 +40,13 @@ message SignalKey {
 
   // Which of the resource's signals, where one resource carries several — a
   // power supply reporting both watts and kilowatt-hours. Absent when the
-  // resource carries a single signal.
-  optional string facet = 2 [(nv.telemetry.options.v1.field_invariant) = {max_len: 128}];
+  // resource carries a single signal, which is a different key from a facet
+  // that is present and empty — hence `non_empty` rather than a convention
+  // that treats the two alike.
+  optional string facet = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 128
+  }];
 }
 
 // The range a sensor can read. Not alarm thresholds: a threshold is writable
@@ -67,11 +72,17 @@ message SignalDescriptor {
   // What the signal measures — temperature, power, energy — in the
   // contract's vocabulary. A string rather than an enum because source
   // reading types are open sets; projection maps and validates them.
-  optional string kind = 2 [(nv.telemetry.options.v1.field_invariant) = {max_len: 128}];
+  optional string kind = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 128
+  }];
 
   // Unit of every sample under this key, in UCUM. Absent for dimensionless
-  // signals.
-  optional string unit = 3 [(nv.telemetry.options.v1.field_invariant) = {max_len: 64}];
+  // signals — which is the encoding for that, rather than the empty string.
+  optional string unit = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 64
+  }];
 
   optional ValueRange range = 4;
 }

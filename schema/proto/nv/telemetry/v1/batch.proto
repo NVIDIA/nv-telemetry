@@ -37,9 +37,13 @@ enum Completeness {
 message Coverage {
   option (nv.telemetry.options.v1.message_invariant) = {validated: true};
 
-  // UNSPECIFIED is rejected by validation: a batch that does not know its own
-  // completeness cannot be used to reason about absence.
-  optional Completeness completeness = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+  // A batch that does not know its own completeness cannot be used to reason
+  // about absence, so UNSPECIFIED is rejected as well as absence: `required`
+  // alone would accept a producer that set the field to "not stated".
+  optional Completeness completeness = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    reject_unspecified: true
+  }];
 
   // The subtree observed; absent means the whole endpoint. On a graph
   // payload, scope means reachability from this subject.
@@ -53,6 +57,7 @@ message EndpointContext {
 
   optional string endpoint_id = 1 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 256
   }];
 
@@ -68,11 +73,13 @@ message Origin {
 
   optional string provider = 1 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 128
   }];
 
   optional string request_class = 2 [(nv.telemetry.options.v1.field_invariant) = {
     required: true
+    non_empty: true
     max_len: 128
   }];
 }

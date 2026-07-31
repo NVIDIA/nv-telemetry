@@ -403,8 +403,10 @@ The model must preserve:
 
 The schema carries two kinds of annotation. Invariant and semantic options
 state what a valid message is — presence requirements, finite-float
-constraints, size and depth bounds, canonical ordering — and how it is
-compared, which is where the collection-metadata exclusion lives.
+constraints, size and depth bounds, non-emptiness, rejection of an enum's
+unspecified value, element uniqueness within a collection, canonical ordering
+— and how it is compared, which is where the collection-metadata exclusion
+lives.
 Where an established vocabulary exists the schema uses it rather than
 inventing one. The exception is value constraints, where protovalidate would
 otherwise be the obvious choice: the compiler is a component this project owns
@@ -439,6 +441,21 @@ bytes. Every scalar field therefore either declares explicit presence
 meaningful, and the compiler rejects any schema that violates the rule. This
 is the schema-level form of the output rule that a failed request emits no
 fabricated observation.
+
+Presence is necessary and not sufficient. A field that is set may still carry
+nothing: the empty string sets a string, and an enum's unspecified value sets
+an enum, so both satisfy a presence requirement while saying nothing — and
+both are what a half-failed read produces. Identity and naming fields therefore
+also declare non-emptiness, and the enums a consumer branches on reject their
+unspecified value. A subject with an empty identifier is the sharpest case,
+because subjects are hashed: every subject an identity projection failed on
+would hash equal and join to the same resource.
+
+Rejection stops at the zero value. An enum value the build does not recognise
+is a newer producer naming something real, so it decodes rather than
+invalidating the message; deciding what to do with it belongs to the consumer.
+The alternative would make every added enum value a breaking change, which
+contradicts the additive-only evolution rule.
 
 ### Foreign types
 

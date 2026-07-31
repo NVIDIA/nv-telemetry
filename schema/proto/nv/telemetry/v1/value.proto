@@ -40,6 +40,11 @@ message Timestamp {
 // The null type's one inhabitant. A property that is present and explicitly
 // null is a different fact from a property that is absent, and the resource
 // graph preserves the difference.
+//
+// The one message in the contract without `validated`, and deliberately so: it
+// has no fields, so there is nothing to check and nothing to canonicalize, and
+// a wrapper around it would be a type whose only value is itself. The arm that
+// carries it needs no payload.
 message Null {}
 
 // A numeric sample.
@@ -104,6 +109,7 @@ message Value {
 
       optional string key = 1 [(nv.telemetry.options.v1.field_invariant) = {
         required: true
+        non_empty: true
         max_len: 256
       }];
 
@@ -111,12 +117,13 @@ message Value {
     }
 
     // Key-sorted: canonicalization orders entries by key, which also makes
-    // duplicate keys adjacent, and validation rejects them. An entry list
-    // rather than a proto map because a proto map has no wire order to
+    // duplicate keys adjacent, and `unique_by` is what rejects them. An entry
+    // list rather than a proto map because a proto map has no wire order to
     // canonicalize, silently keeps the last duplicate, and its synthetic
     // entry fields cannot carry bounds.
     repeated Entry entries = 1 [(nv.telemetry.options.v1.field_invariant) = {
       unordered: true
+      unique_by: ["key"]
       max_items: 1024
     }];
   }

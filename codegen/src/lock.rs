@@ -33,7 +33,11 @@ use prost_reflect::FieldDescriptor;
 use prost_reflect::Kind;
 
 use crate::is_contract_package;
+use crate::options::FieldInvariant;
+use crate::options::MessageInvariant;
 use crate::options::Vocabulary;
+use crate::options::FIELD_OPTIONS;
+use crate::options::MESSAGE_OPTIONS;
 
 const HEADER: &str = "\
 # nv-telemetry contract lock.
@@ -81,22 +85,9 @@ impl Snapshot {
             if !is_contract_package(message.package_name()) || message.is_map_entry() {
                 continue;
             }
-            let annotations =
-                vocabulary
-                    .message_invariant(&message)
-                    .map_or_else(String::new, |invariant| {
-                        let mut parts = Vec::new();
-                        if invariant.validated {
-                            parts.push("validated".to_owned());
-                        }
-                        if invariant.hashable {
-                            parts.push("hashable".to_owned());
-                        }
-                        if let Some(depth) = invariant.max_depth {
-                            parts.push(format!("max_depth={depth}"));
-                        }
-                        parts.join(" ")
-                    });
+            let annotations = vocabulary
+                .message_invariant(&message)
+                .map_or_else(String::new, render_message_invariant);
             snapshot.messages.insert(
                 format!("{} {annotations}", message.full_name())
                     .trim_end()
@@ -227,27 +218,115 @@ fn field_annotations(vocabulary: &Vocabulary, field: &FieldDescriptor) -> String
     let Some(invariant) = vocabulary.field_invariant(field) else {
         return String::new();
     };
-    let mut parts = Vec::new();
-    if invariant.zero_is_meaningful {
-        parts.push("zero_is_meaningful".to_owned());
-    }
-    if invariant.finite {
-        parts.push("finite".to_owned());
-    }
-    if invariant.required {
-        parts.push("required".to_owned());
-    }
-    if invariant.unordered {
-        parts.push("unordered".to_owned());
-    }
-    if let Some(items) = invariant.max_items {
-        parts.push(format!("max_items={items}"));
-    }
-    if let Some(len) = invariant.max_len {
-        parts.push(format!("max_len={len}"));
-    }
-    if invariant.collection_metadata {
-        parts.push("collection_metadata".to_owned());
-    }
+    render_field_invariant(&invariant)
+}
+
+/// Renders a message's annotations, one part per option-table row.
+fn render_message_invariant(invariant: MessageInvariant) -> String {
+    let parts: Vec<String> = MESSAGE_OPTIONS
+        .iter()
+        .filter_map(|option| (option.render)(invariant))
+        .collect();
     parts.join(" ")
+}
+
+/// Renders one field's annotations, one part per option-table row.
+///
+/// The rendering is a column of the table, so an option cannot exist without a
+/// lock line — which matters more here than at any other consumer: the lock is
+/// the only gate that sees an annotation's value at all, and the hand-kept
+/// list this replaces needed a coverage test to keep options from quietly
+/// going unrecorded.
+fn render_field_invariant(invariant: &FieldInvariant) -> String {
+    let parts: Vec<String> = FIELD_OPTIONS
+        .iter()
+        .filter_map(|option| (option.render)(invariant))
+        .collect();
+    parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_field_invariant;
+    use super::render_message_invariant;
+    use crate::options::FieldInvariant;
+    use crate::options::MessageInvariant;
+    use crate::options::Vocabulary;
+
+    /// A `FieldInvariant` with every option carrying a non-default value.
+    ///
+    /// Written out in full rather than derived, because the point is that it
+    /// stops compiling when the vocabulary gains a field. A `..Default`
+    /// shorthand would leave the new field at its default, and the assertion
+    /// below would then report a missing lock line for something the author
+    /// had not been told to think about.
+    fn everything_set() -> FieldInvariant {
+        FieldInvariant {
+            zero_is_meaningful: true,
+            finite: true,
+            required: true,
+            unordered: true,
+            max_items: Some(1),
+            max_len: Some(1),
+            collection_metadata: true,
+            non_empty: true,
+            reject_unspecified: true,
+            unique_by: vec!["k".to_owned()],
+        }
+    }
+
+    /// The message-level counterpart, written out in full for the same reason.
+    fn every_message_option_set() -> MessageInvariant {
+        MessageInvariant {
+            validated: true,
+            hashable: true,
+            max_depth: Some(1),
+        }
+    }
+
+    #[test]
+    fn every_option_the_compiler_reads_reaches_the_lock() {
+        // The lock is the only gate that sees an annotation's *value* at all —
+        // `buf breaking` compares numbers, types and cardinality and never
+        // option values — so an option missing from here has no review surface
+        // whatsoever. The renderer iterates the option table, which makes a
+        // *forgotten* line impossible; what this still guards is a *wrong*
+        // one — a row whose render returns `None` when set, or renders a
+        // string that fails to name the option.
+        //
+        // All three option kinds, because the argument does not care which
+        // declaration an option hangs off, and covering only fields would
+        // leave `hashable` free to vanish from the lock unnoticed.
+        let fields = render_field_invariant(&everything_set());
+        for option in Vocabulary::field_option_names() {
+            assert!(
+                fields.contains(option),
+                "field option `{option}` is read by the compiler but never \
+                 reaches the contract lock, so changing it on a field would \
+                 produce no diff; rendered as `{fields}`"
+            );
+        }
+
+        let messages = render_message_invariant(every_message_option_set());
+        for option in Vocabulary::message_option_names() {
+            assert!(
+                messages.contains(option),
+                "message option `{option}` is read by the compiler but never \
+                 reaches the contract lock; rendered as `{messages}`"
+            );
+        }
+
+        // A oneof carries one option, and the lock records it as a suffix on
+        // the oneof line rather than as a named token — so there is no
+        // rendering to drive, and the honest check is that the vocabulary
+        // still has exactly the one option that suffix stands for. A second
+        // one would otherwise be read by the compiler and recorded nowhere.
+        assert_eq!(
+            Vocabulary::oneof_option_names(),
+            ["required"],
+            "the oneof vocabulary grew; the lock records only `required`, as a \
+             suffix on the oneof line, so give the new option a place in \
+             `Snapshot::capture` and extend this"
+        );
+    }
 }
