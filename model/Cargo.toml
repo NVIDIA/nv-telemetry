@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+prost.workspace = true
+
 
 [lints]
 workspace = true

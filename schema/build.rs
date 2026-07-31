@@ -39,7 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // self-contained pool, able to resolve the annotation extensions rather
     // than only naming them.
     compiler.include_imports(true);
-    compiler.include_source_info(false);
+    // Source info is retained so the schema's own comments reach the code
+    // generated from it. The schema is the source of truth, and its reasoning
+    // is most useful at the place a consumer actually reads — the Rust type —
+    // rather than only in the .proto. It costs about 44 KB in the descriptor
+    // set and makes file-and-line attribution possible for schema errors.
+    compiler.include_source_info(true);
     compiler.open_files(relative)?;
 
     // Deliberately not `protox::compile(..).encode_to_vec()`. That path goes

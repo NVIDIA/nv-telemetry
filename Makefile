@@ -34,19 +34,23 @@ proto-baseline ?= origin/main
 .PHONY: all ci fmt bench codegen check-codegen proto-lint proto-breaking \
 	check-proto-format require-buf rust-install clean
 
+# `--locked` throughout: generated output is byte-compared, and it is produced
+# by prost-build and prettyplease. Without the lockfile held authoritative, a
+# patch bump to either rewrites the generated tree and surfaces as "generated
+# files disagree with the schema" on a pull request that touched neither.
 define build-and-test
 	cargo +$(fmt-toolchain) fmt --all -- --check
 	+$(MAKE) check-proto-format
 	+$(MAKE) proto-lint
 	+$(MAKE) proto-breaking
 	+$(MAKE) check-codegen
-	cargo clippy --workspace --all-targets -- -D warnings
-	cargo clippy --workspace --all-targets $1 -- -D warnings
-	cargo build --workspace
-	cargo build --workspace $1
-	cargo test --workspace -- --no-capture
-	cargo test --workspace $1 -- --no-capture
-	cargo doc --workspace --no-deps $1
+	cargo clippy --locked --workspace --all-targets -- -D warnings
+	cargo clippy --locked --workspace --all-targets $1 -- -D warnings
+	cargo build --locked --workspace
+	cargo build --locked --workspace $1
+	cargo test --locked --workspace -- --no-capture
+	cargo test --locked --workspace $1 -- --no-capture
+	cargo doc --locked --workspace --no-deps $1
 
 endef
 
@@ -97,10 +101,10 @@ require-buf:
 # steps, so a schema edit without regeneration fails immediately rather than
 # surfacing later as a confusing compile error.
 codegen:
-	cargo run -p nv-telemetry-codegen -- generate
+	cargo run --locked -p nv-telemetry-codegen -- generate
 
 check-codegen:
-	cargo run -p nv-telemetry-codegen -- --check
+	cargo run --locked -p nv-telemetry-codegen -- --check
 
 # Instruction counts under Valgrind, so results do not depend on machine
 # load. Needs valgrind and a gungraun-runner matching the gungraun version

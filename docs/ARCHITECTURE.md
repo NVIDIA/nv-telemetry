@@ -635,11 +635,14 @@ It emits:
 
 Annotation errors fail the build, attributed to the declaration that caused
 them: a field, message, or extension by fully-qualified name, and a file by
-path where the rule is about the file itself. They do not carry a file and line: source
-locations are dropped when the descriptor set is built, because carrying them
-would put every comment in the schema into an artifact that ships to
-consumers. A name identifies the declaration uniquely, which is what a fix
-needs. The compiler never emits silently
+path where the rule is about the file itself. A name identifies the
+declaration uniquely, which is what a fix needs.
+
+The descriptor set retains source information, which costs it about 44 KB. The
+schema's comments are where the reasoning lives, and dropping them would mean
+the generated types — the place a consumer actually reads — arrive with no
+explanation of why a field exists or what its absence means. Retaining it also
+leaves the door open to file-and-line attribution on schema errors. The compiler never emits silently
 degraded code: an annotation it cannot honor is an error, not a warning.
 Generated output is deterministic and unchanged output is not rewritten, so a
 codegen change is reviewable as a schema-shaped diff and can be golden-tested
