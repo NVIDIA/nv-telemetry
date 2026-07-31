@@ -35,22 +35,29 @@ proto-baseline ?= origin/main
 	check-proto-format require-buf rust-install clean
 
 # `--locked` throughout: generated output is byte-compared, and it is produced
-# by prost-build and prettyplease. Without the lockfile held authoritative, a
-# patch bump to either rewrites the generated tree and surfaces as "generated
-# files disagree with the schema" on a pull request that touched neither.
+# by prost-build and prettyplease — the latter reaching us only transitively,
+# so the lockfile is the only thing that can pin it. Without it held
+# authoritative, a patch bump rewrites the generated tree and surfaces as
+# "generated files differ" on a pull request that touched neither.
+#
+# The cost is that we otherwise only ever build one resolution. The scheduled
+# latest-dependencies job clears this variable to resolve freshly, which is
+# where upstream breakage and generator-output drift are meant to be found.
+cargo-locked ?= --locked
+
 define build-and-test
 	cargo +$(fmt-toolchain) fmt --all -- --check
 	+$(MAKE) check-proto-format
 	+$(MAKE) proto-lint
 	+$(MAKE) proto-breaking
 	+$(MAKE) check-codegen
-	cargo clippy --locked --workspace --all-targets -- -D warnings
-	cargo clippy --locked --workspace --all-targets $1 -- -D warnings
-	cargo build --locked --workspace
-	cargo build --locked --workspace $1
-	cargo test --locked --workspace -- --no-capture
-	cargo test --locked --workspace $1 -- --no-capture
-	cargo doc --locked --workspace --no-deps $1
+	cargo clippy $(cargo-locked) --workspace --all-targets -- -D warnings
+	cargo clippy $(cargo-locked) --workspace --all-targets $1 -- -D warnings
+	cargo build $(cargo-locked) --workspace
+	cargo build $(cargo-locked) --workspace $1
+	cargo test $(cargo-locked) --workspace -- --no-capture
+	cargo test $(cargo-locked) --workspace $1 -- --no-capture
+	cargo doc $(cargo-locked) --workspace --no-deps $1
 
 endef
 
@@ -101,10 +108,10 @@ require-buf:
 # steps, so a schema edit without regeneration fails immediately rather than
 # surfacing later as a confusing compile error.
 codegen:
-	cargo run --locked -p nv-telemetry-codegen -- generate
+	cargo run $(cargo-locked) -p nv-telemetry-codegen -- generate
 
 check-codegen:
-	cargo run --locked -p nv-telemetry-codegen -- --check
+	cargo run $(cargo-locked) -p nv-telemetry-codegen -- --check
 
 # Instruction counts under Valgrind, so results do not depend on machine
 # load. Needs valgrind and a gungraun-runner matching the gungraun version

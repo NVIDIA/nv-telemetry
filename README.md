@@ -112,6 +112,14 @@ buf is a checker only. The descriptor set is built by protox from
 the data plane pulls only `prost`. Contributors do need the buf binary for
 `make all`; see [its install docs](https://buf.build/docs/cli/installation).
 
+`Cargo.lock` is committed, which is not the usual choice for a library. It is
+not for consumers — their resolution ignores it entirely — but for the
+generated tree: the formatter that decides those bytes reaches this workspace
+only transitively, so no manifest entry can pin it and only the lockfile can.
+The cost is that ordinary builds see one resolution, which the scheduled
+`Latest dependencies` workflow exists to offset by building against a fresh
+one every week.
+
 # Contribution Guidelines
 - Start here: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
