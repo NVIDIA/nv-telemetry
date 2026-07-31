@@ -3,14 +3,22 @@
 
 //! Properties of the generated wire types.
 //!
+//! Unit tests rather than integration tests, because the generated module is
+//! crate-internal: making it public so a `tests/` file could reach it would
+//! trade the guarantee for the convenience of testing it.
+//!
 //! These check the schema's decisions as they actually reach a consumer, not
 //! as they read in the `.proto`. The presence discipline in particular is
 //! only worth anything if it survives into the generated API — a scalar that
 //! arrived as a bare `f64` instead of an `Option<f64>` would mean an absent
 //! reading and a reading of zero had become the same value again.
 
-use nv_telemetry_model::wire;
 use prost::Message as _;
+use prost_reflect::DescriptorPool;
+use prost_reflect::DynamicMessage;
+use prost_reflect::Value as V;
+
+use crate::generated::wire;
 
 #[test]
 fn an_absent_reading_and_a_zero_reading_are_different_bytes() {
@@ -188,4 +196,85 @@ fn signal_key() -> wire::SignalKey {
         }),
         facet: None,
     }
+}
+
+#[test]
+fn generated_types_and_descriptors_encode_identically() {
+    let pool = pool();
+
+    // Built with the generated types.
+    let native = wire::Subject {
+        kind: Some("sensor".into()),
+        scope: vec!["1U".into(), "PSU1".into()],
+        id: Some("CPU1Temp".into()),
+    };
+
+    // The same value, built against the descriptors the rules ran over.
+    let descriptor = pool
+        .get_message_by_name("nv.telemetry.v1.Subject")
+        .expect("Subject is in the shipped schema");
+    let mut dynamic = DynamicMessage::new(descriptor.clone());
+    dynamic.set_field_by_name("kind", V::String("sensor".into()));
+    dynamic.set_field_by_name(
+        "scope",
+        V::List(vec![V::String("1U".into()), V::String("PSU1".into())]),
+    );
+    dynamic.set_field_by_name("id", V::String("CPU1Temp".into()));
+
+    assert_eq!(
+        native.encode_to_vec(),
+        dynamic.encode_to_vec(),
+        "the generated type and the descriptors disagree about the wire format"
+    );
+
+    // And across the boundary in both directions.
+    let from_dynamic = wire::Subject::decode(dynamic.encode_to_vec().as_slice())
+        .expect("descriptor-encoded bytes decode into the generated type");
+    assert_eq!(from_dynamic, native);
+
+    DynamicMessage::decode(descriptor, native.encode_to_vec().as_slice())
+        .expect("generated-encoded bytes decode against the descriptors");
+}
+
+#[test]
+fn oneof_arms_carry_the_field_numbers_the_schema_declares() {
+    let pool = pool();
+    let descriptor = pool
+        .get_message_by_name("nv.telemetry.v1.NumericValue")
+        .expect("NumericValue is in the shipped schema");
+
+    // Arm selection is a wire-level fact: picking the wrong tag would silently
+    // reinterpret an integer counter as a float.
+    for (name, native, value) in [
+        (
+            "uint_value",
+            wire::NumericValue {
+                kind: Some(wire::numeric_value::Kind::UintValue(91_827_364_554_433_777)),
+            },
+            V::U64(91_827_364_554_433_777),
+        ),
+        (
+            "int_value",
+            wire::NumericValue {
+                kind: Some(wire::numeric_value::Kind::IntValue(-42)),
+            },
+            V::I64(-42),
+        ),
+    ] {
+        let mut dynamic = DynamicMessage::new(descriptor.clone());
+        dynamic.set_field_by_name(name, value);
+        assert_eq!(
+            native.encode_to_vec(),
+            dynamic.encode_to_vec(),
+            "generated `{name}` does not match the descriptor's encoding"
+        );
+    }
+}
+
+/// The descriptors the invariant rules ran over, decoded from the schema crate.
+///
+/// Built here rather than borrowed from the compiler so that this crate's
+/// tests do not depend on it — the dependency runs the other way.
+fn pool() -> DescriptorPool {
+    DescriptorPool::decode(nv_telemetry_schema::DESCRIPTOR_SET).expect("shipped schema decodes")
 }

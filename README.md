@@ -42,8 +42,10 @@ docs/                 architecture and design notes
 one artifact serves the compiler, reflection consumers, and builds in other
 languages. `codegen` is the compiler that reads it; it is a build-time tool and
 never a runtime dependency of anything downstream. `model` is the data plane:
-generated wire types, validated wrappers that own the invariants, canonical
-ordering, and content hashing, with no protocol, I/O, or async dependencies.
+validated wrappers that own the invariants, canonical ordering, and content
+hashing, with no protocol, I/O, or async dependencies. The prost structs
+generated from the schema are crate-internal — the decode target, not the
+public face — so a caller receives a validated type or nothing.
 
 `source` defines what every protocol implements — source and stage traits,
 capability probes, endpoint access, request classification — so `orchestration`

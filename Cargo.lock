@@ -255,7 +255,6 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 name = "nv-telemetry-codegen"
 version = "0.1.0"
 dependencies = [
- "nv-telemetry-model",
  "nv-telemetry-schema",
  "prost",
  "prost-build",
@@ -283,7 +282,9 @@ dependencies = [
 name = "nv-telemetry-model"
 version = "0.1.0"
 dependencies = [
+ "nv-telemetry-schema",
  "prost",
+ "prost-reflect",
 ]
 
 [[package]]

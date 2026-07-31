@@ -22,7 +22,6 @@ prost-types.workspace = true
 # Fixture schemas for compiler tests are compiled in-process; the depth and
 # fidelity tests encode dynamic messages and compare them against the
 # generated types.
-nv-telemetry-model.workspace = true
 prost.workspace = true
 protox.workspace = true
 

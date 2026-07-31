@@ -42,14 +42,34 @@ const HEADER: &str = "\
 //! construction that must be valid goes through the validated wrappers.
 
 // A wire type's shape *is* the wire format, so it is exhaustive on purpose,
-// and its fields are public because that is what decoding produces.
+// and its fields are public within this crate because that is what decoding
+// produces. The module itself is not public: bytes reach a caller through a
+// validated type or not at all.
+//
+// `dead_code` is allowed because the whole contract is generated whether or
+// not anything references a given message yet, and `enum_variant_names`
+// because a oneof's variants are its field names — `double_value`,
+// `int_value` — which the schema chose deliberately. Which types are
+// reachable, and what they are called, are properties of the schema rather
+// than of this file.
+//
+// `clippy::all` is deliberately absent: it subsumes the deny-by-default
+// correctness group, and generated code is exactly where nobody would notice
+// it being silenced.
 //
 // The doc comments are the schema's own prose, carried through verbatim. It
 // is written for a proto audience and cannot be held to rustdoc's markdown
 // rules: a `<Chassis>` in a URI example is an unclosed HTML tag, and under
 // `-D warnings` that would fail the build on the most innocuous edit anyone
 // can make to a schema.
-#![allow(clippy::pedantic, clippy::exhaustive_structs, rustdoc::all)]
+#![allow(
+    clippy::pedantic,
+    clippy::enum_variant_names,
+    clippy::exhaustive_structs,
+    dead_code,
+    unreachable_pub,
+    rustdoc::all
+)]
 ";
 
 /// Renders the contract package as Rust.
