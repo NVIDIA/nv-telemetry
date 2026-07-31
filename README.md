@@ -42,8 +42,10 @@ docs/                 architecture and design notes
 one artifact serves the compiler, reflection consumers, and builds in other
 languages. `codegen` is the compiler that reads it; it is a build-time tool and
 never a runtime dependency of anything downstream. `model` is the data plane:
-generated wire types, validated wrappers that own the invariants, canonical
-ordering, and content hashing, with no protocol, I/O, or async dependencies.
+validated wrappers that own the invariants, canonical ordering, and content
+hashing, with no protocol, I/O, or async dependencies. The prost structs
+generated from the schema are crate-internal — the decode target, not the
+public face — so a caller receives a validated type or nothing.
 
 `source` defines what every protocol implements — source and stage traits,
 capability probes, endpoint access, request classification — so `orchestration`
@@ -111,6 +113,14 @@ buf is a checker only. The descriptor set is built by protox from
 `schema/build.rs`, so `cargo build` needs no external binary and a consumer of
 the data plane pulls only `prost`. Contributors do need the buf binary for
 `make all`; see [its install docs](https://buf.build/docs/cli/installation).
+
+`Cargo.lock` is committed, which is not the usual choice for a library. It is
+not for consumers — their resolution ignores it entirely — but for the
+generated tree: the formatter that decides those bytes reaches this workspace
+only transitively, so no manifest entry can pin it and only the lockfile can.
+The cost is that ordinary builds see one resolution, which the scheduled
+`Latest dependencies` workflow exists to offset by building against a fresh
+one every week.
 
 # Contribution Guidelines
 - Start here: [CONTRIBUTING.md](CONTRIBUTING.md)

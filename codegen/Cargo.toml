@@ -14,11 +14,14 @@ path = "src/main.rs"
 
 [dependencies]
 nv-telemetry-schema.workspace = true
+prost-build.workspace = true
 prost-reflect.workspace = true
+prost-types.workspace = true
 
 [dev-dependencies]
-# Fixture schemas for compiler tests are compiled in-process, and the depth
-# test encodes dynamic messages.
+# Fixture schemas for compiler tests are compiled in-process; the depth and
+# fidelity tests encode dynamic messages and compare them against the
+# generated types.
 prost.workspace = true
 protox.workspace = true
 

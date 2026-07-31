@@ -18,6 +18,9 @@ usage: nv-telemetry-codegen <command>
 
   generate    rewrite the generated trees
   --check     report whether the generated trees are up to date
+
+Generated output is the contract lock, the wire types, and their module root.
+All three are checked in and compared byte for byte.
 ";
 
 fn main() -> ExitCode {
@@ -58,10 +61,16 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
                 outcome.examined,
                 outcome.written.len()
             );
-            if !outcome.written.is_empty() {
+            for path in &outcome.written {
+                println!("  wrote {}", path.display());
+            }
+            if outcome
+                .written
+                .iter()
+                .any(|path| path.ends_with("contract.lock"))
+            {
                 println!(
-                    "review the schema/contract.lock diff: it records semantics no other \
-                     gate checks"
+                    "review the contract lock diff: it records semantics no other gate checks"
                 );
             }
             ExitCode::SUCCESS
@@ -74,15 +83,22 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
             ExitCode::SUCCESS
         }
         Mode::Check => {
-            eprintln!("nv-telemetry-codegen: the contract lock is stale");
+            eprintln!(
+                "nv-telemetry-codegen: {} generated file(s) differ from what the compiler \
+                 would write",
+                outcome.stale.len()
+            );
             for path in &outcome.stale {
                 eprintln!("  {}", path.display());
             }
             eprintln!(
-                "\nThe lock records contract semantics: numbers, types, presence, \
-                 annotations,\nenum values, and oneofs. `make codegen` regenerates it, and \
-                 the diff it\nproduces is the only review surface for annotation and \
-                 pre-release changes —\nread the diff; do not just commit it."
+                "\n`make codegen` regenerates them. Usually the schema changed and the \
+                 tree\ndid not; a stray `cargo fmt` on stable can also rewrite generated \
+                 files,\nwhich regenerating puts back.\n\nRead the resulting diff rather \
+                 than just committing it. The contract lock\nrecords semantics no other \
+                 gate checks — numbers, types, presence,\nannotations, enum values, and \
+                 oneofs — so for annotation changes it is the\nonly review surface there \
+                 is."
             );
             ExitCode::FAILURE
         }

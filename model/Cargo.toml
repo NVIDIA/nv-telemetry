@@ -7,6 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+prost.workspace = true
+
+[dev-dependencies]
+# The fidelity tests compare the generated types against the descriptors the
+# invariant rules ran over. Depending on the schema crate rather than the
+# compiler keeps the dependency pointing one way.
+nv-telemetry-schema.workspace = true
+prost-reflect.workspace = true
+
 
 [lints]
 workspace = true

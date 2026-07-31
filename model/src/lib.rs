@@ -3,11 +3,26 @@
 
 //! Observation data plane.
 //!
-//! Wire types are generated from the `nv.telemetry.v1` schema; the public
-//! names are validated wrappers that own the model's invariants, so anything
-//! downstream of validated ingress may assume they hold.
+//! The public names are validated wrappers that own the model's invariants, so
+//! anything downstream of validated ingress may assume they hold.
+//!
+//! The prost structs generated from `nv.telemetry.v1` are deliberately *not*
+//! public. They are the decode target — public fields, no invariants — and
+//! exposing them would make "no invariant has been checked here" a convention
+//! rather than something the compiler enforces. Bytes reach a caller through a
+//! validated type or not at all.
 //!
 //! This crate has no protocol, I/O, async-runtime, dispatcher, or exporter
 //! dependencies.
 
 mod generated;
+
+#[cfg(test)]
+mod tests;
+/// The protobuf runtime the wire types were generated against.
+///
+/// Re-exported because a consumer cannot encode or decode without
+/// `prost::Message` in scope, and declaring `prost` separately would let a
+/// consumer's version drift from the one these types derive against — a
+/// mismatch that shows up as a trait the generated types do not implement.
+pub use prost;

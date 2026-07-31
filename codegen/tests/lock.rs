@@ -20,7 +20,9 @@ fn the_shipped_lock_matches_the_shipped_schema() {
     let rendered = Snapshot::capture(&pool, &vocabulary).render();
 
     let committed = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../schema/contract.lock"),
+        nv_telemetry_codegen::workspace_root()
+            .expect("run from the repo")
+            .join("schema/contract.lock"),
     )
     .expect("the contract lock is committed");
 

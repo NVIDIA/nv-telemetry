@@ -32,8 +32,8 @@ pub enum Reason {
     /// A map whose values are scalars, so an entry that carries only its key
     /// decodes to a zero value.
     ScalarMapValue,
-    /// A field whose message type is declared outside the contract, so the
-    /// scalars inside it are never checked.
+    /// A field whose message or enum type is declared outside the contract,
+    /// so its contents are never checked.
     ForeignMessageType(String),
     /// A contract file that is not proto3.
     UnsupportedSyntax,
@@ -247,6 +247,19 @@ fn check_message(
                 });
             }
             continue;
+        }
+
+        // Enums escape the same way, and the generated wire types render a
+        // foreign one as a path out of the module — which either fails to
+        // compile or starts resolving the day an unrelated dependency lands.
+        if let Kind::Enum(nested) = field.kind() {
+            if !is_contract_package(nested.package_name()) {
+                violations.push(Violation {
+                    subject: field.full_name().to_owned(),
+                    reason: Reason::ForeignMessageType(nested.full_name().to_owned()),
+                });
+                continue;
+            }
         }
 
         // A repeated field distinguishes empty from absent by its length.

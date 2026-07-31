@@ -32,16 +32,14 @@ nv-telemetry-export = { path = "export", version = "0.1.0" }
 prost = "0.14"
 prost-types = "0.14"
 
-# Build-time only. `protox` compiles the schema without a `protoc` binary, and
-# `prost-reflect` reads custom options as typed values rather than by number.
+# Build-time only. `protox` compiles the schema without a `protoc` binary,
+# `prost-reflect` reads custom options as typed values rather than by number,
+# and `prost-build` renders wire types from the descriptor set protox already
+# produced — so no protobuf compiler is needed at any stage.
 protox = "0.9"
 prost-reflect = "0.16"
+prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 
-# Code generation.
-prettyplease = "0.2"
-proc-macro2 = "1"
-quote = "1"
-syn = "2"
 
 # CI runs clippy with `-D warnings`, so everything below is effectively an
 # error. Lints live here rather than in the CI invocation so that an editor
