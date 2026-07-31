@@ -291,6 +291,12 @@ fn hash_reachable(pool: &DescriptorPool, vocabulary: &Vocabulary) -> BTreeSet<St
             continue;
         }
         for field in message.fields() {
+            if vocabulary
+                .field_invariant(&field)
+                .is_some_and(|invariant| invariant.collection_metadata)
+            {
+                continue;
+            }
             if let Kind::Message(nested) = field.kind() {
                 queue.push_back(nested);
             }

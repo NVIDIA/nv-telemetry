@@ -185,6 +185,15 @@ fn rules_other_than_presence_are_reachable() {
                 }
             ),
             (
+                "nv.telemetry.v1.Trace.tag".to_owned(),
+                lint::Reason::NotApplicable {
+                    option: "collection_metadata",
+                    applies_to: "fields of messages a hashable message \
+                                 reaches; nothing hashes this one, so there \
+                                 is nothing to skip",
+                }
+            ),
+            (
                 "nv.telemetry.v1.sneaky".to_owned(),
                 lint::Reason::ContractExtension
             ),

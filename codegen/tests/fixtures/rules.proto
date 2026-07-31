@@ -59,6 +59,12 @@ message HashRoot {
   };
 
   optional Conflicted child = 1;
+
+  optional Trace trace = 2 [(nv.telemetry.options.v1.field_invariant) = {collection_metadata: true}];
+}
+
+message Trace {
+  optional string tag = 1 [(nv.telemetry.options.v1.field_invariant) = {collection_metadata: true}];
 }
 
 message Conflicted {
