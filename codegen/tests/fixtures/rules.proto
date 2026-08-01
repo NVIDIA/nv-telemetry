@@ -86,3 +86,16 @@ message Island {
 extend Extendable {
   optional double sneaky = 100;
 }
+
+// The generated model turns schema names into Rust identifiers, and protobuf
+// happily permits names Rust reserves — `type` is a common proto field name.
+// Without this rule the failure surfaces as a generation error blaming the
+// emitter's templates for what is a schema decision.
+message Keyworded {
+  // A oneof name becomes a field and an enum type.
+  oneof match {
+    string arm = 2;
+  }
+
+  optional string type = 1;
+}

@@ -31,14 +31,34 @@
 //! compiler force: a new message does not compile until someone answers the
 //! question "does it have cross-field rules?", in a file whose diff shows the
 //! answer.
+//!
+//! Emission builds `quote!` token streams, parses them into a file with
+//! `syn`, and renders with `prettyplease`. Tokens rather than text because
+//! Rust-emitting-Rust through `format!` doubles every brace and can fuse
+//! adjacent tokens; the parse stays because `quote!` guarantees only lexical
+//! well-formedness, and a template assembling tokens in a syntactically
+//! impossible order must fail generation with a codegen error, not the model
+//! crate's build. The file header is prepended verbatim: token streams have
+//! no position for plain `//` comments, and the header's license and lint
+//! rationale are exactly that. The `limits` module stays a text emitter — a
+//! flat list of constants earns no tokens.
+//!
+//! Names the model cannot use as Rust identifiers — keyword field names, a
+//! legal and common thing in protobuf — are rejected by the schema lint
+//! before emission, so `format_ident!` here never meets one.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use proc_macro2::Ident;
+use proc_macro2::Literal;
+use proc_macro2::TokenStream;
 use prost_reflect::DescriptorPool;
 use prost_reflect::FieldDescriptor;
 use prost_reflect::Kind;
 use prost_reflect::MessageDescriptor;
+use quote::format_ident;
+use quote::quote;
 
 use crate::is_contract_package;
 use crate::options::FieldInvariant;
@@ -191,10 +211,33 @@ use super::wire;
 /// shape this generator does not know how to reshape — which is a request to
 /// extend the generator, not a schema error.
 pub fn model(pool: &DescriptorPool, vocabulary: &Vocabulary) -> Result<String, String> {
-    let mut out = String::from(MODEL_HEADER);
+    let mut items = TokenStream::new();
 
     let ordered = ord_needed(pool, vocabulary);
     let roots = root_messages(pool);
+
+    // Every type name the module will contain, seeded with the names its
+    // header already gives meaning: the hand-written vocabulary, the error
+    // types, and the prelude types the generated code spells unqualified. A
+    // derived name landing on one of these — a oneof called `value` becomes
+    // `pub enum Value` beside the imported `Value` — is parseable, so without
+    // this it fails in the model crate's build, blamed on a checked-in file.
+    let mut claimed: BTreeSet<String> = [
+        "Invalid",
+        "Violation",
+        "NumericValue",
+        "Timestamp",
+        "Value",
+        "BTreeMap",
+        "BTreeSet",
+        "String",
+        "Vec",
+        "Option",
+        "Result",
+    ]
+    .iter()
+    .map(|&name| name.to_owned())
+    .collect();
 
     let mut enums: Vec<_> = pool
         .all_enums()
@@ -202,7 +245,7 @@ pub fn model(pool: &DescriptorPool, vocabulary: &Vocabulary) -> Result<String, S
         .collect();
     enums.sort_by(|left, right| left.full_name().cmp(right.full_name()));
     for declared in enums {
-        emit_enum(&mut out, &declared);
+        items.extend(enum_items(&declared, &mut claimed)?);
     }
 
     let mut messages: Vec<_> = pool
@@ -216,16 +259,31 @@ pub fn model(pool: &DescriptorPool, vocabulary: &Vocabulary) -> Result<String, S
     messages.sort_by(|left, right| left.full_name().cmp(right.full_name()));
 
     for message in &messages {
-        emit_message(
-            &mut out,
+        items.extend(message_items(
             message,
             vocabulary,
             ordered.contains(message.full_name()),
             roots.contains(message.full_name()),
-        )?;
+            &mut claimed,
+        )?);
     }
 
-    Ok(out)
+    // `quote!` guarantees lexical well-formedness only; this is what proves
+    // the assembled tokens are a Rust file. A stream that does not parse is a
+    // bug in this module, and it must be reported here — as a generation
+    // failure naming the parse error — rather than downstream as a broken
+    // checked-in file.
+    let parsed = syn::parse2::<syn::File>(items).map_err(|error| {
+        format!(
+            "the model emitter produced invalid Rust: {error}; this is a \
+             codegen template bug, not a schema problem"
+        )
+    })?;
+
+    Ok(format!(
+        "{MODEL_HEADER}\n{}",
+        prettyplease::unparse(&parsed)
+    ))
 }
 
 /// Generated messages needing `Ord` and `Hash`: every message type a
@@ -295,129 +353,202 @@ fn root_messages(pool: &DescriptorPool) -> BTreeSet<String> {
         .collect()
 }
 
-fn emit_enum(out: &mut String, declared: &prost_reflect::EnumDescriptor) {
-    let name = short_name(declared.full_name());
-    let prefix = format!("{}_", screaming(&name));
+/// Claims a derived type name, refusing one the module already uses.
+fn claim(claimed: &mut BTreeSet<String>, name: &str, source: &str) -> Result<(), String> {
+    if claimed.insert(name.to_owned()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{source} derives the type name `{name}`, which the generated \
+             module already uses; rename it in the schema"
+        ))
+    }
+}
 
-    let _ = write!(
-        out,
-        "\n/// Validated form of `{full}`.\n\
-         ///\n\
-         /// The unspecified value is unrepresentable: conversion rejects it, because\n\
-         /// every `{full}` field in the contract declares `reject_unspecified`. A value\n\
-         /// newer than this build decodes as [`{name}::Unrecognized`] instead of\n\
-         /// failing, so additive schema evolution does not break older consumers.\n\
-         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]\n\
-         #[non_exhaustive]\n\
-         pub enum {name} {{\n",
-        full = declared.full_name(),
-    );
+/// `#[doc = " line"]` attributes from plain text lines, the token spelling of
+/// `///` comments; prettyplease renders them back as `///`.
+fn docs<S: AsRef<str>>(lines: &[S]) -> TokenStream {
+    let attrs = lines.iter().map(|line| {
+        let line = line.as_ref();
+        let text = if line.is_empty() {
+            String::new()
+        } else {
+            format!(" {line}")
+        };
+        quote! { #[doc = #text] }
+    });
+    quote! { #(#attrs)* }
+}
+
+fn ident(name: &str) -> Ident {
+    format_ident!("{name}")
+}
+
+fn enum_items(
+    declared: &prost_reflect::EnumDescriptor,
+    claimed: &mut BTreeSet<String>,
+) -> Result<TokenStream, String> {
+    let full = declared.full_name();
+    let short = short_name(full);
+    claim(claimed, &short, &format!("enum `{full}`"))?;
+    let name = ident(&short);
+    let prefix = format!("{}_", screaming(&short));
+
+    let doc = docs(&[
+        format!("Validated form of `{full}`."),
+        String::new(),
+        "The unspecified value is unrepresentable: conversion rejects it, because".to_owned(),
+        format!("every `{full}` field in the contract declares `reject_unspecified`. A value"),
+        format!("newer than this build decodes as [`{short}::Unrecognized`] instead of"),
+        "failing, so additive schema evolution does not break older consumers.".to_owned(),
+    ]);
+    let unrecognized_doc = docs(&[
+        "A value newer than this build. Interpreting it is the consumer's",
+        "decision; re-encoding preserves it.",
+    ]);
+
+    // Variant names are derived, so two schema names can reduce to one Rust
+    // name — `X_A_B` and `X_A__B` both become `AB` — and the generator itself
+    // claims `Unrecognized`. A duplicate variant is still parseable Rust, so
+    // without this check it would fail in the model crate's build, attributed
+    // to a checked-in file rather than to the schema name that caused it.
+    let mut taken = BTreeSet::from(["Unrecognized".to_owned()]);
+    let mut arms = Vec::new();
     for entry in declared.values() {
         if entry.number() == 0 {
             continue;
         }
-        let _ = write!(
-            out,
-            "    /// `{}`.\n    {},\n",
-            entry.name(),
-            arm_name(entry.name(), &prefix)
-        );
-    }
-    out.push_str(
-        "    /// A value newer than this build. Interpreting it is the consumer's\n\
-         \x20   /// decision; re-encoding preserves it.\n\
-         \x20   Unrecognized(i32),\n\
-         }\n",
-    );
-
-    let _ = write!(
-        out,
-        "\nimpl TryFrom<i32> for {name} {{\n\
-         \x20   type Error = Violation;\n\n\
-         \x20   fn try_from(value: i32) -> Result<Self, Violation> {{\n\
-         \x20       match value {{\n\
-         \x20           0 => Err(Violation::Unspecified),\n"
-    );
-    for entry in declared.values() {
-        if entry.number() == 0 {
-            continue;
+        let arm = arm_name(entry.name(), &prefix);
+        // Deriving can produce something Rust cannot spell — stripping the
+        // enum prefix from `FORM_FACTOR_2U` leaves a variant starting with a
+        // digit — and `format_ident!` would panic on it, a generator crash
+        // where a schema error is owed.
+        if syn::parse_str::<Ident>(&arm).is_err() {
+            return Err(format!(
+                "enum `{full}` value `{}` derives the variant name `{arm}`, \
+                 which is not a usable Rust identifier; rename the value in \
+                 the schema",
+                entry.name()
+            ));
         }
-        let _ = writeln!(
-            out,
-            "            {} => Ok(Self::{}),",
-            entry.number(),
-            arm_name(entry.name(), &prefix)
-        );
-    }
-    out.push_str(
-        "            other => Ok(Self::Unrecognized(other)),\n\
-         \x20       }\n\
-         \x20   }\n\
-         }\n",
-    );
-
-    let _ = write!(
-        out,
-        "\nimpl From<{name}> for i32 {{\n\
-         \x20   fn from(value: {name}) -> Self {{\n\
-         \x20       match value {{\n"
-    );
-    for entry in declared.values() {
-        if entry.number() == 0 {
-            continue;
+        if !taken.insert(arm.clone()) {
+            return Err(format!(
+                "enum `{full}` value `{}` becomes the variant `{arm}`, which \
+                 another value — or the generator's own `Unrecognized` arm — \
+                 already uses; rename the value in the schema",
+                entry.name()
+            ));
         }
-        let _ = writeln!(
-            out,
-            "            {name}::{} => {},",
-            arm_name(entry.name(), &prefix),
-            entry.number()
-        );
+        arms.push((
+            ident(&arm),
+            Literal::i32_unsuffixed(entry.number()),
+            entry.name().to_owned(),
+        ));
     }
-    let _ = write!(
-        out,
-        "            {name}::Unrecognized(other) => other,\n\
-         \x20       }}\n\
-         \x20   }}\n\
-         }}\n"
-    );
+
+    let variants = arms.iter().map(|(arm, _, value_name)| {
+        let doc = docs(&[format!("`{value_name}`.")]);
+        quote! { #doc #arm, }
+    });
+    let decode_arms = arms.iter().map(|(arm, number, _)| {
+        quote! { #number => Ok(Self::#arm), }
+    });
+    let encode_arms = arms.iter().map(|(arm, number, _)| {
+        quote! { #name::#arm => #number, }
+    });
+
+    Ok(quote! {
+        #doc
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[non_exhaustive]
+        pub enum #name {
+            #(#variants)*
+            #unrecognized_doc
+            Unrecognized(i32),
+        }
+
+        impl TryFrom<i32> for #name {
+            type Error = Violation;
+
+            fn try_from(value: i32) -> Result<Self, Violation> {
+                match value {
+                    0 => Err(Violation::Unspecified),
+                    #(#decode_arms)*
+                    other => Ok(Self::Unrecognized(other)),
+                }
+            }
+        }
+
+        impl From<#name> for i32 {
+            fn from(value: #name) -> Self {
+                match value {
+                    #(#encode_arms)*
+                    #name::Unrecognized(other) => other,
+                }
+            }
+        }
+    })
 }
 
 /// Everything the generator needs to know about one field, computed once.
 struct Plan {
-    /// Field name; also the accessor, setter, and error-path name.
-    name: String,
-    /// Declaration in the validated struct.
-    decl: String,
-    /// Declaration in the builder.
-    builder_decl: String,
-    /// Setter body for the builder.
-    setter: String,
+    /// Field name as an identifier; also names the accessor and setter.
+    ident: Ident,
+    /// Declared type in the validated struct.
+    decl_ty: TokenStream,
+    /// Declared type in the builder.
+    builder_ty: TokenStream,
+    /// The builder's setter method.
+    setter: TokenStream,
     /// Expression building the validated field inside `build`, consuming
     /// `self.<name>`.
-    build_init: String,
+    build_init: TokenStream,
     /// Expression building the validated field inside `TryFrom`, consuming
     /// `wire.<name>`.
-    from_wire: String,
+    from_wire: TokenStream,
     /// Expression rebuilding the wire field, consuming `value.<name>`.
-    into_wire: String,
+    into_wire: TokenStream,
     /// Statements for `check`, referencing `self.<name>`.
-    checks: String,
-    /// The accessor.
-    accessor: String,
+    checks: TokenStream,
+    /// The accessor method.
+    accessor: TokenStream,
 }
 
 // The message template in execution order — struct, impl, builder, TryFrom,
 // From — and splitting it would scatter what is one shape.
 #[allow(clippy::too_many_lines)]
-fn emit_message(
-    out: &mut String,
+fn message_items(
     message: &MessageDescriptor,
     vocabulary: &Vocabulary,
     ordered: bool,
     root: bool,
-) -> Result<(), String> {
-    let name = short_name(message.full_name());
-    let rules_name = snake(&name);
+    claimed: &mut BTreeSet<String>,
+) -> Result<TokenStream, String> {
+    let full = message.full_name();
+    let short = short_name(full);
+    claim(claimed, &short, &format!("message `{full}`"))?;
+    claim(
+        claimed,
+        &format!("{short}Builder"),
+        &format!("message `{full}`'s builder"),
+    )?;
+    let name = ident(&short);
+    let builder = format_ident!("{short}Builder");
+    // `Match` is a legal, styled message name whose registry function would
+    // be `fn match`; `syn` rejects keywords as identifiers, so this is also
+    // where that surfaces as a schema error rather than a parse failure
+    // blamed on the templates.
+    let rules_name = snake(&short);
+    if syn::parse_str::<Ident>(&rules_name).is_err() {
+        return Err(format!(
+            "message `{full}`'s cross-field rules function would be named \
+             `{rules_name}`, which Rust reserves; rename the message in the \
+             schema"
+        ));
+    }
+    let rules_fn = ident(&rules_name);
+
+    let mut items = TokenStream::new();
 
     let mut plans = Vec::new();
     for field in message.fields() {
@@ -425,173 +556,164 @@ fn emit_message(
             .containing_oneof()
             .is_some_and(|oneof| !oneof.is_synthetic())
         {
-            continue; // Emitted with the oneof.
+            continue; // Planned with the oneof.
         }
         plans.push(plan_field(&field, vocabulary)?);
     }
-
-    let oneof = message
-        .oneofs()
-        .find(|oneof| !oneof.is_synthetic())
-        .map(|oneof| plan_oneof(out, &oneof))
-        .transpose()?;
-    if let Some(oneof) = oneof {
-        plans.push(oneof);
+    for oneof in message.oneofs().filter(|oneof| !oneof.is_synthetic()) {
+        let (payload_enum, plan) = plan_oneof(&oneof, claimed)?;
+        items.extend(payload_enum);
+        plans.push(plan);
     }
 
-    let derives = if ordered {
-        "Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash"
+    let derive = if ordered {
+        quote! { #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] }
     } else {
-        "Clone, Debug, PartialEq, Eq"
+        quote! { #[derive(Clone, Debug, PartialEq, Eq)] }
     };
 
-    // The struct.
-    let _ = write!(
-        out,
-        "\n/// Validated form of `{full}`; the schema carries the field semantics.\n\
-         ///\n\
-         /// Holds its invariants for as long as it exists: built through\n\
-         /// [`{name}Builder`] or decoded from the wire, both of which run the same\n\
-         /// checks, including this message's cross-field rules.\n\
-         #[derive({derives})]\n\
-         pub struct {name} {{\n",
-        full = message.full_name(),
-    );
-    for plan in &plans {
-        let _ = writeln!(out, "    {},", plan.decl);
-    }
-    out.push_str("}\n");
+    let struct_doc = docs(&[
+        format!("Validated form of `{full}`; the schema carries the field semantics."),
+        String::new(),
+        "Holds its invariants for as long as it exists: built through".to_owned(),
+        format!("[`{short}Builder`] or decoded from the wire, both of which run the same"),
+        "checks, including this message's cross-field rules.".to_owned(),
+    ]);
+    let builder_doc = docs(&[
+        format!("Builds a [`{short}`]. Setters are infallible; [`build`]({short}Builder::build)"),
+        "validates everything at once, exactly as decoding does.".to_owned(),
+    ]);
+    let builder_fn_doc = docs(&["A builder holding nothing yet."]);
+    let build_doc = docs(&[
+        "Validates and builds.",
+        "",
+        "# Errors",
+        "",
+        "[`Invalid`] naming the first field that is absent or breaks its",
+        "schema invariants.",
+    ]);
 
-    // Inherent impl: builder handle, accessors, check.
-    let _ = write!(
-        out,
-        "\nimpl {name} {{\n\
-         \x20   /// A builder holding nothing yet.\n\
-         \x20   #[must_use]\n\
-         \x20   pub fn builder() -> {name}Builder {{\n\
-         \x20       {name}Builder::default()\n\
-         \x20   }}\n"
-    );
-    for plan in &plans {
-        out.push_str(&plan.accessor);
-    }
-    let _ = write!(out, "\n    fn check(&self) -> Result<(), Invalid> {{\n");
-    for plan in &plans {
-        out.push_str(&plan.checks);
-    }
-    let _ = write!(
-        out,
-        "        rules::{rules_name}(self)?;\n        Ok(())\n    }}\n"
-    );
-    if root {
-        let _ = write!(
-            out,
-            "\n    /// Decodes and validates from wire bytes.\n\
-             \x20   ///\n\
-             \x20   /// # Errors\n\
-             \x20   ///\n\
-             \x20   /// [`DecodeError::Malformed`](crate::DecodeError) when the bytes are not\n\
-             \x20   /// protobuf, [`DecodeError::Invalid`](crate::DecodeError) when they decode\n\
-             \x20   /// but break the contract.\n\
-             \x20   pub fn decode(bytes: &[u8]) -> Result<Self, crate::DecodeError> {{\n\
-             \x20       let wire = <wire::{name} as ::prost::Message>::decode(bytes)\n\
-             \x20           .map_err(crate::DecodeError::Malformed)?;\n\
-             \x20       Self::try_from(wire).map_err(crate::DecodeError::Invalid)\n\
-             \x20   }}\n\
-             \n\
-             \x20   /// Encodes the canonical wire form.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn encode_to_vec(&self) -> Vec<u8> {{\n\
-             \x20       ::prost::Message::encode_to_vec(&wire::{name}::from(self.clone()))\n\
-             \x20   }}\n"
-        );
-    }
-    out.push_str("}\n");
+    let codec = root.then(|| {
+        let decode_doc = docs(&[
+            "Decodes and validates from wire bytes.",
+            "",
+            "# Errors",
+            "",
+            "[`DecodeError::Malformed`](crate::DecodeError) when the bytes are not",
+            "protobuf, [`DecodeError::Invalid`](crate::DecodeError) when they decode",
+            "but break the contract.",
+        ]);
+        let encode_doc = docs(&["Encodes the canonical wire form."]);
+        quote! {
+            #decode_doc
+            pub fn decode(bytes: &[u8]) -> Result<Self, crate::DecodeError> {
+                let wire = <wire::#name as ::prost::Message>::decode(bytes)
+                    .map_err(crate::DecodeError::Malformed)?;
+                Self::try_from(wire).map_err(crate::DecodeError::Invalid)
+            }
 
-    // The builder.
-    let _ = write!(
-        out,
-        "\n/// Builds a [`{name}`]. Setters are infallible; [`build`]({name}Builder::build)\n\
-         /// validates everything at once, exactly as decoding does.\n\
-         #[derive(Clone, Debug, Default)]\n\
-         pub struct {name}Builder {{\n"
-    );
-    for plan in &plans {
-        let _ = writeln!(out, "    {},", plan.builder_decl);
-    }
-    out.push_str("}\n");
+            #encode_doc
+            #[must_use]
+            pub fn encode_to_vec(&self) -> Vec<u8> {
+                ::prost::Message::encode_to_vec(&wire::#name::from(self.clone()))
+            }
+        }
+    });
 
-    let _ = write!(out, "\nimpl {name}Builder {{\n");
-    for plan in &plans {
-        out.push_str(&plan.setter);
-    }
-    let _ = write!(
-        out,
-        "\n    /// Validates and builds.\n\
-         \x20   ///\n\
-         \x20   /// # Errors\n\
-         \x20   ///\n\
-         \x20   /// [`Invalid`] naming the first field that is absent or breaks its\n\
-         \x20   /// schema invariants.\n\
-         \x20   pub fn build(self) -> Result<{name}, Invalid> {{\n\
-         \x20       let built = {name} {{\n"
-    );
-    for plan in &plans {
-        let _ = writeln!(out, "            {}: {},", plan.name, plan.build_init);
-    }
-    out.push_str(
-        "        };\n\
-         \x20       built.check()?;\n\
-         \x20       Ok(built)\n\
-         \x20   }\n\
-         }\n",
-    );
+    let idents: Vec<&Ident> = plans.iter().map(|plan| &plan.ident).collect();
+    let decl_tys: Vec<&TokenStream> = plans.iter().map(|plan| &plan.decl_ty).collect();
+    let builder_tys: Vec<&TokenStream> = plans.iter().map(|plan| &plan.builder_ty).collect();
+    let setters = plans.iter().map(|plan| &plan.setter);
+    let build_inits = plans.iter().map(|plan| &plan.build_init);
+    let from_wires = plans.iter().map(|plan| &plan.from_wire);
+    let into_wires = plans.iter().map(|plan| &plan.into_wire);
+    let checks = plans.iter().map(|plan| &plan.checks);
+    let accessors = plans.iter().map(|plan| &plan.accessor);
 
-    // Decode path.
-    let _ = write!(
-        out,
-        "\nimpl TryFrom<wire::{name}> for {name} {{\n\
-         \x20   type Error = Invalid;\n\n\
-         \x20   fn try_from(wire: wire::{name}) -> Result<Self, Invalid> {{\n\
-         \x20       let built = Self {{\n"
-    );
-    for plan in &plans {
-        let _ = writeln!(out, "            {}: {},", plan.name, plan.from_wire);
-    }
-    out.push_str(
-        "        };\n\
-         \x20       built.check()?;\n\
-         \x20       Ok(built)\n\
-         \x20   }\n\
-         }\n",
-    );
+    items.extend(quote! {
+        #struct_doc
+        #derive
+        pub struct #name {
+            #(#idents: #decl_tys,)*
+        }
 
-    // Encode path.
-    let _ = write!(
-        out,
-        "\nimpl From<{name}> for wire::{name} {{\n\
-         \x20   fn from(value: {name}) -> Self {{\n\
-         \x20       Self {{\n"
-    );
-    for plan in &plans {
-        let _ = writeln!(out, "            {}: {},", plan.name, plan.into_wire);
-    }
-    out.push_str(
-        "        }\n\
-         \x20   }\n\
-         }\n",
-    );
+        impl #name {
+            #builder_fn_doc
+            #[must_use]
+            pub fn builder() -> #builder {
+                #builder::default()
+            }
 
-    Ok(())
+            #(#accessors)*
+
+            fn check(&self) -> Result<(), Invalid> {
+                #(#checks)*
+                rules::#rules_fn(self)?;
+                Ok(())
+            }
+
+            #codec
+        }
+
+        #builder_doc
+        #[derive(Clone, Debug, Default)]
+        pub struct #builder {
+            #(#idents: #builder_tys,)*
+        }
+
+        impl #builder {
+            #(#setters)*
+
+            #build_doc
+            pub fn build(self) -> Result<#name, Invalid> {
+                let built = #name {
+                    #(#idents: #build_inits,)*
+                };
+                built.check()?;
+                Ok(built)
+            }
+        }
+
+        impl TryFrom<wire::#name> for #name {
+            type Error = Invalid;
+
+            fn try_from(wire: wire::#name) -> Result<Self, Invalid> {
+                let built = Self {
+                    #(#idents: #from_wires,)*
+                };
+                built.check()?;
+                Ok(built)
+            }
+        }
+
+        impl From<#name> for wire::#name {
+            fn from(value: #name) -> Self {
+                Self {
+                    #(#idents: #into_wires,)*
+                }
+            }
+        }
+    });
+
+    Ok(items)
 }
 
-/// Plans the payload oneof: emits its enum and returns the field plan the
+/// Plans the payload oneof: returns its enum's items and the field plan the
 /// containing message uses.
-fn plan_oneof(out: &mut String, oneof: &prost_reflect::OneofDescriptor) -> Result<Plan, String> {
-    let name = oneof.name().to_owned();
-    let enum_name = camel(&name);
+fn plan_oneof(
+    oneof: &prost_reflect::OneofDescriptor,
+    claimed: &mut BTreeSet<String>,
+) -> Result<(TokenStream, Plan), String> {
+    let name = oneof.name();
+    let id = ident(name);
+    claim(
+        claimed,
+        &camel(name),
+        &format!("oneof `{}`", oneof.full_name()),
+    )?;
+    let enum_name = ident(&camel(name));
     let parent = short_name(oneof.parent_message().full_name());
-    let wire_enum = format!("wire::{}::{}", snake(&parent), enum_name);
+    let parent_module = ident(&snake(&parent));
 
     let mut arms = Vec::new();
     for member in oneof.fields() {
@@ -604,222 +726,247 @@ fn plan_oneof(out: &mut String, oneof: &prost_reflect::OneofDescriptor) -> Resul
         };
         arms.push((
             member.name().to_owned(),
-            camel(member.name()),
-            short_name(inner.full_name()),
+            ident(&camel(member.name())),
+            ident(&short_name(inner.full_name())),
         ));
     }
 
-    let _ = write!(
-        out,
-        "\n/// The `{name}` of an `nv.telemetry.v1.{parent}`: exactly one case, always\n\
-         /// set — the oneof is `required`, so absence is unrepresentable here.\n\
-         #[derive(Clone, Debug, PartialEq, Eq)]\n\
-         #[non_exhaustive]\n\
-         pub enum {enum_name} {{\n"
-    );
-    for (field_name, arm, inner) in &arms {
-        let _ = write!(out, "    /// `{field_name}`.\n    {arm}({inner}),\n");
-    }
-    out.push_str("}\n");
+    let enum_doc = docs(&[
+        format!("The `{name}` of an `nv.telemetry.v1.{parent}`: exactly one case, always"),
+        "set — the oneof is `required`, so absence is unrepresentable here.".to_owned(),
+    ]);
+    let variants = arms.iter().map(|(field_name, arm, inner)| {
+        let doc = docs(&[format!("`{field_name}`.")]);
+        quote! { #doc #arm(#inner), }
+    });
+    let payload_enum = quote! {
+        #enum_doc
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        #[non_exhaustive]
+        pub enum #enum_name {
+            #(#variants)*
+        }
+    };
 
-    let mut from_wire = format!(
-        "match wire.{name}.ok_or_else(|| Invalid::field(\"{name}\", Violation::Absent))? {{\n"
-    );
-    for (field_name, arm, inner) in &arms {
-        let _ = write!(
-            from_wire,
-            "                {wire_enum}::{arm}(inner) => {enum_name}::{arm}(\n\
-             \x20                   {inner}::try_from(inner).map_err(|error| error.at(\"{field_name}\"))?,\n\
-             \x20               ),\n"
-        );
-    }
-    from_wire.push_str("            }");
+    let from_arms = arms.iter().map(|(field_name, arm, inner)| {
+        quote! {
+            wire::#parent_module::#enum_name::#arm(inner) => #enum_name::#arm(
+                #inner::try_from(inner).map_err(|error| error.at(#field_name))?,
+            ),
+        }
+    });
+    let into_arms = arms.iter().map(|(_, arm, _)| {
+        quote! {
+            #enum_name::#arm(inner) => wire::#parent_module::#enum_name::#arm(inner.into()),
+        }
+    });
 
-    let mut into_wire = format!("Some(match value.{name} {{\n");
-    for (_, arm, _) in &arms {
-        let _ = writeln!(
-            into_wire,
-            "                {enum_name}::{arm}(inner) => {wire_enum}::{arm}(inner.into()),"
-        );
-    }
-    into_wire.push_str("            })");
+    let setter_doc = docs(&[format!("Sets `{name}`.")]);
+    let accessor_doc = docs(&[format!("The `{name}`.")]);
 
-    Ok(Plan {
-        decl: format!("{name}: {enum_name}"),
-        builder_decl: format!("{name}: Option<{enum_name}>"),
-        setter: format!(
-            "    /// Sets `{name}`.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(mut self, {name}: {enum_name}) -> Self {{\n\
-             \x20       self.{name} = Some({name});\n\
-             \x20       self\n\
-             \x20   }}\n"
-        ),
-        build_init: format!(
-            "self.{name}.ok_or_else(|| Invalid::field(\"{name}\", Violation::Absent))?"
-        ),
-        from_wire,
-        into_wire,
-        accessor: format!(
-            "\n    /// The `{name}`.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> &{enum_name} {{\n\
-             \x20       &self.{name}\n\
-             \x20   }}\n"
-        ),
-        checks: String::new(),
-        name,
-    })
+    let plan = Plan {
+        decl_ty: quote! { #enum_name },
+        builder_ty: quote! { Option<#enum_name> },
+        setter: quote! {
+            #setter_doc
+            #[must_use]
+            pub fn #id(mut self, #id: #enum_name) -> Self {
+                self.#id = Some(#id);
+                self
+            }
+        },
+        build_init: quote! {
+            self.#id.ok_or_else(|| Invalid::field(#name, Violation::Absent))?
+        },
+        from_wire: quote! {
+            match wire.#id.ok_or_else(|| Invalid::field(#name, Violation::Absent))? {
+                #(#from_arms)*
+            }
+        },
+        into_wire: quote! {
+            Some(match value.#id {
+                #(#into_arms)*
+            })
+        },
+        checks: TokenStream::new(),
+        accessor: quote! {
+            #accessor_doc
+            #[must_use]
+            pub fn #id(&self) -> &#enum_name {
+                &self.#id
+            }
+        },
+        ident: id,
+    };
+
+    Ok((payload_enum, plan))
 }
 
 /// Plans one regular field.
 // One match arm per field category, and the arms are what the function is:
 // splitting each into its own function would hide that the categories differ
-// only in the seven strings they produce.
+// only in the tokens they produce.
 #[allow(clippy::too_many_lines)]
 fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, String> {
     let invariant = vocabulary.field_invariant(field).unwrap_or_default();
     let name = field.name().to_owned();
+    let id = ident(&name);
+    let lit = name.as_str();
 
-    let absent = format!(".ok_or_else(|| Invalid::field(\"{name}\", Violation::Absent))?");
+    let absent = quote! { .ok_or_else(|| Invalid::field(#lit, Violation::Absent))? };
 
     let max_len = invariant
         .max_len
-        .map(|_| format!("limits::{}_MAX_LEN", constant_stem(field.full_name())));
+        .map(|_| ident(&format!("{}_MAX_LEN", constant_stem(field.full_name()))));
     let max_items = invariant
         .max_items
-        .map(|_| format!("limits::{}_MAX_ITEMS", constant_stem(field.full_name())));
+        .map(|_| ident(&format!("{}_MAX_ITEMS", constant_stem(field.full_name()))));
 
-    let mut checks = String::new();
+    let mut checks = TokenStream::new();
 
     let plan = match field.kind() {
         Kind::String if field.is_list() => {
             if let Some(limit) = &max_items {
-                let _ = write!(
-                    checks,
-                    "        if let Some(violation) = invalid::too_many(self.{name}.len(), {limit}) {{\n\
-                     \x20           return Err(Invalid::field(\"{name}\", violation));\n\
-                     \x20       }}\n"
-                );
+                checks.extend(quote! {
+                    if let Some(violation) = invalid::too_many(self.#id.len(), limits::#limit) {
+                        return Err(Invalid::field(#lit, violation));
+                    }
+                });
             }
             if invariant.non_empty || max_len.is_some() {
-                let _ = writeln!(
-                    checks,
-                    "        for (index, element) in self.{name}.iter().enumerate() {{"
-                );
-                if invariant.non_empty {
-                    let _ = write!(
-                        checks,
-                        "            if element.is_empty() {{\n\
-                         \x20               return Err(Invalid::element(\"{name}\", index, Violation::Empty));\n\
-                         \x20           }}\n"
-                    );
-                }
-                if let Some(limit) = &max_len {
-                    let _ = write!(
-                        checks,
-                        "            if let Some(violation) = invalid::too_long(element.len(), {limit}) {{\n\
-                         \x20               return Err(Invalid::element(\"{name}\", index, violation));\n\
-                         \x20           }}\n"
-                    );
-                }
-                checks.push_str("        }\n");
+                let empty = invariant.non_empty.then(|| {
+                    quote! {
+                        if element.is_empty() {
+                            return Err(Invalid::element(#lit, index, Violation::Empty));
+                        }
+                    }
+                });
+                let long = max_len.as_ref().map(|limit| {
+                    quote! {
+                        if let Some(violation) = invalid::too_long(element.len(), limits::#limit) {
+                            return Err(Invalid::element(#lit, index, violation));
+                        }
+                    }
+                });
+                checks.extend(quote! {
+                    for (index, element) in self.#id.iter().enumerate() {
+                        #empty
+                        #long
+                    }
+                });
             }
+            let setter_doc = docs(&[format!("Sets `{name}`.")]);
+            let accessor_doc = docs(&[format!("The `{name}`.")]);
             Plan {
-                decl: format!("{name}: Vec<String>"),
-                builder_decl: format!("{name}: Vec<String>"),
-                setter: vec_setter(&name, "Vec<String>"),
-                build_init: format!("self.{name}"),
-                from_wire: format!("wire.{name}"),
-                into_wire: format!("value.{name}"),
-                accessor: slice_accessor(&name, "String"),
+                decl_ty: quote! { Vec<String> },
+                builder_ty: quote! { Vec<String> },
+                setter: quote! {
+                    #setter_doc
+                    #[must_use]
+                    pub fn #id(mut self, #id: Vec<String>) -> Self {
+                        self.#id = #id;
+                        self
+                    }
+                },
+                build_init: quote! { self.#id },
+                from_wire: quote! { wire.#id },
+                into_wire: quote! { value.#id },
+                accessor: quote! {
+                    #accessor_doc
+                    #[must_use]
+                    pub fn #id(&self) -> &[String] {
+                        &self.#id
+                    }
+                },
                 checks,
-                name: name.clone(),
+                ident: id,
             }
         }
         Kind::String => {
             let required = invariant.required;
             if invariant.non_empty {
-                let target = if required {
-                    format!("self.{name}")
-                } else {
-                    "element".to_owned()
+                let inner = quote! {
+                    if element.is_empty() {
+                        return Err(Invalid::field(#lit, Violation::Empty));
+                    }
                 };
-                let (open, indent, close) = optional_wrap(required, &name);
-                let _ = write!(
-                    checks,
-                    "{open}{indent}        if {target}.is_empty() {{\n\
-                     {indent}            return Err(Invalid::field(\"{name}\", Violation::Empty));\n\
-                     {indent}        }}\n{close}"
-                );
+                checks.extend(if required {
+                    quote! {
+                        if self.#id.is_empty() {
+                            return Err(Invalid::field(#lit, Violation::Empty));
+                        }
+                    }
+                } else {
+                    quote! { if let Some(element) = &self.#id { #inner } }
+                });
             }
             if let Some(limit) = &max_len {
-                let target = if required {
-                    format!("self.{name}")
+                checks.extend(if required {
+                    quote! {
+                        if let Some(violation) = invalid::too_long(self.#id.len(), limits::#limit) {
+                            return Err(Invalid::field(#lit, violation));
+                        }
+                    }
                 } else {
-                    "element".to_owned()
-                };
-                let (open, indent, close) = optional_wrap(required, &name);
-                let _ = write!(
-                    checks,
-                    "{open}{indent}        if let Some(violation) = invalid::too_long({target}.len(), {limit}) {{\n\
-                     {indent}            return Err(Invalid::field(\"{name}\", violation));\n\
-                     {indent}        }}\n{close}"
-                );
+                    quote! {
+                        if let Some(element) = &self.#id {
+                            if let Some(violation) = invalid::too_long(element.len(), limits::#limit) {
+                                return Err(Invalid::field(#lit, violation));
+                            }
+                        }
+                    }
+                });
             }
+            let setter_doc = docs(&[format!("Sets `{name}`.")]);
+            let setter = quote! {
+                #setter_doc
+                #[must_use]
+                pub fn #id(mut self, #id: impl Into<String>) -> Self {
+                    self.#id = Some(#id.into());
+                    self
+                }
+            };
             if required {
+                let accessor_doc = docs(&[format!("The `{name}`.")]);
                 Plan {
-                    decl: format!("{name}: String"),
-                    builder_decl: format!("{name}: Option<String>"),
-                    setter: into_string_setter(&name),
-                    build_init: format!("self.{name}{absent}"),
-                    from_wire: format!("wire.{name}{absent}"),
-                    into_wire: format!("Some(value.{name})"),
-                    accessor: str_accessor(&name, false),
+                    decl_ty: quote! { String },
+                    builder_ty: quote! { Option<String> },
+                    setter,
+                    build_init: quote! { self.#id #absent },
+                    from_wire: quote! { wire.#id #absent },
+                    into_wire: quote! { Some(value.#id) },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> &str {
+                            &self.#id
+                        }
+                    },
                     checks,
-                    name: name.clone(),
+                    ident: id,
                 }
             } else {
+                let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
                 Plan {
-                    decl: format!("{name}: Option<String>"),
-                    builder_decl: format!("{name}: Option<String>"),
-                    setter: into_string_setter(&name),
-                    build_init: format!("self.{name}"),
-                    from_wire: format!("wire.{name}"),
-                    into_wire: format!("value.{name}"),
-                    accessor: str_accessor(&name, true),
+                    decl_ty: quote! { Option<String> },
+                    builder_ty: quote! { Option<String> },
+                    setter,
+                    build_init: quote! { self.#id },
+                    from_wire: quote! { wire.#id },
+                    into_wire: quote! { value.#id },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> Option<&str> {
+                            self.#id.as_deref()
+                        }
+                    },
                     checks,
-                    name: name.clone(),
+                    ident: id,
                 }
             }
         }
-        Kind::Bool => {
-            if invariant.required {
-                Plan {
-                    decl: format!("{name}: bool"),
-                    builder_decl: format!("{name}: Option<bool>"),
-                    setter: value_setter(&name, "bool"),
-                    build_init: format!("self.{name}{absent}"),
-                    from_wire: format!("wire.{name}{absent}"),
-                    into_wire: format!("Some(value.{name})"),
-                    accessor: copy_accessor(&name, "bool", false),
-                    checks,
-                    name: name.clone(),
-                }
-            } else {
-                Plan {
-                    decl: format!("{name}: Option<bool>"),
-                    builder_decl: format!("{name}: Option<bool>"),
-                    setter: value_setter(&name, "bool"),
-                    build_init: format!("self.{name}"),
-                    from_wire: format!("wire.{name}"),
-                    into_wire: format!("value.{name}"),
-                    accessor: copy_accessor(&name, "bool", true),
-                    checks,
-                    name: name.clone(),
-                }
-            }
-        }
+        Kind::Bool => copy_plan(&invariant, id, lit, &quote! { bool }, &absent),
         Kind::Uint64 => {
             if invariant.required {
                 return Err(format!(
@@ -828,161 +975,230 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                     field.full_name()
                 ));
             }
-            Plan {
-                decl: format!("{name}: Option<u64>"),
-                builder_decl: format!("{name}: Option<u64>"),
-                setter: value_setter(&name, "u64"),
-                build_init: format!("self.{name}"),
-                from_wire: format!("wire.{name}"),
-                into_wire: format!("value.{name}"),
-                accessor: copy_accessor(&name, "u64", true),
-                checks,
-                name: name.clone(),
-            }
+            copy_plan(&invariant, id, lit, &quote! { u64 }, &absent)
         }
         Kind::Enum(declared) => {
-            let enum_name = short_name(declared.full_name());
+            let ty = ident(&short_name(declared.full_name()));
+            let setter_doc = docs(&[format!("Sets `{name}`.")]);
+            let setter = quote! {
+                #setter_doc
+                #[must_use]
+                pub fn #id(mut self, #id: #ty) -> Self {
+                    self.#id = Some(#id);
+                    self
+                }
+            };
             if invariant.required {
+                let accessor_doc = docs(&[format!("The `{name}`.")]);
                 Plan {
-                    decl: format!("{name}: {enum_name}"),
-                    builder_decl: format!("{name}: Option<{enum_name}>"),
-                    setter: value_setter(&name, &enum_name),
-                    build_init: format!("self.{name}{absent}"),
-                    from_wire: format!(
-                        "{enum_name}::try_from(wire.{name}{absent})\n\
-                         \x20               .map_err(|violation| Invalid::field(\"{name}\", violation))?"
-                    ),
-                    into_wire: format!("Some(value.{name}.into())"),
-                    accessor: copy_accessor(&name, &enum_name, false),
+                    decl_ty: quote! { #ty },
+                    builder_ty: quote! { Option<#ty> },
+                    setter,
+                    build_init: quote! { self.#id #absent },
+                    from_wire: quote! {
+                        #ty::try_from(wire.#id #absent)
+                            .map_err(|violation| Invalid::field(#lit, violation))?
+                    },
+                    into_wire: quote! { Some(value.#id.into()) },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> #ty {
+                            self.#id
+                        }
+                    },
                     checks,
-                    name: name.clone(),
+                    ident: id,
                 }
             } else {
+                let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
                 Plan {
-                    decl: format!("{name}: Option<{enum_name}>"),
-                    builder_decl: format!("{name}: Option<{enum_name}>"),
-                    setter: value_setter(&name, &enum_name),
-                    build_init: format!("self.{name}"),
-                    from_wire: format!(
-                        "wire.{name}\n\
-                         \x20               .map({enum_name}::try_from)\n\
-                         \x20               .transpose()\n\
-                         \x20               .map_err(|violation| Invalid::field(\"{name}\", violation))?"
-                    ),
-                    into_wire: format!("value.{name}.map(Into::into)"),
-                    accessor: copy_accessor(&name, &enum_name, true),
+                    decl_ty: quote! { Option<#ty> },
+                    builder_ty: quote! { Option<#ty> },
+                    setter,
+                    build_init: quote! { self.#id },
+                    from_wire: quote! {
+                        wire.#id
+                            .map(#ty::try_from)
+                            .transpose()
+                            .map_err(|violation| Invalid::field(#lit, violation))?
+                    },
+                    into_wire: quote! { value.#id.map(Into::into) },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> Option<#ty> {
+                            self.#id
+                        }
+                    },
                     checks,
-                    name: name.clone(),
+                    ident: id,
                 }
             }
         }
         Kind::Message(inner) if inner.full_name() == "nv.telemetry.v1.Value.Map" => {
-            let _ = write!(
-                checks,
-                "        if let Some(map) = &self.{name} {{\n\
-                 \x20           value::check_map(map, \"{name}\")?;\n\
-                 \x20       }}\n"
-            );
+            checks.extend(quote! {
+                if let Some(map) = &self.#id {
+                    value::check_map(map, #lit)?;
+                }
+            });
+            let setter_doc = docs(&[format!("Sets `{name}`.")]);
+            let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
             Plan {
-                decl: format!("{name}: Option<BTreeMap<String, Value>>"),
-                builder_decl: format!("{name}: Option<BTreeMap<String, Value>>"),
-                setter: value_setter(&name, "BTreeMap<String, Value>"),
-                build_init: format!("self.{name}"),
-                from_wire: format!(
-                    "wire.{name}\n\
-                     \x20               .map(value::map_from_wire)\n\
-                     \x20               .transpose()\n\
-                     \x20               .map_err(|error| error.at(\"{name}\"))?"
-                ),
-                into_wire: format!("value.{name}.map(value::map_into_wire)"),
-                accessor: format!(
-                    "\n    /// The `{name}`, when present.\n\
-                     \x20   #[must_use]\n\
-                     \x20   pub fn {name}(&self) -> Option<&BTreeMap<String, Value>> {{\n\
-                     \x20       self.{name}.as_ref()\n\
-                     \x20   }}\n"
-                ),
+                decl_ty: quote! { Option<BTreeMap<String, Value>> },
+                builder_ty: quote! { Option<BTreeMap<String, Value>> },
+                setter: quote! {
+                    #setter_doc
+                    #[must_use]
+                    pub fn #id(mut self, #id: BTreeMap<String, Value>) -> Self {
+                        self.#id = Some(#id);
+                        self
+                    }
+                },
+                build_init: quote! { self.#id },
+                from_wire: quote! {
+                    wire.#id
+                        .map(value::map_from_wire)
+                        .transpose()
+                        .map_err(|error| error.at(#lit))?
+                },
+                into_wire: quote! { value.#id.map(value::map_into_wire) },
+                accessor: quote! {
+                    #accessor_doc
+                    #[must_use]
+                    pub fn #id(&self) -> Option<&BTreeMap<String, Value>> {
+                        self.#id.as_ref()
+                    }
+                },
                 checks,
-                name: name.clone(),
+                ident: id,
             }
         }
         Kind::Message(inner) => {
-            let rust = hand_written_type(inner.full_name())
-                .map_or_else(|| short_name(inner.full_name()), ToOwned::to_owned);
+            let ty = ident(
+                hand_written_type(inner.full_name())
+                    .map_or_else(|| short_name(inner.full_name()), ToOwned::to_owned)
+                    .as_str(),
+            );
             if field.is_list() {
                 if let Some(limit) = &max_items {
-                    let _ = write!(
-                        checks,
-                        "        if let Some(violation) = invalid::too_many(self.{name}.len(), {limit}) {{\n\
-                         \x20           return Err(Invalid::field(\"{name}\", violation));\n\
-                         \x20       }}\n"
-                    );
+                    checks.extend(quote! {
+                        if let Some(violation) = invalid::too_many(self.#id.len(), limits::#limit) {
+                            return Err(Invalid::field(#lit, violation));
+                        }
+                    });
                 }
                 if !invariant.unique_by.is_empty() {
-                    let key = unique_key_expr(&invariant);
-                    let _ = write!(
-                        checks,
-                        "        let mut seen = BTreeSet::new();\n\
-                         \x20       for (index, element) in self.{name}.iter().enumerate() {{\n\
-                         \x20           if !seen.insert({key}) {{\n\
-                         \x20               return Err(Invalid::element(\"{name}\", index, Violation::Duplicate));\n\
-                         \x20           }}\n\
-                         \x20       }}\n"
-                    );
+                    let keys: Vec<Ident> =
+                        invariant.unique_by.iter().map(|key| ident(key)).collect();
+                    let key_expr = if keys.len() == 1 {
+                        let key = &keys[0];
+                        quote! { &element.#key }
+                    } else {
+                        quote! { (#(&element.#keys),*) }
+                    };
+                    checks.extend(quote! {
+                        let mut seen = BTreeSet::new();
+                        for (index, element) in self.#id.iter().enumerate() {
+                            if !seen.insert(#key_expr) {
+                                return Err(Invalid::element(#lit, index, Violation::Duplicate));
+                            }
+                        }
+                    });
                 }
+                let setter_doc = docs(&[format!("Sets `{name}`.")]);
+                let accessor_doc = docs(&[format!("The `{name}`.")]);
                 Plan {
-                    decl: format!("{name}: Vec<{rust}>"),
-                    builder_decl: format!("{name}: Vec<{rust}>"),
-                    setter: vec_setter(&name, &format!("Vec<{rust}>")),
-                    build_init: format!("self.{name}"),
-                    from_wire: format!(
-                        "{{\n\
-                         \x20               let mut elements = Vec::with_capacity(wire.{name}.len());\n\
-                         \x20               for (index, element) in wire.{name}.into_iter().enumerate() {{\n\
-                         \x20                   elements.push(\n\
-                         \x20                       {rust}::try_from(element)\n\
-                         \x20                           .map_err(|error| error.at_index(\"{name}\", index))?,\n\
-                         \x20                   );\n\
-                         \x20               }}\n\
-                         \x20               elements\n\
-                         \x20           }}"
-                    ),
-                    into_wire: format!("value.{name}.into_iter().map(Into::into).collect()"),
-                    accessor: slice_accessor(&name, &rust),
+                    decl_ty: quote! { Vec<#ty> },
+                    builder_ty: quote! { Vec<#ty> },
+                    setter: quote! {
+                        #setter_doc
+                        #[must_use]
+                        pub fn #id(mut self, #id: Vec<#ty>) -> Self {
+                            self.#id = #id;
+                            self
+                        }
+                    },
+                    build_init: quote! { self.#id },
+                    from_wire: quote! {
+                        {
+                            let mut elements = Vec::with_capacity(wire.#id.len());
+                            for (index, element) in wire.#id.into_iter().enumerate() {
+                                elements.push(
+                                    #ty::try_from(element)
+                                        .map_err(|error| error.at_index(#lit, index))?,
+                                );
+                            }
+                            elements
+                        }
+                    },
+                    into_wire: quote! { value.#id.into_iter().map(Into::into).collect() },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> &[#ty] {
+                            &self.#id
+                        }
+                    },
                     checks,
-                    name: name.clone(),
-                }
-            } else if invariant.required {
-                Plan {
-                    decl: format!("{name}: {rust}"),
-                    builder_decl: format!("{name}: Option<{rust}>"),
-                    setter: value_setter(&name, &rust),
-                    build_init: format!("self.{name}{absent}"),
-                    from_wire: format!(
-                        "{rust}::try_from(wire.{name}{absent})\n\
-                         \x20               .map_err(|error| error.at(\"{name}\"))?"
-                    ),
-                    into_wire: format!("Some(value.{name}.into())"),
-                    accessor: ref_accessor(&name, &rust, false),
-                    checks,
-                    name: name.clone(),
+                    ident: id,
                 }
             } else {
-                Plan {
-                    decl: format!("{name}: Option<{rust}>"),
-                    builder_decl: format!("{name}: Option<{rust}>"),
-                    setter: value_setter(&name, &rust),
-                    build_init: format!("self.{name}"),
-                    from_wire: format!(
-                        "wire.{name}\n\
-                         \x20               .map({rust}::try_from)\n\
-                         \x20               .transpose()\n\
-                         \x20               .map_err(|error| error.at(\"{name}\"))?"
-                    ),
-                    into_wire: format!("value.{name}.map(Into::into)"),
-                    accessor: ref_accessor(&name, &rust, true),
-                    checks,
-                    name: name.clone(),
+                let setter_doc = docs(&[format!("Sets `{name}`.")]);
+                let setter = quote! {
+                    #setter_doc
+                    #[must_use]
+                    pub fn #id(mut self, #id: #ty) -> Self {
+                        self.#id = Some(#id);
+                        self
+                    }
+                };
+                if invariant.required {
+                    let accessor_doc = docs(&[format!("The `{name}`.")]);
+                    Plan {
+                        decl_ty: quote! { #ty },
+                        builder_ty: quote! { Option<#ty> },
+                        setter,
+                        build_init: quote! { self.#id #absent },
+                        from_wire: quote! {
+                            #ty::try_from(wire.#id #absent)
+                                .map_err(|error| error.at(#lit))?
+                        },
+                        into_wire: quote! { Some(value.#id.into()) },
+                        accessor: quote! {
+                            #accessor_doc
+                            #[must_use]
+                            pub fn #id(&self) -> &#ty {
+                                &self.#id
+                            }
+                        },
+                        checks,
+                        ident: id,
+                    }
+                } else {
+                    let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
+                    Plan {
+                        decl_ty: quote! { Option<#ty> },
+                        builder_ty: quote! { Option<#ty> },
+                        setter,
+                        build_init: quote! { self.#id },
+                        from_wire: quote! {
+                            wire.#id
+                                .map(#ty::try_from)
+                                .transpose()
+                                .map_err(|error| error.at(#lit))?
+                        },
+                        into_wire: quote! { value.#id.map(Into::into) },
+                        accessor: quote! {
+                            #accessor_doc
+                            #[must_use]
+                            pub fn #id(&self) -> Option<&#ty> {
+                                self.#id.as_ref()
+                            }
+                        },
+                        checks,
+                        ident: id,
+                    }
                 }
             }
         }
@@ -997,134 +1213,64 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
     Ok(plan)
 }
 
-/// The tuple of key references a uniqueness check inserts into its set.
-fn unique_key_expr(invariant: &FieldInvariant) -> String {
-    let keys: Vec<String> = invariant
-        .unique_by
-        .iter()
-        .map(|key| format!("&element.{key}"))
-        .collect();
-    if keys.len() == 1 {
-        keys.into_iter().next().unwrap_or_default()
+/// The plan for a `Copy` scalar — `bool`, `u64` — where required and optional
+/// differ only in the declared type and the absence check.
+fn copy_plan(
+    invariant: &FieldInvariant,
+    id: Ident,
+    lit: &str,
+    ty: &TokenStream,
+    absent: &TokenStream,
+) -> Plan {
+    let name = lit;
+    let setter_doc = docs(&[format!("Sets `{name}`.")]);
+    let setter = quote! {
+        #setter_doc
+        #[must_use]
+        pub fn #id(mut self, #id: #ty) -> Self {
+            self.#id = Some(#id);
+            self
+        }
+    };
+    if invariant.required {
+        let accessor_doc = docs(&[format!("The `{name}`.")]);
+        Plan {
+            decl_ty: quote! { #ty },
+            builder_ty: quote! { Option<#ty> },
+            setter,
+            build_init: quote! { self.#id #absent },
+            from_wire: quote! { wire.#id #absent },
+            into_wire: quote! { Some(value.#id) },
+            accessor: quote! {
+                #accessor_doc
+                #[must_use]
+                pub fn #id(&self) -> #ty {
+                    self.#id
+                }
+            },
+            checks: TokenStream::new(),
+            ident: id,
+        }
     } else {
-        format!("({})", keys.join(", "))
+        let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
+        Plan {
+            decl_ty: quote! { Option<#ty> },
+            builder_ty: quote! { Option<#ty> },
+            setter,
+            build_init: quote! { self.#id },
+            from_wire: quote! { wire.#id },
+            into_wire: quote! { value.#id },
+            accessor: quote! {
+                #accessor_doc
+                #[must_use]
+                pub fn #id(&self) -> Option<#ty> {
+                    self.#id
+                }
+            },
+            checks: TokenStream::new(),
+            ident: id,
+        }
     }
-}
-
-/// Wrapping for a check on an optional field: `if let Some(element) = ...`.
-fn optional_wrap(required: bool, name: &str) -> (String, &'static str, &'static str) {
-    if required {
-        (String::new(), "", "")
-    } else {
-        (
-            format!("        if let Some(element) = &self.{name} {{\n"),
-            "    ",
-            "        }\n",
-        )
-    }
-}
-
-fn into_string_setter(name: &str) -> String {
-    format!(
-        "    /// Sets `{name}`.\n\
-         \x20   #[must_use]\n\
-         \x20   pub fn {name}(mut self, {name}: impl Into<String>) -> Self {{\n\
-         \x20       self.{name} = Some({name}.into());\n\
-         \x20       self\n\
-         \x20   }}\n"
-    )
-}
-
-fn value_setter(name: &str, ty: &str) -> String {
-    format!(
-        "    /// Sets `{name}`.\n\
-         \x20   #[must_use]\n\
-         \x20   pub fn {name}(mut self, {name}: {ty}) -> Self {{\n\
-         \x20       self.{name} = Some({name});\n\
-         \x20       self\n\
-         \x20   }}\n"
-    )
-}
-
-fn vec_setter(name: &str, ty: &str) -> String {
-    format!(
-        "    /// Sets `{name}`.\n\
-         \x20   #[must_use]\n\
-         \x20   pub fn {name}(mut self, {name}: {ty}) -> Self {{\n\
-         \x20       self.{name} = {name};\n\
-         \x20       self\n\
-         \x20   }}\n"
-    )
-}
-
-fn str_accessor(name: &str, optional: bool) -> String {
-    if optional {
-        format!(
-            "\n    /// The `{name}`, when present.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> Option<&str> {{\n\
-             \x20       self.{name}.as_deref()\n\
-             \x20   }}\n"
-        )
-    } else {
-        format!(
-            "\n    /// The `{name}`.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> &str {{\n\
-             \x20       &self.{name}\n\
-             \x20   }}\n"
-        )
-    }
-}
-
-fn copy_accessor(name: &str, ty: &str, optional: bool) -> String {
-    if optional {
-        format!(
-            "\n    /// The `{name}`, when present.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> Option<{ty}> {{\n\
-             \x20       self.{name}\n\
-             \x20   }}\n"
-        )
-    } else {
-        format!(
-            "\n    /// The `{name}`.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> {ty} {{\n\
-             \x20       self.{name}\n\
-             \x20   }}\n"
-        )
-    }
-}
-
-fn ref_accessor(name: &str, ty: &str, optional: bool) -> String {
-    if optional {
-        format!(
-            "\n    /// The `{name}`, when present.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> Option<&{ty}> {{\n\
-             \x20       self.{name}.as_ref()\n\
-             \x20   }}\n"
-        )
-    } else {
-        format!(
-            "\n    /// The `{name}`.\n\
-             \x20   #[must_use]\n\
-             \x20   pub fn {name}(&self) -> &{ty} {{\n\
-             \x20       &self.{name}\n\
-             \x20   }}\n"
-        )
-    }
-}
-
-fn slice_accessor(name: &str, ty: &str) -> String {
-    format!(
-        "\n    /// The `{name}`.\n\
-         \x20   #[must_use]\n\
-         \x20   pub fn {name}(&self) -> &[{ty}] {{\n\
-         \x20       &self.{name}\n\
-         \x20   }}\n"
-    )
 }
 
 /// `nv.telemetry.v1.Value.Map.Entry.key` -> `VALUE_MAP_ENTRY_KEY`.

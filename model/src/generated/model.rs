@@ -63,10 +63,8 @@ pub enum FailureClass {
     /// decision; re-encoding preserves it.
     Unrecognized(i32),
 }
-
 impl TryFrom<i32> for FailureClass {
     type Error = Violation;
-
     fn try_from(value: i32) -> Result<Self, Violation> {
         match value {
             0 => Err(Violation::Unspecified),
@@ -81,7 +79,6 @@ impl TryFrom<i32> for FailureClass {
         }
     }
 }
-
 impl From<FailureClass> for i32 {
     fn from(value: FailureClass) -> Self {
         match value {
@@ -96,7 +93,6 @@ impl From<FailureClass> for i32 {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.AcquisitionStatus.Outcome`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -114,10 +110,8 @@ pub enum Outcome {
     /// decision; re-encoding preserves it.
     Unrecognized(i32),
 }
-
 impl TryFrom<i32> for Outcome {
     type Error = Violation;
-
     fn try_from(value: i32) -> Result<Self, Violation> {
         match value {
             0 => Err(Violation::Unspecified),
@@ -127,7 +121,6 @@ impl TryFrom<i32> for Outcome {
         }
     }
 }
-
 impl From<Outcome> for i32 {
     fn from(value: Outcome) -> Self {
         match value {
@@ -137,7 +130,6 @@ impl From<Outcome> for i32 {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Completeness`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -155,10 +147,8 @@ pub enum Completeness {
     /// decision; re-encoding preserves it.
     Unrecognized(i32),
 }
-
 impl TryFrom<i32> for Completeness {
     type Error = Violation;
-
     fn try_from(value: i32) -> Result<Self, Violation> {
         match value {
             0 => Err(Violation::Unspecified),
@@ -168,7 +158,6 @@ impl TryFrom<i32> for Completeness {
         }
     }
 }
-
 impl From<Completeness> for i32 {
     fn from(value: Completeness) -> Self {
         match value {
@@ -178,7 +167,6 @@ impl From<Completeness> for i32 {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Severity`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -202,10 +190,8 @@ pub enum Severity {
     /// decision; re-encoding preserves it.
     Unrecognized(i32),
 }
-
 impl TryFrom<i32> for Severity {
     type Error = Violation;
-
     fn try_from(value: i32) -> Result<Self, Violation> {
         match value {
             0 => Err(Violation::Unspecified),
@@ -218,7 +204,6 @@ impl TryFrom<i32> for Severity {
         }
     }
 }
-
 impl From<Severity> for i32 {
     fn from(value: Severity) -> Self {
         match value {
@@ -231,7 +216,6 @@ impl From<Severity> for i32 {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.AcquisitionStatus`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -249,85 +233,83 @@ pub struct AcquisitionStatus {
     duration_nanos: Option<u64>,
     detail: Option<String>,
 }
-
 impl AcquisitionStatus {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> AcquisitionStatusBuilder {
         AcquisitionStatusBuilder::default()
     }
-
     /// The `endpoint_id`.
     #[must_use]
     pub fn endpoint_id(&self) -> &str {
         &self.endpoint_id
     }
-
     /// The `provider`.
     #[must_use]
     pub fn provider(&self) -> &str {
         &self.provider
     }
-
     /// The `request_class`.
     #[must_use]
     pub fn request_class(&self) -> &str {
         &self.request_class
     }
-
     /// The `outcome`.
     #[must_use]
     pub fn outcome(&self) -> Outcome {
         self.outcome
     }
-
     /// The `failure_class`, when present.
     #[must_use]
     pub fn failure_class(&self) -> Option<FailureClass> {
         self.failure_class
     }
-
     /// The `retryable`, when present.
     #[must_use]
     pub fn retryable(&self) -> Option<bool> {
         self.retryable
     }
-
     /// The `started_at`.
     #[must_use]
     pub fn started_at(&self) -> &Timestamp {
         &self.started_at
     }
-
     /// The `duration_nanos`, when present.
     #[must_use]
     pub fn duration_nanos(&self) -> Option<u64> {
         self.duration_nanos
     }
-
     /// The `detail`, when present.
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
         self.detail.as_deref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.endpoint_id.is_empty() {
             return Err(Invalid::field("endpoint_id", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.endpoint_id.len(), limits::ACQUISITIONSTATUS_ENDPOINT_ID_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.endpoint_id.len(),
+            limits::ACQUISITIONSTATUS_ENDPOINT_ID_MAX_LEN,
+        ) {
             return Err(Invalid::field("endpoint_id", violation));
         }
         if self.provider.is_empty() {
             return Err(Invalid::field("provider", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.provider.len(), limits::ACQUISITIONSTATUS_PROVIDER_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.provider.len(),
+            limits::ACQUISITIONSTATUS_PROVIDER_MAX_LEN,
+        ) {
             return Err(Invalid::field("provider", violation));
         }
         if self.request_class.is_empty() {
             return Err(Invalid::field("request_class", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.request_class.len(), limits::ACQUISITIONSTATUS_REQUEST_CLASS_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.request_class.len(),
+            limits::ACQUISITIONSTATUS_REQUEST_CLASS_MAX_LEN,
+        ) {
             return Err(Invalid::field("request_class", violation));
         }
         if let Some(element) = &self.detail {
@@ -336,14 +318,16 @@ impl AcquisitionStatus {
             }
         }
         if let Some(element) = &self.detail {
-            if let Some(violation) = invalid::too_long(element.len(), limits::ACQUISITIONSTATUS_DETAIL_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::ACQUISITIONSTATUS_DETAIL_MAX_LEN,
+            ) {
                 return Err(Invalid::field("detail", violation));
             }
         }
         rules::acquisition_status(self)?;
         Ok(())
     }
-
     /// Decodes and validates from wire bytes.
     ///
     /// # Errors
@@ -356,14 +340,12 @@ impl AcquisitionStatus {
             .map_err(crate::DecodeError::Malformed)?;
         Self::try_from(wire).map_err(crate::DecodeError::Invalid)
     }
-
     /// Encodes the canonical wire form.
     #[must_use]
     pub fn encode_to_vec(&self) -> Vec<u8> {
         ::prost::Message::encode_to_vec(&wire::AcquisitionStatus::from(self.clone()))
     }
 }
-
 /// Builds a [`AcquisitionStatus`]. Setters are infallible; [`build`](AcquisitionStatusBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -378,7 +360,6 @@ pub struct AcquisitionStatusBuilder {
     duration_nanos: Option<u64>,
     detail: Option<String>,
 }
-
 impl AcquisitionStatusBuilder {
     /// Sets `endpoint_id`.
     #[must_use]
@@ -434,7 +415,6 @@ impl AcquisitionStatusBuilder {
         self.detail = Some(detail.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -443,13 +423,23 @@ impl AcquisitionStatusBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<AcquisitionStatus, Invalid> {
         let built = AcquisitionStatus {
-            endpoint_id: self.endpoint_id.ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
-            provider: self.provider.ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
-            request_class: self.request_class.ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
-            outcome: self.outcome.ok_or_else(|| Invalid::field("outcome", Violation::Absent))?,
+            endpoint_id: self
+                .endpoint_id
+                .ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
+            provider: self
+                .provider
+                .ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
+            request_class: self
+                .request_class
+                .ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
+            outcome: self
+                .outcome
+                .ok_or_else(|| Invalid::field("outcome", Violation::Absent))?,
             failure_class: self.failure_class,
             retryable: self.retryable,
-            started_at: self.started_at.ok_or_else(|| Invalid::field("started_at", Violation::Absent))?,
+            started_at: self
+                .started_at
+                .ok_or_else(|| Invalid::field("started_at", Violation::Absent))?,
             duration_nanos: self.duration_nanos,
             detail: self.detail,
         };
@@ -457,23 +447,36 @@ impl AcquisitionStatusBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::AcquisitionStatus> for AcquisitionStatus {
     type Error = Invalid;
-
     fn try_from(wire: wire::AcquisitionStatus) -> Result<Self, Invalid> {
         let built = Self {
-            endpoint_id: wire.endpoint_id.ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
-            provider: wire.provider.ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
-            request_class: wire.request_class.ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
-            outcome: Outcome::try_from(wire.outcome.ok_or_else(|| Invalid::field("outcome", Violation::Absent))?)
+            endpoint_id: wire
+                .endpoint_id
+                .ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
+            provider: wire
+                .provider
+                .ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
+            request_class: wire
+                .request_class
+                .ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
+            outcome: Outcome::try_from(
+                    wire
+                        .outcome
+                        .ok_or_else(|| Invalid::field("outcome", Violation::Absent))?,
+                )
                 .map_err(|violation| Invalid::field("outcome", violation))?,
-            failure_class: wire.failure_class
+            failure_class: wire
+                .failure_class
                 .map(FailureClass::try_from)
                 .transpose()
                 .map_err(|violation| Invalid::field("failure_class", violation))?,
             retryable: wire.retryable,
-            started_at: Timestamp::try_from(wire.started_at.ok_or_else(|| Invalid::field("started_at", Violation::Absent))?)
+            started_at: Timestamp::try_from(
+                    wire
+                        .started_at
+                        .ok_or_else(|| Invalid::field("started_at", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("started_at"))?,
             duration_nanos: wire.duration_nanos,
             detail: wire.detail,
@@ -482,7 +485,6 @@ impl TryFrom<wire::AcquisitionStatus> for AcquisitionStatus {
         Ok(built)
     }
 }
-
 impl From<AcquisitionStatus> for wire::AcquisitionStatus {
     fn from(value: AcquisitionStatus) -> Self {
         Self {
@@ -498,7 +500,6 @@ impl From<AcquisitionStatus> for wire::AcquisitionStatus {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Coverage`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -509,32 +510,27 @@ pub struct Coverage {
     completeness: Completeness,
     scope: Option<Subject>,
 }
-
 impl Coverage {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> CoverageBuilder {
         CoverageBuilder::default()
     }
-
     /// The `completeness`.
     #[must_use]
     pub fn completeness(&self) -> Completeness {
         self.completeness
     }
-
     /// The `scope`, when present.
     #[must_use]
     pub fn scope(&self) -> Option<&Subject> {
         self.scope.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         rules::coverage(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`Coverage`]. Setters are infallible; [`build`](CoverageBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -542,7 +538,6 @@ pub struct CoverageBuilder {
     completeness: Option<Completeness>,
     scope: Option<Subject>,
 }
-
 impl CoverageBuilder {
     /// Sets `completeness`.
     #[must_use]
@@ -556,7 +551,6 @@ impl CoverageBuilder {
         self.scope = Some(scope);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -565,22 +559,30 @@ impl CoverageBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<Coverage, Invalid> {
         let built = Coverage {
-            completeness: self.completeness.ok_or_else(|| Invalid::field("completeness", Violation::Absent))?,
+            completeness: self
+                .completeness
+                .ok_or_else(|| Invalid::field("completeness", Violation::Absent))?,
             scope: self.scope,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Coverage> for Coverage {
     type Error = Invalid;
-
     fn try_from(wire: wire::Coverage) -> Result<Self, Invalid> {
         let built = Self {
-            completeness: Completeness::try_from(wire.completeness.ok_or_else(|| Invalid::field("completeness", Violation::Absent))?)
+            completeness: Completeness::try_from(
+                    wire
+                        .completeness
+                        .ok_or_else(|| Invalid::field(
+                            "completeness",
+                            Violation::Absent,
+                        ))?,
+                )
                 .map_err(|violation| Invalid::field("completeness", violation))?,
-            scope: wire.scope
+            scope: wire
+                .scope
                 .map(Subject::try_from)
                 .transpose()
                 .map_err(|error| error.at("scope"))?,
@@ -589,7 +591,6 @@ impl TryFrom<wire::Coverage> for Coverage {
         Ok(built)
     }
 }
-
 impl From<Coverage> for wire::Coverage {
     fn from(value: Coverage) -> Self {
         Self {
@@ -598,7 +599,6 @@ impl From<Coverage> for wire::Coverage {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.EndpointContext`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -609,31 +609,30 @@ pub struct EndpointContext {
     endpoint_id: String,
     attributes: Option<BTreeMap<String, Value>>,
 }
-
 impl EndpointContext {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> EndpointContextBuilder {
         EndpointContextBuilder::default()
     }
-
     /// The `endpoint_id`.
     #[must_use]
     pub fn endpoint_id(&self) -> &str {
         &self.endpoint_id
     }
-
     /// The `attributes`, when present.
     #[must_use]
     pub fn attributes(&self) -> Option<&BTreeMap<String, Value>> {
         self.attributes.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.endpoint_id.is_empty() {
             return Err(Invalid::field("endpoint_id", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.endpoint_id.len(), limits::ENDPOINTCONTEXT_ENDPOINT_ID_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.endpoint_id.len(),
+            limits::ENDPOINTCONTEXT_ENDPOINT_ID_MAX_LEN,
+        ) {
             return Err(Invalid::field("endpoint_id", violation));
         }
         if let Some(map) = &self.attributes {
@@ -643,7 +642,6 @@ impl EndpointContext {
         Ok(())
     }
 }
-
 /// Builds a [`EndpointContext`]. Setters are infallible; [`build`](EndpointContextBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -651,7 +649,6 @@ pub struct EndpointContextBuilder {
     endpoint_id: Option<String>,
     attributes: Option<BTreeMap<String, Value>>,
 }
-
 impl EndpointContextBuilder {
     /// Sets `endpoint_id`.
     #[must_use]
@@ -665,7 +662,6 @@ impl EndpointContextBuilder {
         self.attributes = Some(attributes);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -674,21 +670,24 @@ impl EndpointContextBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<EndpointContext, Invalid> {
         let built = EndpointContext {
-            endpoint_id: self.endpoint_id.ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
+            endpoint_id: self
+                .endpoint_id
+                .ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
             attributes: self.attributes,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::EndpointContext> for EndpointContext {
     type Error = Invalid;
-
     fn try_from(wire: wire::EndpointContext) -> Result<Self, Invalid> {
         let built = Self {
-            endpoint_id: wire.endpoint_id.ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
-            attributes: wire.attributes
+            endpoint_id: wire
+                .endpoint_id
+                .ok_or_else(|| Invalid::field("endpoint_id", Violation::Absent))?,
+            attributes: wire
+                .attributes
                 .map(value::map_from_wire)
                 .transpose()
                 .map_err(|error| error.at("attributes"))?,
@@ -697,7 +696,6 @@ impl TryFrom<wire::EndpointContext> for EndpointContext {
         Ok(built)
     }
 }
-
 impl From<EndpointContext> for wire::EndpointContext {
     fn from(value: EndpointContext) -> Self {
         Self {
@@ -706,7 +704,6 @@ impl From<EndpointContext> for wire::EndpointContext {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Inventory`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -716,22 +713,22 @@ impl From<EndpointContext> for wire::EndpointContext {
 pub struct Inventory {
     items: Vec<InventoryItem>,
 }
-
 impl Inventory {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> InventoryBuilder {
         InventoryBuilder::default()
     }
-
     /// The `items`.
     #[must_use]
     pub fn items(&self) -> &[InventoryItem] {
         &self.items
     }
-
     fn check(&self) -> Result<(), Invalid> {
-        if let Some(violation) = invalid::too_many(self.items.len(), limits::INVENTORY_ITEMS_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.items.len(),
+            limits::INVENTORY_ITEMS_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("items", violation));
         }
         let mut seen = BTreeSet::new();
@@ -744,14 +741,12 @@ impl Inventory {
         Ok(())
     }
 }
-
 /// Builds a [`Inventory`]. Setters are infallible; [`build`](InventoryBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
 pub struct InventoryBuilder {
     items: Vec<InventoryItem>,
 }
-
 impl InventoryBuilder {
     /// Sets `items`.
     #[must_use]
@@ -759,7 +754,6 @@ impl InventoryBuilder {
         self.items = items;
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -767,26 +761,23 @@ impl InventoryBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<Inventory, Invalid> {
-        let built = Inventory {
-            items: self.items,
-        };
+        let built = Inventory { items: self.items };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Inventory> for Inventory {
     type Error = Invalid;
-
     fn try_from(wire: wire::Inventory) -> Result<Self, Invalid> {
         let built = Self {
             items: {
                 let mut elements = Vec::with_capacity(wire.items.len());
                 for (index, element) in wire.items.into_iter().enumerate() {
-                    elements.push(
-                        InventoryItem::try_from(element)
-                            .map_err(|error| error.at_index("items", index))?,
-                    );
+                    elements
+                        .push(
+                            InventoryItem::try_from(element)
+                                .map_err(|error| error.at_index("items", index))?,
+                        );
                 }
                 elements
             },
@@ -795,7 +786,6 @@ impl TryFrom<wire::Inventory> for Inventory {
         Ok(built)
     }
 }
-
 impl From<Inventory> for wire::Inventory {
     fn from(value: Inventory) -> Self {
         Self {
@@ -803,7 +793,6 @@ impl From<Inventory> for wire::Inventory {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.InventoryItem`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -815,32 +804,27 @@ pub struct InventoryItem {
     attributes: Option<BTreeMap<String, Value>>,
     source_key: Option<String>,
 }
-
 impl InventoryItem {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> InventoryItemBuilder {
         InventoryItemBuilder::default()
     }
-
     /// The `subject`.
     #[must_use]
     pub fn subject(&self) -> &Subject {
         &self.subject
     }
-
     /// The `attributes`, when present.
     #[must_use]
     pub fn attributes(&self) -> Option<&BTreeMap<String, Value>> {
         self.attributes.as_ref()
     }
-
     /// The `source_key`, when present.
     #[must_use]
     pub fn source_key(&self) -> Option<&str> {
         self.source_key.as_deref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if let Some(map) = &self.attributes {
             value::check_map(map, "attributes")?;
@@ -851,7 +835,10 @@ impl InventoryItem {
             }
         }
         if let Some(element) = &self.source_key {
-            if let Some(violation) = invalid::too_long(element.len(), limits::INVENTORYITEM_SOURCE_KEY_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::INVENTORYITEM_SOURCE_KEY_MAX_LEN,
+            ) {
                 return Err(Invalid::field("source_key", violation));
             }
         }
@@ -859,7 +846,6 @@ impl InventoryItem {
         Ok(())
     }
 }
-
 /// Builds a [`InventoryItem`]. Setters are infallible; [`build`](InventoryItemBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -868,7 +854,6 @@ pub struct InventoryItemBuilder {
     attributes: Option<BTreeMap<String, Value>>,
     source_key: Option<String>,
 }
-
 impl InventoryItemBuilder {
     /// Sets `subject`.
     #[must_use]
@@ -888,7 +873,6 @@ impl InventoryItemBuilder {
         self.source_key = Some(source_key.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -897,7 +881,9 @@ impl InventoryItemBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<InventoryItem, Invalid> {
         let built = InventoryItem {
-            subject: self.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+            subject: self
+                .subject
+                .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
             attributes: self.attributes,
             source_key: self.source_key,
         };
@@ -905,15 +891,18 @@ impl InventoryItemBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::InventoryItem> for InventoryItem {
     type Error = Invalid;
-
     fn try_from(wire: wire::InventoryItem) -> Result<Self, Invalid> {
         let built = Self {
-            subject: Subject::try_from(wire.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?)
+            subject: Subject::try_from(
+                    wire
+                        .subject
+                        .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("subject"))?,
-            attributes: wire.attributes
+            attributes: wire
+                .attributes
                 .map(value::map_from_wire)
                 .transpose()
                 .map_err(|error| error.at("attributes"))?,
@@ -923,7 +912,6 @@ impl TryFrom<wire::InventoryItem> for InventoryItem {
         Ok(built)
     }
 }
-
 impl From<InventoryItem> for wire::InventoryItem {
     fn from(value: InventoryItem) -> Self {
         Self {
@@ -933,7 +921,6 @@ impl From<InventoryItem> for wire::InventoryItem {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.LogRecord`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -948,52 +935,47 @@ pub struct LogRecord {
     entry_id: Option<String>,
     attributes: Option<BTreeMap<String, Value>>,
 }
-
 impl LogRecord {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> LogRecordBuilder {
         LogRecordBuilder::default()
     }
-
     /// The `occurred_at`, when present.
     #[must_use]
     pub fn occurred_at(&self) -> Option<&Timestamp> {
         self.occurred_at.as_ref()
     }
-
     /// The `severity`, when present.
     #[must_use]
     pub fn severity(&self) -> Option<Severity> {
         self.severity
     }
-
     /// The `message`.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
-
     /// The `subject`, when present.
     #[must_use]
     pub fn subject(&self) -> Option<&Subject> {
         self.subject.as_ref()
     }
-
     /// The `entry_id`, when present.
     #[must_use]
     pub fn entry_id(&self) -> Option<&str> {
         self.entry_id.as_deref()
     }
-
     /// The `attributes`, when present.
     #[must_use]
     pub fn attributes(&self) -> Option<&BTreeMap<String, Value>> {
         self.attributes.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
-        if let Some(violation) = invalid::too_long(self.message.len(), limits::LOGRECORD_MESSAGE_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.message.len(),
+            limits::LOGRECORD_MESSAGE_MAX_LEN,
+        ) {
             return Err(Invalid::field("message", violation));
         }
         if let Some(element) = &self.entry_id {
@@ -1002,7 +984,10 @@ impl LogRecord {
             }
         }
         if let Some(element) = &self.entry_id {
-            if let Some(violation) = invalid::too_long(element.len(), limits::LOGRECORD_ENTRY_ID_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::LOGRECORD_ENTRY_ID_MAX_LEN,
+            ) {
                 return Err(Invalid::field("entry_id", violation));
             }
         }
@@ -1013,7 +998,6 @@ impl LogRecord {
         Ok(())
     }
 }
-
 /// Builds a [`LogRecord`]. Setters are infallible; [`build`](LogRecordBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -1025,7 +1009,6 @@ pub struct LogRecordBuilder {
     entry_id: Option<String>,
     attributes: Option<BTreeMap<String, Value>>,
 }
-
 impl LogRecordBuilder {
     /// Sets `occurred_at`.
     #[must_use]
@@ -1063,7 +1046,6 @@ impl LogRecordBuilder {
         self.attributes = Some(attributes);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1074,7 +1056,9 @@ impl LogRecordBuilder {
         let built = LogRecord {
             occurred_at: self.occurred_at,
             severity: self.severity,
-            message: self.message.ok_or_else(|| Invalid::field("message", Violation::Absent))?,
+            message: self
+                .message
+                .ok_or_else(|| Invalid::field("message", Violation::Absent))?,
             subject: self.subject,
             entry_id: self.entry_id,
             attributes: self.attributes,
@@ -1083,27 +1067,31 @@ impl LogRecordBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::LogRecord> for LogRecord {
     type Error = Invalid;
-
     fn try_from(wire: wire::LogRecord) -> Result<Self, Invalid> {
         let built = Self {
-            occurred_at: wire.occurred_at
+            occurred_at: wire
+                .occurred_at
                 .map(Timestamp::try_from)
                 .transpose()
                 .map_err(|error| error.at("occurred_at"))?,
-            severity: wire.severity
+            severity: wire
+                .severity
                 .map(Severity::try_from)
                 .transpose()
                 .map_err(|violation| Invalid::field("severity", violation))?,
-            message: wire.message.ok_or_else(|| Invalid::field("message", Violation::Absent))?,
-            subject: wire.subject
+            message: wire
+                .message
+                .ok_or_else(|| Invalid::field("message", Violation::Absent))?,
+            subject: wire
+                .subject
                 .map(Subject::try_from)
                 .transpose()
                 .map_err(|error| error.at("subject"))?,
             entry_id: wire.entry_id,
-            attributes: wire.attributes
+            attributes: wire
+                .attributes
                 .map(value::map_from_wire)
                 .transpose()
                 .map_err(|error| error.at("attributes"))?,
@@ -1112,7 +1100,6 @@ impl TryFrom<wire::LogRecord> for LogRecord {
         Ok(built)
     }
 }
-
 impl From<LogRecord> for wire::LogRecord {
     fn from(value: LogRecord) -> Self {
         Self {
@@ -1125,7 +1112,6 @@ impl From<LogRecord> for wire::LogRecord {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Logs`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1135,36 +1121,34 @@ impl From<LogRecord> for wire::LogRecord {
 pub struct Logs {
     records: Vec<LogRecord>,
 }
-
 impl Logs {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> LogsBuilder {
         LogsBuilder::default()
     }
-
     /// The `records`.
     #[must_use]
     pub fn records(&self) -> &[LogRecord] {
         &self.records
     }
-
     fn check(&self) -> Result<(), Invalid> {
-        if let Some(violation) = invalid::too_many(self.records.len(), limits::LOGS_RECORDS_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.records.len(),
+            limits::LOGS_RECORDS_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("records", violation));
         }
         rules::logs(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`Logs`]. Setters are infallible; [`build`](LogsBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
 pub struct LogsBuilder {
     records: Vec<LogRecord>,
 }
-
 impl LogsBuilder {
     /// Sets `records`.
     #[must_use]
@@ -1172,7 +1156,6 @@ impl LogsBuilder {
         self.records = records;
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1180,26 +1163,23 @@ impl LogsBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<Logs, Invalid> {
-        let built = Logs {
-            records: self.records,
-        };
+        let built = Logs { records: self.records };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Logs> for Logs {
     type Error = Invalid;
-
     fn try_from(wire: wire::Logs) -> Result<Self, Invalid> {
         let built = Self {
             records: {
                 let mut elements = Vec::with_capacity(wire.records.len());
                 for (index, element) in wire.records.into_iter().enumerate() {
-                    elements.push(
-                        LogRecord::try_from(element)
-                            .map_err(|error| error.at_index("records", index))?,
-                    );
+                    elements
+                        .push(
+                            LogRecord::try_from(element)
+                                .map_err(|error| error.at_index("records", index))?,
+                        );
                 }
                 elements
             },
@@ -1208,7 +1188,6 @@ impl TryFrom<wire::Logs> for Logs {
         Ok(built)
     }
 }
-
 impl From<Logs> for wire::Logs {
     fn from(value: Logs) -> Self {
         Self {
@@ -1216,7 +1195,6 @@ impl From<Logs> for wire::Logs {
         }
     }
 }
-
 /// The `payload` of an `nv.telemetry.v1.ObservationBatch`: exactly one case, always
 /// set — the oneof is `required`, so absence is unrepresentable here.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1233,7 +1211,6 @@ pub enum Payload {
     /// `resources`.
     Resources(ResourceGraph),
 }
-
 /// Validated form of `nv.telemetry.v1.ObservationBatch`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1247,49 +1224,41 @@ pub struct ObservationBatch {
     coverage: Coverage,
     payload: Payload,
 }
-
 impl ObservationBatch {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ObservationBatchBuilder {
         ObservationBatchBuilder::default()
     }
-
     /// The `endpoint`.
     #[must_use]
     pub fn endpoint(&self) -> &EndpointContext {
         &self.endpoint
     }
-
     /// The `origin`.
     #[must_use]
     pub fn origin(&self) -> &Origin {
         &self.origin
     }
-
     /// The `window`.
     #[must_use]
     pub fn window(&self) -> &ObservationWindow {
         &self.window
     }
-
     /// The `coverage`.
     #[must_use]
     pub fn coverage(&self) -> &Coverage {
         &self.coverage
     }
-
     /// The `payload`.
     #[must_use]
     pub fn payload(&self) -> &Payload {
         &self.payload
     }
-
     fn check(&self) -> Result<(), Invalid> {
         rules::observation_batch(self)?;
         Ok(())
     }
-
     /// Decodes and validates from wire bytes.
     ///
     /// # Errors
@@ -1302,14 +1271,12 @@ impl ObservationBatch {
             .map_err(crate::DecodeError::Malformed)?;
         Self::try_from(wire).map_err(crate::DecodeError::Invalid)
     }
-
     /// Encodes the canonical wire form.
     #[must_use]
     pub fn encode_to_vec(&self) -> Vec<u8> {
         ::prost::Message::encode_to_vec(&wire::ObservationBatch::from(self.clone()))
     }
 }
-
 /// Builds a [`ObservationBatch`]. Setters are infallible; [`build`](ObservationBatchBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -1320,7 +1287,6 @@ pub struct ObservationBatchBuilder {
     coverage: Option<Coverage>,
     payload: Option<Payload>,
 }
-
 impl ObservationBatchBuilder {
     /// Sets `endpoint`.
     #[must_use]
@@ -1352,7 +1318,6 @@ impl ObservationBatchBuilder {
         self.payload = Some(payload);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1361,53 +1326,91 @@ impl ObservationBatchBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<ObservationBatch, Invalid> {
         let built = ObservationBatch {
-            endpoint: self.endpoint.ok_or_else(|| Invalid::field("endpoint", Violation::Absent))?,
-            origin: self.origin.ok_or_else(|| Invalid::field("origin", Violation::Absent))?,
-            window: self.window.ok_or_else(|| Invalid::field("window", Violation::Absent))?,
-            coverage: self.coverage.ok_or_else(|| Invalid::field("coverage", Violation::Absent))?,
-            payload: self.payload.ok_or_else(|| Invalid::field("payload", Violation::Absent))?,
+            endpoint: self
+                .endpoint
+                .ok_or_else(|| Invalid::field("endpoint", Violation::Absent))?,
+            origin: self
+                .origin
+                .ok_or_else(|| Invalid::field("origin", Violation::Absent))?,
+            window: self
+                .window
+                .ok_or_else(|| Invalid::field("window", Violation::Absent))?,
+            coverage: self
+                .coverage
+                .ok_or_else(|| Invalid::field("coverage", Violation::Absent))?,
+            payload: self
+                .payload
+                .ok_or_else(|| Invalid::field("payload", Violation::Absent))?,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::ObservationBatch> for ObservationBatch {
     type Error = Invalid;
-
     fn try_from(wire: wire::ObservationBatch) -> Result<Self, Invalid> {
         let built = Self {
-            endpoint: EndpointContext::try_from(wire.endpoint.ok_or_else(|| Invalid::field("endpoint", Violation::Absent))?)
+            endpoint: EndpointContext::try_from(
+                    wire
+                        .endpoint
+                        .ok_or_else(|| Invalid::field("endpoint", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("endpoint"))?,
-            origin: Origin::try_from(wire.origin.ok_or_else(|| Invalid::field("origin", Violation::Absent))?)
+            origin: Origin::try_from(
+                    wire
+                        .origin
+                        .ok_or_else(|| Invalid::field("origin", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("origin"))?,
-            window: ObservationWindow::try_from(wire.window.ok_or_else(|| Invalid::field("window", Violation::Absent))?)
+            window: ObservationWindow::try_from(
+                    wire
+                        .window
+                        .ok_or_else(|| Invalid::field("window", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("window"))?,
-            coverage: Coverage::try_from(wire.coverage.ok_or_else(|| Invalid::field("coverage", Violation::Absent))?)
+            coverage: Coverage::try_from(
+                    wire
+                        .coverage
+                        .ok_or_else(|| Invalid::field("coverage", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("coverage"))?,
-            payload: match wire.payload.ok_or_else(|| Invalid::field("payload", Violation::Absent))? {
-                wire::observation_batch::Payload::Readings(inner) => Payload::Readings(
-                    Readings::try_from(inner).map_err(|error| error.at("readings"))?,
-                ),
-                wire::observation_batch::Payload::Logs(inner) => Payload::Logs(
-                    Logs::try_from(inner).map_err(|error| error.at("logs"))?,
-                ),
-                wire::observation_batch::Payload::States(inner) => Payload::States(
-                    States::try_from(inner).map_err(|error| error.at("states"))?,
-                ),
-                wire::observation_batch::Payload::Inventory(inner) => Payload::Inventory(
-                    Inventory::try_from(inner).map_err(|error| error.at("inventory"))?,
-                ),
-                wire::observation_batch::Payload::Resources(inner) => Payload::Resources(
-                    ResourceGraph::try_from(inner).map_err(|error| error.at("resources"))?,
-                ),
+            payload: match wire
+                .payload
+                .ok_or_else(|| Invalid::field("payload", Violation::Absent))?
+            {
+                wire::observation_batch::Payload::Readings(inner) => {
+                    Payload::Readings(
+                        Readings::try_from(inner).map_err(|error| error.at("readings"))?,
+                    )
+                }
+                wire::observation_batch::Payload::Logs(inner) => {
+                    Payload::Logs(
+                        Logs::try_from(inner).map_err(|error| error.at("logs"))?,
+                    )
+                }
+                wire::observation_batch::Payload::States(inner) => {
+                    Payload::States(
+                        States::try_from(inner).map_err(|error| error.at("states"))?,
+                    )
+                }
+                wire::observation_batch::Payload::Inventory(inner) => {
+                    Payload::Inventory(
+                        Inventory::try_from(inner)
+                            .map_err(|error| error.at("inventory"))?,
+                    )
+                }
+                wire::observation_batch::Payload::Resources(inner) => {
+                    Payload::Resources(
+                        ResourceGraph::try_from(inner)
+                            .map_err(|error| error.at("resources"))?,
+                    )
+                }
             },
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl From<ObservationBatch> for wire::ObservationBatch {
     fn from(value: ObservationBatch) -> Self {
         Self {
@@ -1415,17 +1418,28 @@ impl From<ObservationBatch> for wire::ObservationBatch {
             origin: Some(value.origin.into()),
             window: Some(value.window.into()),
             coverage: Some(value.coverage.into()),
-            payload: Some(match value.payload {
-                Payload::Readings(inner) => wire::observation_batch::Payload::Readings(inner.into()),
-                Payload::Logs(inner) => wire::observation_batch::Payload::Logs(inner.into()),
-                Payload::States(inner) => wire::observation_batch::Payload::States(inner.into()),
-                Payload::Inventory(inner) => wire::observation_batch::Payload::Inventory(inner.into()),
-                Payload::Resources(inner) => wire::observation_batch::Payload::Resources(inner.into()),
-            }),
+            payload: Some(
+                match value.payload {
+                    Payload::Readings(inner) => {
+                        wire::observation_batch::Payload::Readings(inner.into())
+                    }
+                    Payload::Logs(inner) => {
+                        wire::observation_batch::Payload::Logs(inner.into())
+                    }
+                    Payload::States(inner) => {
+                        wire::observation_batch::Payload::States(inner.into())
+                    }
+                    Payload::Inventory(inner) => {
+                        wire::observation_batch::Payload::Inventory(inner.into())
+                    }
+                    Payload::Resources(inner) => {
+                        wire::observation_batch::Payload::Resources(inner.into())
+                    }
+                },
+            ),
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.ObservationWindow`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1436,32 +1450,27 @@ pub struct ObservationWindow {
     start: Timestamp,
     end: Option<Timestamp>,
 }
-
 impl ObservationWindow {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ObservationWindowBuilder {
         ObservationWindowBuilder::default()
     }
-
     /// The `start`.
     #[must_use]
     pub fn start(&self) -> &Timestamp {
         &self.start
     }
-
     /// The `end`, when present.
     #[must_use]
     pub fn end(&self) -> Option<&Timestamp> {
         self.end.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         rules::observation_window(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`ObservationWindow`]. Setters are infallible; [`build`](ObservationWindowBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -1469,7 +1478,6 @@ pub struct ObservationWindowBuilder {
     start: Option<Timestamp>,
     end: Option<Timestamp>,
 }
-
 impl ObservationWindowBuilder {
     /// Sets `start`.
     #[must_use]
@@ -1483,7 +1491,6 @@ impl ObservationWindowBuilder {
         self.end = Some(end);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1499,15 +1506,16 @@ impl ObservationWindowBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::ObservationWindow> for ObservationWindow {
     type Error = Invalid;
-
     fn try_from(wire: wire::ObservationWindow) -> Result<Self, Invalid> {
         let built = Self {
-            start: Timestamp::try_from(wire.start.ok_or_else(|| Invalid::field("start", Violation::Absent))?)
+            start: Timestamp::try_from(
+                    wire.start.ok_or_else(|| Invalid::field("start", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("start"))?,
-            end: wire.end
+            end: wire
+                .end
                 .map(Timestamp::try_from)
                 .transpose()
                 .map_err(|error| error.at("end"))?,
@@ -1516,7 +1524,6 @@ impl TryFrom<wire::ObservationWindow> for ObservationWindow {
         Ok(built)
     }
 }
-
 impl From<ObservationWindow> for wire::ObservationWindow {
     fn from(value: ObservationWindow) -> Self {
         Self {
@@ -1525,7 +1532,6 @@ impl From<ObservationWindow> for wire::ObservationWindow {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.ObservedResource`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1542,67 +1548,60 @@ pub struct ObservedResource {
     properties_complete: bool,
     unresolved: Vec<UnresolvedReference>,
 }
-
 impl ObservedResource {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ObservedResourceBuilder {
         ObservedResourceBuilder::default()
     }
-
     /// The `subject`.
     #[must_use]
     pub fn subject(&self) -> &Subject {
         &self.subject
     }
-
     /// The `source_key`.
     #[must_use]
     pub fn source_key(&self) -> &str {
         &self.source_key
     }
-
     /// The `source_schema`, when present.
     #[must_use]
     pub fn source_schema(&self) -> Option<&str> {
         self.source_schema.as_deref()
     }
-
     /// The `entity_tag`, when present.
     #[must_use]
     pub fn entity_tag(&self) -> Option<&str> {
         self.entity_tag.as_deref()
     }
-
     /// The `observed_at`, when present.
     #[must_use]
     pub fn observed_at(&self) -> Option<&Timestamp> {
         self.observed_at.as_ref()
     }
-
     /// The `properties`, when present.
     #[must_use]
     pub fn properties(&self) -> Option<&BTreeMap<String, Value>> {
         self.properties.as_ref()
     }
-
     /// The `properties_complete`.
     #[must_use]
     pub fn properties_complete(&self) -> bool {
         self.properties_complete
     }
-
     /// The `unresolved`.
     #[must_use]
     pub fn unresolved(&self) -> &[UnresolvedReference] {
         &self.unresolved
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.source_key.is_empty() {
             return Err(Invalid::field("source_key", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.source_key.len(), limits::OBSERVEDRESOURCE_SOURCE_KEY_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.source_key.len(),
+            limits::OBSERVEDRESOURCE_SOURCE_KEY_MAX_LEN,
+        ) {
             return Err(Invalid::field("source_key", violation));
         }
         if let Some(element) = &self.source_schema {
@@ -1611,7 +1610,10 @@ impl ObservedResource {
             }
         }
         if let Some(element) = &self.source_schema {
-            if let Some(violation) = invalid::too_long(element.len(), limits::OBSERVEDRESOURCE_SOURCE_SCHEMA_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::OBSERVEDRESOURCE_SOURCE_SCHEMA_MAX_LEN,
+            ) {
                 return Err(Invalid::field("source_schema", violation));
             }
         }
@@ -1621,21 +1623,26 @@ impl ObservedResource {
             }
         }
         if let Some(element) = &self.entity_tag {
-            if let Some(violation) = invalid::too_long(element.len(), limits::OBSERVEDRESOURCE_ENTITY_TAG_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::OBSERVEDRESOURCE_ENTITY_TAG_MAX_LEN,
+            ) {
                 return Err(Invalid::field("entity_tag", violation));
             }
         }
         if let Some(map) = &self.properties {
             value::check_map(map, "properties")?;
         }
-        if let Some(violation) = invalid::too_many(self.unresolved.len(), limits::OBSERVEDRESOURCE_UNRESOLVED_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.unresolved.len(),
+            limits::OBSERVEDRESOURCE_UNRESOLVED_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("unresolved", violation));
         }
         rules::observed_resource(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`ObservedResource`]. Setters are infallible; [`build`](ObservedResourceBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -1649,7 +1656,6 @@ pub struct ObservedResourceBuilder {
     properties_complete: Option<bool>,
     unresolved: Vec<UnresolvedReference>,
 }
-
 impl ObservedResourceBuilder {
     /// Sets `subject`.
     #[must_use]
@@ -1699,7 +1705,6 @@ impl ObservedResourceBuilder {
         self.unresolved = unresolved;
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1708,46 +1713,67 @@ impl ObservedResourceBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<ObservedResource, Invalid> {
         let built = ObservedResource {
-            subject: self.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
-            source_key: self.source_key.ok_or_else(|| Invalid::field("source_key", Violation::Absent))?,
+            subject: self
+                .subject
+                .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+            source_key: self
+                .source_key
+                .ok_or_else(|| Invalid::field("source_key", Violation::Absent))?,
             source_schema: self.source_schema,
             entity_tag: self.entity_tag,
             observed_at: self.observed_at,
             properties: self.properties,
-            properties_complete: self.properties_complete.ok_or_else(|| Invalid::field("properties_complete", Violation::Absent))?,
+            properties_complete: self
+                .properties_complete
+                .ok_or_else(|| Invalid::field(
+                    "properties_complete",
+                    Violation::Absent,
+                ))?,
             unresolved: self.unresolved,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::ObservedResource> for ObservedResource {
     type Error = Invalid;
-
     fn try_from(wire: wire::ObservedResource) -> Result<Self, Invalid> {
         let built = Self {
-            subject: Subject::try_from(wire.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?)
+            subject: Subject::try_from(
+                    wire
+                        .subject
+                        .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("subject"))?,
-            source_key: wire.source_key.ok_or_else(|| Invalid::field("source_key", Violation::Absent))?,
+            source_key: wire
+                .source_key
+                .ok_or_else(|| Invalid::field("source_key", Violation::Absent))?,
             source_schema: wire.source_schema,
             entity_tag: wire.entity_tag,
-            observed_at: wire.observed_at
+            observed_at: wire
+                .observed_at
                 .map(Timestamp::try_from)
                 .transpose()
                 .map_err(|error| error.at("observed_at"))?,
-            properties: wire.properties
+            properties: wire
+                .properties
                 .map(value::map_from_wire)
                 .transpose()
                 .map_err(|error| error.at("properties"))?,
-            properties_complete: wire.properties_complete.ok_or_else(|| Invalid::field("properties_complete", Violation::Absent))?,
+            properties_complete: wire
+                .properties_complete
+                .ok_or_else(|| Invalid::field(
+                    "properties_complete",
+                    Violation::Absent,
+                ))?,
             unresolved: {
                 let mut elements = Vec::with_capacity(wire.unresolved.len());
                 for (index, element) in wire.unresolved.into_iter().enumerate() {
-                    elements.push(
-                        UnresolvedReference::try_from(element)
-                            .map_err(|error| error.at_index("unresolved", index))?,
-                    );
+                    elements
+                        .push(
+                            UnresolvedReference::try_from(element)
+                                .map_err(|error| error.at_index("unresolved", index))?,
+                        );
                 }
                 elements
             },
@@ -1756,7 +1782,6 @@ impl TryFrom<wire::ObservedResource> for ObservedResource {
         Ok(built)
     }
 }
-
 impl From<ObservedResource> for wire::ObservedResource {
     fn from(value: ObservedResource) -> Self {
         Self {
@@ -1771,7 +1796,6 @@ impl From<ObservedResource> for wire::ObservedResource {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Origin`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1782,44 +1806,45 @@ pub struct Origin {
     provider: String,
     request_class: String,
 }
-
 impl Origin {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> OriginBuilder {
         OriginBuilder::default()
     }
-
     /// The `provider`.
     #[must_use]
     pub fn provider(&self) -> &str {
         &self.provider
     }
-
     /// The `request_class`.
     #[must_use]
     pub fn request_class(&self) -> &str {
         &self.request_class
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.provider.is_empty() {
             return Err(Invalid::field("provider", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.provider.len(), limits::ORIGIN_PROVIDER_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.provider.len(),
+            limits::ORIGIN_PROVIDER_MAX_LEN,
+        ) {
             return Err(Invalid::field("provider", violation));
         }
         if self.request_class.is_empty() {
             return Err(Invalid::field("request_class", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.request_class.len(), limits::ORIGIN_REQUEST_CLASS_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.request_class.len(),
+            limits::ORIGIN_REQUEST_CLASS_MAX_LEN,
+        ) {
             return Err(Invalid::field("request_class", violation));
         }
         rules::origin(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`Origin`]. Setters are infallible; [`build`](OriginBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -1827,7 +1852,6 @@ pub struct OriginBuilder {
     provider: Option<String>,
     request_class: Option<String>,
 }
-
 impl OriginBuilder {
     /// Sets `provider`.
     #[must_use]
@@ -1841,7 +1865,6 @@ impl OriginBuilder {
         self.request_class = Some(request_class.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1850,27 +1873,32 @@ impl OriginBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<Origin, Invalid> {
         let built = Origin {
-            provider: self.provider.ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
-            request_class: self.request_class.ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
+            provider: self
+                .provider
+                .ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
+            request_class: self
+                .request_class
+                .ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Origin> for Origin {
     type Error = Invalid;
-
     fn try_from(wire: wire::Origin) -> Result<Self, Invalid> {
         let built = Self {
-            provider: wire.provider.ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
-            request_class: wire.request_class.ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
+            provider: wire
+                .provider
+                .ok_or_else(|| Invalid::field("provider", Violation::Absent))?,
+            request_class: wire
+                .request_class
+                .ok_or_else(|| Invalid::field("request_class", Violation::Absent))?,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl From<Origin> for wire::Origin {
     fn from(value: Origin) -> Self {
         Self {
@@ -1879,7 +1907,6 @@ impl From<Origin> for wire::Origin {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Reading`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1891,38 +1918,32 @@ pub struct Reading {
     value: NumericValue,
     observed_at: Option<Timestamp>,
 }
-
 impl Reading {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ReadingBuilder {
         ReadingBuilder::default()
     }
-
     /// The `key`.
     #[must_use]
     pub fn key(&self) -> &SignalKey {
         &self.key
     }
-
     /// The `value`.
     #[must_use]
     pub fn value(&self) -> &NumericValue {
         &self.value
     }
-
     /// The `observed_at`, when present.
     #[must_use]
     pub fn observed_at(&self) -> Option<&Timestamp> {
         self.observed_at.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         rules::reading(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`Reading`]. Setters are infallible; [`build`](ReadingBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -1931,7 +1952,6 @@ pub struct ReadingBuilder {
     value: Option<NumericValue>,
     observed_at: Option<Timestamp>,
 }
-
 impl ReadingBuilder {
     /// Sets `key`.
     #[must_use]
@@ -1951,7 +1971,6 @@ impl ReadingBuilder {
         self.observed_at = Some(observed_at);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -1968,17 +1987,20 @@ impl ReadingBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Reading> for Reading {
     type Error = Invalid;
-
     fn try_from(wire: wire::Reading) -> Result<Self, Invalid> {
         let built = Self {
-            key: SignalKey::try_from(wire.key.ok_or_else(|| Invalid::field("key", Violation::Absent))?)
+            key: SignalKey::try_from(
+                    wire.key.ok_or_else(|| Invalid::field("key", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("key"))?,
-            value: NumericValue::try_from(wire.value.ok_or_else(|| Invalid::field("value", Violation::Absent))?)
+            value: NumericValue::try_from(
+                    wire.value.ok_or_else(|| Invalid::field("value", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("value"))?,
-            observed_at: wire.observed_at
+            observed_at: wire
+                .observed_at
                 .map(Timestamp::try_from)
                 .transpose()
                 .map_err(|error| error.at("observed_at"))?,
@@ -1987,7 +2009,6 @@ impl TryFrom<wire::Reading> for Reading {
         Ok(built)
     }
 }
-
 impl From<Reading> for wire::Reading {
     fn from(value: Reading) -> Self {
         Self {
@@ -1997,7 +2018,6 @@ impl From<Reading> for wire::Reading {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Readings`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2008,28 +2028,27 @@ pub struct Readings {
     descriptors: Vec<SignalDescriptor>,
     samples: Vec<Reading>,
 }
-
 impl Readings {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ReadingsBuilder {
         ReadingsBuilder::default()
     }
-
     /// The `descriptors`.
     #[must_use]
     pub fn descriptors(&self) -> &[SignalDescriptor] {
         &self.descriptors
     }
-
     /// The `samples`.
     #[must_use]
     pub fn samples(&self) -> &[Reading] {
         &self.samples
     }
-
     fn check(&self) -> Result<(), Invalid> {
-        if let Some(violation) = invalid::too_many(self.descriptors.len(), limits::READINGS_DESCRIPTORS_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.descriptors.len(),
+            limits::READINGS_DESCRIPTORS_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("descriptors", violation));
         }
         let mut seen = BTreeSet::new();
@@ -2038,14 +2057,16 @@ impl Readings {
                 return Err(Invalid::element("descriptors", index, Violation::Duplicate));
             }
         }
-        if let Some(violation) = invalid::too_many(self.samples.len(), limits::READINGS_SAMPLES_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.samples.len(),
+            limits::READINGS_SAMPLES_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("samples", violation));
         }
         rules::readings(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`Readings`]. Setters are infallible; [`build`](ReadingsBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2053,7 +2074,6 @@ pub struct ReadingsBuilder {
     descriptors: Vec<SignalDescriptor>,
     samples: Vec<Reading>,
 }
-
 impl ReadingsBuilder {
     /// Sets `descriptors`.
     #[must_use]
@@ -2067,7 +2087,6 @@ impl ReadingsBuilder {
         self.samples = samples;
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2083,29 +2102,29 @@ impl ReadingsBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Readings> for Readings {
     type Error = Invalid;
-
     fn try_from(wire: wire::Readings) -> Result<Self, Invalid> {
         let built = Self {
             descriptors: {
                 let mut elements = Vec::with_capacity(wire.descriptors.len());
                 for (index, element) in wire.descriptors.into_iter().enumerate() {
-                    elements.push(
-                        SignalDescriptor::try_from(element)
-                            .map_err(|error| error.at_index("descriptors", index))?,
-                    );
+                    elements
+                        .push(
+                            SignalDescriptor::try_from(element)
+                                .map_err(|error| error.at_index("descriptors", index))?,
+                        );
                 }
                 elements
             },
             samples: {
                 let mut elements = Vec::with_capacity(wire.samples.len());
                 for (index, element) in wire.samples.into_iter().enumerate() {
-                    elements.push(
-                        Reading::try_from(element)
-                            .map_err(|error| error.at_index("samples", index))?,
-                    );
+                    elements
+                        .push(
+                            Reading::try_from(element)
+                                .map_err(|error| error.at_index("samples", index))?,
+                        );
                 }
                 elements
             },
@@ -2114,7 +2133,6 @@ impl TryFrom<wire::Readings> for Readings {
         Ok(built)
     }
 }
-
 impl From<Readings> for wire::Readings {
     fn from(value: Readings) -> Self {
         Self {
@@ -2123,7 +2141,6 @@ impl From<Readings> for wire::Readings {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.ResourceGraph`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2134,28 +2151,27 @@ pub struct ResourceGraph {
     resources: Vec<ObservedResource>,
     relations: Vec<ResourceRelation>,
 }
-
 impl ResourceGraph {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ResourceGraphBuilder {
         ResourceGraphBuilder::default()
     }
-
     /// The `resources`.
     #[must_use]
     pub fn resources(&self) -> &[ObservedResource] {
         &self.resources
     }
-
     /// The `relations`.
     #[must_use]
     pub fn relations(&self) -> &[ResourceRelation] {
         &self.relations
     }
-
     fn check(&self) -> Result<(), Invalid> {
-        if let Some(violation) = invalid::too_many(self.resources.len(), limits::RESOURCEGRAPH_RESOURCES_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.resources.len(),
+            limits::RESOURCEGRAPH_RESOURCES_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("resources", violation));
         }
         let mut seen = BTreeSet::new();
@@ -2164,7 +2180,10 @@ impl ResourceGraph {
                 return Err(Invalid::element("resources", index, Violation::Duplicate));
             }
         }
-        if let Some(violation) = invalid::too_many(self.relations.len(), limits::RESOURCEGRAPH_RELATIONS_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.relations.len(),
+            limits::RESOURCEGRAPH_RELATIONS_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("relations", violation));
         }
         let mut seen = BTreeSet::new();
@@ -2177,7 +2196,6 @@ impl ResourceGraph {
         Ok(())
     }
 }
-
 /// Builds a [`ResourceGraph`]. Setters are infallible; [`build`](ResourceGraphBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2185,7 +2203,6 @@ pub struct ResourceGraphBuilder {
     resources: Vec<ObservedResource>,
     relations: Vec<ResourceRelation>,
 }
-
 impl ResourceGraphBuilder {
     /// Sets `resources`.
     #[must_use]
@@ -2199,7 +2216,6 @@ impl ResourceGraphBuilder {
         self.relations = relations;
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2215,29 +2231,29 @@ impl ResourceGraphBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::ResourceGraph> for ResourceGraph {
     type Error = Invalid;
-
     fn try_from(wire: wire::ResourceGraph) -> Result<Self, Invalid> {
         let built = Self {
             resources: {
                 let mut elements = Vec::with_capacity(wire.resources.len());
                 for (index, element) in wire.resources.into_iter().enumerate() {
-                    elements.push(
-                        ObservedResource::try_from(element)
-                            .map_err(|error| error.at_index("resources", index))?,
-                    );
+                    elements
+                        .push(
+                            ObservedResource::try_from(element)
+                                .map_err(|error| error.at_index("resources", index))?,
+                        );
                 }
                 elements
             },
             relations: {
                 let mut elements = Vec::with_capacity(wire.relations.len());
                 for (index, element) in wire.relations.into_iter().enumerate() {
-                    elements.push(
-                        ResourceRelation::try_from(element)
-                            .map_err(|error| error.at_index("relations", index))?,
-                    );
+                    elements
+                        .push(
+                            ResourceRelation::try_from(element)
+                                .map_err(|error| error.at_index("relations", index))?,
+                        );
                 }
                 elements
             },
@@ -2246,7 +2262,6 @@ impl TryFrom<wire::ResourceGraph> for ResourceGraph {
         Ok(built)
     }
 }
-
 impl From<ResourceGraph> for wire::ResourceGraph {
     fn from(value: ResourceGraph) -> Self {
         Self {
@@ -2255,7 +2270,6 @@ impl From<ResourceGraph> for wire::ResourceGraph {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.ResourceRelation`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2267,44 +2281,41 @@ pub struct ResourceRelation {
     target: Subject,
     kind: String,
 }
-
 impl ResourceRelation {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ResourceRelationBuilder {
         ResourceRelationBuilder::default()
     }
-
     /// The `source`.
     #[must_use]
     pub fn source(&self) -> &Subject {
         &self.source
     }
-
     /// The `target`.
     #[must_use]
     pub fn target(&self) -> &Subject {
         &self.target
     }
-
     /// The `kind`.
     #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.kind.is_empty() {
             return Err(Invalid::field("kind", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.kind.len(), limits::RESOURCERELATION_KIND_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.kind.len(),
+            limits::RESOURCERELATION_KIND_MAX_LEN,
+        ) {
             return Err(Invalid::field("kind", violation));
         }
         rules::resource_relation(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`ResourceRelation`]. Setters are infallible; [`build`](ResourceRelationBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2313,7 +2324,6 @@ pub struct ResourceRelationBuilder {
     target: Option<Subject>,
     kind: Option<String>,
 }
-
 impl ResourceRelationBuilder {
     /// Sets `source`.
     #[must_use]
@@ -2333,7 +2343,6 @@ impl ResourceRelationBuilder {
         self.kind = Some(kind.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2342,23 +2351,33 @@ impl ResourceRelationBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<ResourceRelation, Invalid> {
         let built = ResourceRelation {
-            source: self.source.ok_or_else(|| Invalid::field("source", Violation::Absent))?,
-            target: self.target.ok_or_else(|| Invalid::field("target", Violation::Absent))?,
+            source: self
+                .source
+                .ok_or_else(|| Invalid::field("source", Violation::Absent))?,
+            target: self
+                .target
+                .ok_or_else(|| Invalid::field("target", Violation::Absent))?,
             kind: self.kind.ok_or_else(|| Invalid::field("kind", Violation::Absent))?,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::ResourceRelation> for ResourceRelation {
     type Error = Invalid;
-
     fn try_from(wire: wire::ResourceRelation) -> Result<Self, Invalid> {
         let built = Self {
-            source: Subject::try_from(wire.source.ok_or_else(|| Invalid::field("source", Violation::Absent))?)
+            source: Subject::try_from(
+                    wire
+                        .source
+                        .ok_or_else(|| Invalid::field("source", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("source"))?,
-            target: Subject::try_from(wire.target.ok_or_else(|| Invalid::field("target", Violation::Absent))?)
+            target: Subject::try_from(
+                    wire
+                        .target
+                        .ok_or_else(|| Invalid::field("target", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("target"))?,
             kind: wire.kind.ok_or_else(|| Invalid::field("kind", Violation::Absent))?,
         };
@@ -2366,7 +2385,6 @@ impl TryFrom<wire::ResourceRelation> for ResourceRelation {
         Ok(built)
     }
 }
-
 impl From<ResourceRelation> for wire::ResourceRelation {
     fn from(value: ResourceRelation) -> Self {
         Self {
@@ -2376,7 +2394,6 @@ impl From<ResourceRelation> for wire::ResourceRelation {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.SignalDescriptor`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2389,38 +2406,32 @@ pub struct SignalDescriptor {
     unit: Option<String>,
     range: Option<ValueRange>,
 }
-
 impl SignalDescriptor {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> SignalDescriptorBuilder {
         SignalDescriptorBuilder::default()
     }
-
     /// The `key`.
     #[must_use]
     pub fn key(&self) -> &SignalKey {
         &self.key
     }
-
     /// The `kind`, when present.
     #[must_use]
     pub fn kind(&self) -> Option<&str> {
         self.kind.as_deref()
     }
-
     /// The `unit`, when present.
     #[must_use]
     pub fn unit(&self) -> Option<&str> {
         self.unit.as_deref()
     }
-
     /// The `range`, when present.
     #[must_use]
     pub fn range(&self) -> Option<&ValueRange> {
         self.range.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if let Some(element) = &self.kind {
             if element.is_empty() {
@@ -2428,7 +2439,10 @@ impl SignalDescriptor {
             }
         }
         if let Some(element) = &self.kind {
-            if let Some(violation) = invalid::too_long(element.len(), limits::SIGNALDESCRIPTOR_KIND_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::SIGNALDESCRIPTOR_KIND_MAX_LEN,
+            ) {
                 return Err(Invalid::field("kind", violation));
             }
         }
@@ -2438,7 +2452,10 @@ impl SignalDescriptor {
             }
         }
         if let Some(element) = &self.unit {
-            if let Some(violation) = invalid::too_long(element.len(), limits::SIGNALDESCRIPTOR_UNIT_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::SIGNALDESCRIPTOR_UNIT_MAX_LEN,
+            ) {
                 return Err(Invalid::field("unit", violation));
             }
         }
@@ -2446,7 +2463,6 @@ impl SignalDescriptor {
         Ok(())
     }
 }
-
 /// Builds a [`SignalDescriptor`]. Setters are infallible; [`build`](SignalDescriptorBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2456,7 +2472,6 @@ pub struct SignalDescriptorBuilder {
     unit: Option<String>,
     range: Option<ValueRange>,
 }
-
 impl SignalDescriptorBuilder {
     /// Sets `key`.
     #[must_use]
@@ -2482,7 +2497,6 @@ impl SignalDescriptorBuilder {
         self.range = Some(range);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2500,17 +2514,18 @@ impl SignalDescriptorBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::SignalDescriptor> for SignalDescriptor {
     type Error = Invalid;
-
     fn try_from(wire: wire::SignalDescriptor) -> Result<Self, Invalid> {
         let built = Self {
-            key: SignalKey::try_from(wire.key.ok_or_else(|| Invalid::field("key", Violation::Absent))?)
+            key: SignalKey::try_from(
+                    wire.key.ok_or_else(|| Invalid::field("key", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("key"))?,
             kind: wire.kind,
             unit: wire.unit,
-            range: wire.range
+            range: wire
+                .range
                 .map(ValueRange::try_from)
                 .transpose()
                 .map_err(|error| error.at("range"))?,
@@ -2519,7 +2534,6 @@ impl TryFrom<wire::SignalDescriptor> for SignalDescriptor {
         Ok(built)
     }
 }
-
 impl From<SignalDescriptor> for wire::SignalDescriptor {
     fn from(value: SignalDescriptor) -> Self {
         Self {
@@ -2530,7 +2544,6 @@ impl From<SignalDescriptor> for wire::SignalDescriptor {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.SignalKey`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2541,26 +2554,22 @@ pub struct SignalKey {
     subject: Subject,
     facet: Option<String>,
 }
-
 impl SignalKey {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> SignalKeyBuilder {
         SignalKeyBuilder::default()
     }
-
     /// The `subject`.
     #[must_use]
     pub fn subject(&self) -> &Subject {
         &self.subject
     }
-
     /// The `facet`, when present.
     #[must_use]
     pub fn facet(&self) -> Option<&str> {
         self.facet.as_deref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if let Some(element) = &self.facet {
             if element.is_empty() {
@@ -2568,7 +2577,10 @@ impl SignalKey {
             }
         }
         if let Some(element) = &self.facet {
-            if let Some(violation) = invalid::too_long(element.len(), limits::SIGNALKEY_FACET_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::SIGNALKEY_FACET_MAX_LEN,
+            ) {
                 return Err(Invalid::field("facet", violation));
             }
         }
@@ -2576,7 +2588,6 @@ impl SignalKey {
         Ok(())
     }
 }
-
 /// Builds a [`SignalKey`]. Setters are infallible; [`build`](SignalKeyBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2584,7 +2595,6 @@ pub struct SignalKeyBuilder {
     subject: Option<Subject>,
     facet: Option<String>,
 }
-
 impl SignalKeyBuilder {
     /// Sets `subject`.
     #[must_use]
@@ -2598,7 +2608,6 @@ impl SignalKeyBuilder {
         self.facet = Some(facet.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2607,20 +2616,24 @@ impl SignalKeyBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<SignalKey, Invalid> {
         let built = SignalKey {
-            subject: self.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+            subject: self
+                .subject
+                .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
             facet: self.facet,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::SignalKey> for SignalKey {
     type Error = Invalid;
-
     fn try_from(wire: wire::SignalKey) -> Result<Self, Invalid> {
         let built = Self {
-            subject: Subject::try_from(wire.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?)
+            subject: Subject::try_from(
+                    wire
+                        .subject
+                        .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("subject"))?,
             facet: wire.facet,
         };
@@ -2628,7 +2641,6 @@ impl TryFrom<wire::SignalKey> for SignalKey {
         Ok(built)
     }
 }
-
 impl From<SignalKey> for wire::SignalKey {
     fn from(value: SignalKey) -> Self {
         Self {
@@ -2637,7 +2649,6 @@ impl From<SignalKey> for wire::SignalKey {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.StateObservation`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2650,50 +2661,46 @@ pub struct StateObservation {
     value: Value,
     observed_at: Option<Timestamp>,
 }
-
 impl StateObservation {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> StateObservationBuilder {
         StateObservationBuilder::default()
     }
-
     /// The `subject`.
     #[must_use]
     pub fn subject(&self) -> &Subject {
         &self.subject
     }
-
     /// The `name`.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
-
     /// The `value`.
     #[must_use]
     pub fn value(&self) -> &Value {
         &self.value
     }
-
     /// The `observed_at`, when present.
     #[must_use]
     pub fn observed_at(&self) -> Option<&Timestamp> {
         self.observed_at.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.name.is_empty() {
             return Err(Invalid::field("name", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.name.len(), limits::STATEOBSERVATION_NAME_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.name.len(),
+            limits::STATEOBSERVATION_NAME_MAX_LEN,
+        ) {
             return Err(Invalid::field("name", violation));
         }
         rules::state_observation(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`StateObservation`]. Setters are infallible; [`build`](StateObservationBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2703,7 +2710,6 @@ pub struct StateObservationBuilder {
     value: Option<Value>,
     observed_at: Option<Timestamp>,
 }
-
 impl StateObservationBuilder {
     /// Sets `subject`.
     #[must_use]
@@ -2729,7 +2735,6 @@ impl StateObservationBuilder {
         self.observed_at = Some(observed_at);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2738,7 +2743,9 @@ impl StateObservationBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<StateObservation, Invalid> {
         let built = StateObservation {
-            subject: self.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+            subject: self
+                .subject
+                .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
             name: self.name.ok_or_else(|| Invalid::field("name", Violation::Absent))?,
             value: self.value.ok_or_else(|| Invalid::field("value", Violation::Absent))?,
             observed_at: self.observed_at,
@@ -2747,18 +2754,23 @@ impl StateObservationBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::StateObservation> for StateObservation {
     type Error = Invalid;
-
     fn try_from(wire: wire::StateObservation) -> Result<Self, Invalid> {
         let built = Self {
-            subject: Subject::try_from(wire.subject.ok_or_else(|| Invalid::field("subject", Violation::Absent))?)
+            subject: Subject::try_from(
+                    wire
+                        .subject
+                        .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("subject"))?,
             name: wire.name.ok_or_else(|| Invalid::field("name", Violation::Absent))?,
-            value: Value::try_from(wire.value.ok_or_else(|| Invalid::field("value", Violation::Absent))?)
+            value: Value::try_from(
+                    wire.value.ok_or_else(|| Invalid::field("value", Violation::Absent))?,
+                )
                 .map_err(|error| error.at("value"))?,
-            observed_at: wire.observed_at
+            observed_at: wire
+                .observed_at
                 .map(Timestamp::try_from)
                 .transpose()
                 .map_err(|error| error.at("observed_at"))?,
@@ -2767,7 +2779,6 @@ impl TryFrom<wire::StateObservation> for StateObservation {
         Ok(built)
     }
 }
-
 impl From<StateObservation> for wire::StateObservation {
     fn from(value: StateObservation) -> Self {
         Self {
@@ -2778,7 +2789,6 @@ impl From<StateObservation> for wire::StateObservation {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.States`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2788,36 +2798,34 @@ impl From<StateObservation> for wire::StateObservation {
 pub struct States {
     observations: Vec<StateObservation>,
 }
-
 impl States {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> StatesBuilder {
         StatesBuilder::default()
     }
-
     /// The `observations`.
     #[must_use]
     pub fn observations(&self) -> &[StateObservation] {
         &self.observations
     }
-
     fn check(&self) -> Result<(), Invalid> {
-        if let Some(violation) = invalid::too_many(self.observations.len(), limits::STATES_OBSERVATIONS_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.observations.len(),
+            limits::STATES_OBSERVATIONS_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("observations", violation));
         }
         rules::states(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`States`]. Setters are infallible; [`build`](StatesBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
 pub struct StatesBuilder {
     observations: Vec<StateObservation>,
 }
-
 impl StatesBuilder {
     /// Sets `observations`.
     #[must_use]
@@ -2825,7 +2833,6 @@ impl StatesBuilder {
         self.observations = observations;
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2840,19 +2847,18 @@ impl StatesBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::States> for States {
     type Error = Invalid;
-
     fn try_from(wire: wire::States) -> Result<Self, Invalid> {
         let built = Self {
             observations: {
                 let mut elements = Vec::with_capacity(wire.observations.len());
                 for (index, element) in wire.observations.into_iter().enumerate() {
-                    elements.push(
-                        StateObservation::try_from(element)
-                            .map_err(|error| error.at_index("observations", index))?,
-                    );
+                    elements
+                        .push(
+                            StateObservation::try_from(element)
+                                .map_err(|error| error.at_index("observations", index))?,
+                        );
                 }
                 elements
             },
@@ -2861,7 +2867,6 @@ impl TryFrom<wire::States> for States {
         Ok(built)
     }
 }
-
 impl From<States> for wire::States {
     fn from(value: States) -> Self {
         Self {
@@ -2869,7 +2874,6 @@ impl From<States> for wire::States {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.Subject`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -2881,61 +2885,67 @@ pub struct Subject {
     scope: Vec<String>,
     id: String,
 }
-
 impl Subject {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> SubjectBuilder {
         SubjectBuilder::default()
     }
-
     /// The `kind`.
     #[must_use]
     pub fn kind(&self) -> &str {
         &self.kind
     }
-
     /// The `scope`.
     #[must_use]
     pub fn scope(&self) -> &[String] {
         &self.scope
     }
-
     /// The `id`.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.kind.is_empty() {
             return Err(Invalid::field("kind", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.kind.len(), limits::SUBJECT_KIND_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.kind.len(),
+            limits::SUBJECT_KIND_MAX_LEN,
+        ) {
             return Err(Invalid::field("kind", violation));
         }
-        if let Some(violation) = invalid::too_many(self.scope.len(), limits::SUBJECT_SCOPE_MAX_ITEMS) {
+        if let Some(violation) = invalid::too_many(
+            self.scope.len(),
+            limits::SUBJECT_SCOPE_MAX_ITEMS,
+        ) {
             return Err(Invalid::field("scope", violation));
         }
         for (index, element) in self.scope.iter().enumerate() {
             if element.is_empty() {
                 return Err(Invalid::element("scope", index, Violation::Empty));
             }
-            if let Some(violation) = invalid::too_long(element.len(), limits::SUBJECT_SCOPE_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::SUBJECT_SCOPE_MAX_LEN,
+            ) {
                 return Err(Invalid::element("scope", index, violation));
             }
         }
         if self.id.is_empty() {
             return Err(Invalid::field("id", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.id.len(), limits::SUBJECT_ID_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.id.len(),
+            limits::SUBJECT_ID_MAX_LEN,
+        ) {
             return Err(Invalid::field("id", violation));
         }
         rules::subject(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`Subject`]. Setters are infallible; [`build`](SubjectBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -2944,7 +2954,6 @@ pub struct SubjectBuilder {
     scope: Vec<String>,
     id: Option<String>,
 }
-
 impl SubjectBuilder {
     /// Sets `kind`.
     #[must_use]
@@ -2964,7 +2973,6 @@ impl SubjectBuilder {
         self.id = Some(id.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -2981,10 +2989,8 @@ impl SubjectBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::Subject> for Subject {
     type Error = Invalid;
-
     fn try_from(wire: wire::Subject) -> Result<Self, Invalid> {
         let built = Self {
             kind: wire.kind.ok_or_else(|| Invalid::field("kind", Violation::Absent))?,
@@ -2995,7 +3001,6 @@ impl TryFrom<wire::Subject> for Subject {
         Ok(built)
     }
 }
-
 impl From<Subject> for wire::Subject {
     fn from(value: Subject) -> Self {
         Self {
@@ -3005,7 +3010,6 @@ impl From<Subject> for wire::Subject {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.UnresolvedReference`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -3016,31 +3020,30 @@ pub struct UnresolvedReference {
     location: String,
     property: Option<String>,
 }
-
 impl UnresolvedReference {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> UnresolvedReferenceBuilder {
         UnresolvedReferenceBuilder::default()
     }
-
     /// The `location`.
     #[must_use]
     pub fn location(&self) -> &str {
         &self.location
     }
-
     /// The `property`, when present.
     #[must_use]
     pub fn property(&self) -> Option<&str> {
         self.property.as_deref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         if self.location.is_empty() {
             return Err(Invalid::field("location", Violation::Empty));
         }
-        if let Some(violation) = invalid::too_long(self.location.len(), limits::UNRESOLVEDREFERENCE_LOCATION_MAX_LEN) {
+        if let Some(violation) = invalid::too_long(
+            self.location.len(),
+            limits::UNRESOLVEDREFERENCE_LOCATION_MAX_LEN,
+        ) {
             return Err(Invalid::field("location", violation));
         }
         if let Some(element) = &self.property {
@@ -3049,7 +3052,10 @@ impl UnresolvedReference {
             }
         }
         if let Some(element) = &self.property {
-            if let Some(violation) = invalid::too_long(element.len(), limits::UNRESOLVEDREFERENCE_PROPERTY_MAX_LEN) {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::UNRESOLVEDREFERENCE_PROPERTY_MAX_LEN,
+            ) {
                 return Err(Invalid::field("property", violation));
             }
         }
@@ -3057,7 +3063,6 @@ impl UnresolvedReference {
         Ok(())
     }
 }
-
 /// Builds a [`UnresolvedReference`]. Setters are infallible; [`build`](UnresolvedReferenceBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -3065,7 +3070,6 @@ pub struct UnresolvedReferenceBuilder {
     location: Option<String>,
     property: Option<String>,
 }
-
 impl UnresolvedReferenceBuilder {
     /// Sets `location`.
     #[must_use]
@@ -3079,7 +3083,6 @@ impl UnresolvedReferenceBuilder {
         self.property = Some(property.into());
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -3088,27 +3091,28 @@ impl UnresolvedReferenceBuilder {
     /// schema invariants.
     pub fn build(self) -> Result<UnresolvedReference, Invalid> {
         let built = UnresolvedReference {
-            location: self.location.ok_or_else(|| Invalid::field("location", Violation::Absent))?,
+            location: self
+                .location
+                .ok_or_else(|| Invalid::field("location", Violation::Absent))?,
             property: self.property,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl TryFrom<wire::UnresolvedReference> for UnresolvedReference {
     type Error = Invalid;
-
     fn try_from(wire: wire::UnresolvedReference) -> Result<Self, Invalid> {
         let built = Self {
-            location: wire.location.ok_or_else(|| Invalid::field("location", Violation::Absent))?,
+            location: wire
+                .location
+                .ok_or_else(|| Invalid::field("location", Violation::Absent))?,
             property: wire.property,
         };
         built.check()?;
         Ok(built)
     }
 }
-
 impl From<UnresolvedReference> for wire::UnresolvedReference {
     fn from(value: UnresolvedReference) -> Self {
         Self {
@@ -3117,7 +3121,6 @@ impl From<UnresolvedReference> for wire::UnresolvedReference {
         }
     }
 }
-
 /// Validated form of `nv.telemetry.v1.ValueRange`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -3128,32 +3131,27 @@ pub struct ValueRange {
     min: Option<NumericValue>,
     max: Option<NumericValue>,
 }
-
 impl ValueRange {
     /// A builder holding nothing yet.
     #[must_use]
     pub fn builder() -> ValueRangeBuilder {
         ValueRangeBuilder::default()
     }
-
     /// The `min`, when present.
     #[must_use]
     pub fn min(&self) -> Option<&NumericValue> {
         self.min.as_ref()
     }
-
     /// The `max`, when present.
     #[must_use]
     pub fn max(&self) -> Option<&NumericValue> {
         self.max.as_ref()
     }
-
     fn check(&self) -> Result<(), Invalid> {
         rules::value_range(self)?;
         Ok(())
     }
 }
-
 /// Builds a [`ValueRange`]. Setters are infallible; [`build`](ValueRangeBuilder::build)
 /// validates everything at once, exactly as decoding does.
 #[derive(Clone, Debug, Default)]
@@ -3161,7 +3159,6 @@ pub struct ValueRangeBuilder {
     min: Option<NumericValue>,
     max: Option<NumericValue>,
 }
-
 impl ValueRangeBuilder {
     /// Sets `min`.
     #[must_use]
@@ -3175,7 +3172,6 @@ impl ValueRangeBuilder {
         self.max = Some(max);
         self
     }
-
     /// Validates and builds.
     ///
     /// # Errors
@@ -3191,17 +3187,17 @@ impl ValueRangeBuilder {
         Ok(built)
     }
 }
-
 impl TryFrom<wire::ValueRange> for ValueRange {
     type Error = Invalid;
-
     fn try_from(wire: wire::ValueRange) -> Result<Self, Invalid> {
         let built = Self {
-            min: wire.min
+            min: wire
+                .min
                 .map(NumericValue::try_from)
                 .transpose()
                 .map_err(|error| error.at("min"))?,
-            max: wire.max
+            max: wire
+                .max
                 .map(NumericValue::try_from)
                 .transpose()
                 .map_err(|error| error.at("max"))?,
@@ -3210,7 +3206,6 @@ impl TryFrom<wire::ValueRange> for ValueRange {
         Ok(built)
     }
 }
-
 impl From<ValueRange> for wire::ValueRange {
     fn from(value: ValueRange) -> Self {
         Self {

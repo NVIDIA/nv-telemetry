@@ -6,9 +6,9 @@
 #
 # `Cargo.lock` is committed here, which is not the default for a library. The
 # reason is narrow: `model/src/generated/` is checked in and byte-compared, and
-# the formatter that decides those bytes — prettyplease — reaches this
-# workspace only through prost-build. No manifest entry can pin a transitive
-# dependency, so the lockfile is the only mechanism that can. Without it, an
+# the formatter that decides those bytes — prettyplease — follows a semver
+# range like any dependency, and is free to change its rendering in a patch
+# release. Only the lockfile holds one exact resolution. Without it, an
 # upstream patch release rewrites a checked-in file and fails a pull request
 # that touched nothing.
 #
