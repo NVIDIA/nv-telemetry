@@ -561,7 +561,7 @@ fn message_items(
         plans.push(plan_field(&field, vocabulary)?);
     }
     for oneof in message.oneofs().filter(|oneof| !oneof.is_synthetic()) {
-        let (payload_enum, plan) = plan_oneof(&oneof, claimed)?;
+        let (payload_enum, plan) = plan_oneof(&oneof, vocabulary, claimed)?;
         items.extend(payload_enum);
         plans.push(plan);
     }
@@ -698,10 +698,14 @@ fn message_items(
     Ok(items)
 }
 
-/// Plans the payload oneof: returns its enum's items and the field plan the
+/// Plans a oneof: returns its enum's items and the field plan the
 /// containing message uses.
+// Two plans differing in five fields; splitting them apart would hide that
+// they are one shape with and without absence.
+#[allow(clippy::too_many_lines)]
 fn plan_oneof(
     oneof: &prost_reflect::OneofDescriptor,
+    vocabulary: &Vocabulary,
     claimed: &mut BTreeSet<String>,
 ) -> Result<(TokenStream, Plan), String> {
     let name = oneof.name();
@@ -714,6 +718,9 @@ fn plan_oneof(
     let enum_name = ident(&camel(name));
     let parent = short_name(oneof.parent_message().full_name());
     let parent_module = ident(&snake(&parent));
+    let required = vocabulary
+        .oneof_invariant(oneof)
+        .is_some_and(|invariant| invariant.required);
 
     let mut arms = Vec::new();
     for member in oneof.fields() {
@@ -731,10 +738,16 @@ fn plan_oneof(
         ));
     }
 
-    let enum_doc = docs(&[
-        format!("The `{name}` of an `nv.telemetry.v1.{parent}`: exactly one case, always"),
-        "set — the oneof is `required`, so absence is unrepresentable here.".to_owned(),
-    ]);
+    let enum_doc = if required {
+        docs(&[
+            format!("The `{name}` of an `nv.telemetry.v1.{parent}`: exactly one case, always"),
+            "set — the oneof is `required`, so absence is unrepresentable here.".to_owned(),
+        ])
+    } else {
+        docs(&[format!(
+            "The `{name}` of an `nv.telemetry.v1.{parent}`: one case when set."
+        )])
+    };
     let variants = arms.iter().map(|(field_name, arm, inner)| {
         let doc = docs(&[format!("`{field_name}`.")]);
         quote! { #doc #arm(#inner), }
@@ -762,41 +775,74 @@ fn plan_oneof(
     });
 
     let setter_doc = docs(&[format!("Sets `{name}`.")]);
-    let accessor_doc = docs(&[format!("The `{name}`.")]);
+    let setter = quote! {
+        #setter_doc
+        #[must_use]
+        pub fn #id(mut self, #id: #enum_name) -> Self {
+            self.#id = Some(#id);
+            self
+        }
+    };
 
-    let plan = Plan {
-        decl_ty: quote! { #enum_name },
-        builder_ty: quote! { Option<#enum_name> },
-        setter: quote! {
-            #setter_doc
-            #[must_use]
-            pub fn #id(mut self, #id: #enum_name) -> Self {
-                self.#id = Some(#id);
-                self
-            }
-        },
-        build_init: quote! {
-            self.#id.ok_or_else(|| Invalid::field(#name, Violation::Absent))?
-        },
-        from_wire: quote! {
-            match wire.#id.ok_or_else(|| Invalid::field(#name, Violation::Absent))? {
-                #(#from_arms)*
-            }
-        },
-        into_wire: quote! {
-            Some(match value.#id {
-                #(#into_arms)*
-            })
-        },
-        checks: TokenStream::new(),
-        accessor: quote! {
-            #accessor_doc
-            #[must_use]
-            pub fn #id(&self) -> &#enum_name {
-                &self.#id
-            }
-        },
-        ident: id,
+    let plan = if required {
+        let accessor_doc = docs(&[format!("The `{name}`.")]);
+        Plan {
+            decl_ty: quote! { #enum_name },
+            builder_ty: quote! { Option<#enum_name> },
+            setter,
+            build_init: quote! {
+                self.#id.ok_or_else(|| Invalid::field(#name, Violation::Absent))?
+            },
+            from_wire: quote! {
+                match wire.#id.ok_or_else(|| Invalid::field(#name, Violation::Absent))? {
+                    #(#from_arms)*
+                }
+            },
+            into_wire: quote! {
+                Some(match value.#id {
+                    #(#into_arms)*
+                })
+            },
+            checks: TokenStream::new(),
+            accessor: quote! {
+                #accessor_doc
+                #[must_use]
+                pub fn #id(&self) -> &#enum_name {
+                    &self.#id
+                }
+            },
+            ident: id,
+        }
+    } else {
+        let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
+        Plan {
+            decl_ty: quote! { Option<#enum_name> },
+            builder_ty: quote! { Option<#enum_name> },
+            setter,
+            build_init: quote! { self.#id },
+            from_wire: quote! {
+                match wire.#id {
+                    None => None,
+                    Some(case) => Some(match case {
+                        #(#from_arms)*
+                    }),
+                }
+            },
+            into_wire: quote! {
+                value.#id.map(|case| match case {
+                    #(#into_arms)*
+                })
+            },
+            checks: TokenStream::new(),
+            accessor: quote! {
+                #accessor_doc
+                #[must_use]
+                pub fn #id(&self) -> Option<&#enum_name> {
+                    self.#id.as_ref()
+                }
+            },
+            ident: id,
+        }
     };
 
     Ok((payload_enum, plan))

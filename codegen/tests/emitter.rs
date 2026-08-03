@@ -167,3 +167,62 @@ message Holder {{
         "the error does not name the collision: {error}"
     );
 }
+
+#[test]
+fn a_oneof_the_schema_leaves_optional_stays_optional() {
+    // `OneofInvariant::required` is opt-in. A generator that assumed it would
+    // reject wire messages the schema accepts — a validator stricter than the
+    // schema is inventing a rule, which is the mirror image of missing one.
+    let pool = pool_from(
+        "optional-oneof",
+        &format!(
+            "{PREFIX}
+message Inner {{}}
+message Holder {{
+  oneof choice {{
+    Inner a = 1;
+  }}
+}}
+"
+        ),
+    );
+    let vocabulary = Vocabulary::resolve(&pool).expect("vocabulary resolves");
+
+    let rendered = wrapper::model(&pool, &vocabulary).expect("an optional oneof generates");
+    assert!(
+        rendered.contains("choice: Option<Choice>"),
+        "the field is not optional:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("pub fn choice(&self) -> Option<&Choice>"),
+        "the accessor is not optional"
+    );
+
+    // And the required spelling keeps the reshaped, absence-free form.
+    let pool = pool_from(
+        "required-oneof",
+        &format!(
+            "{PREFIX}
+message Inner {{}}
+message Holder {{
+  oneof choice {{
+    option (nv.telemetry.options.v1.oneof_invariant) = {{required: true}};
+
+    Inner a = 1;
+  }}
+}}
+"
+        ),
+    );
+    let vocabulary = Vocabulary::resolve(&pool).expect("vocabulary resolves");
+
+    let rendered = wrapper::model(&pool, &vocabulary).expect("a required oneof generates");
+    assert!(
+        rendered.contains("choice: Choice,"),
+        "the required oneof lost its reshaped form:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("pub fn choice(&self) -> &Choice"),
+        "the required accessor changed shape"
+    );
+}
