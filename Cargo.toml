@@ -50,6 +50,11 @@ prettyplease = "0.2"
 quote = "1"
 proc-macro2 = "1"
 
+# Benchmarks measure instruction counts under Valgrind, so numbers are
+# machine-load independent and comparable across runs. Dev-only; running
+# needs valgrind and a gungraun-runner of the same version.
+gungraun = "0.19.4"
+
 
 # CI runs clippy with `-D warnings`, so everything below is effectively an
 # error. Lints live here rather than in the CI invocation so that an editor
