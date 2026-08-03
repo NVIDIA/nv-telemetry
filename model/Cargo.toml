@@ -16,6 +16,11 @@ prost.workspace = true
 nv-telemetry-schema.workspace = true
 prost-reflect.workspace = true
 
+gungraun.workspace = true
+
+[[bench]]
+name = "model"
+harness = false
 
 [lints]
 workspace = true
