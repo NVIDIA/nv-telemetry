@@ -80,6 +80,9 @@ pub enum Reason {
     /// A message-typed `unique_by` key whose type is not `validated`, so equal
     /// content is not guaranteed to compare equal.
     UnvalidatedUniqueKey(String),
+    /// A field or oneof whose name the generated model cannot use as a Rust
+    /// identifier.
+    UnusableName,
 }
 
 /// What two conflicting annotations disagree about.
@@ -94,6 +97,10 @@ pub enum Contradiction {
 }
 
 impl fmt::Display for Reason {
+    // One arm per reason, and each arm is a diagnostic someone will read
+    // under pressure; splitting the match to satisfy a line count would
+    // scatter the catalogue.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ImplicitPresence => f.write_str(
@@ -189,6 +196,13 @@ impl fmt::Display for Reason {
                  `validated`; equal content only compares equal once \
                  canonicalization has run, so two elements naming the same \
                  thing would be admitted as distinct",
+            ),
+            Self::UnusableName => f.write_str(
+                "this name is a Rust keyword, and the generated model uses it \
+                 as an identifier — a struct field, an accessor, a builder \
+                 setter. Rename it: mangling to a raw identifier would put \
+                 `r#` into every consumer's code to preserve a name the \
+                 schema is free to change",
             ),
         }
     }
@@ -345,6 +359,20 @@ fn nested_messages(message: &MessageDescriptor) -> impl Iterator<Item = MessageD
     })
 }
 
+/// Rust keywords, strict and reserved, current editions.
+///
+/// Lowercase only, deliberately: buf's naming rules keep every contract
+/// field and oneof name in `lower_snake_case`, so `Self` — the one reserved
+/// identifier outside this casing — cannot reach the generator through a
+/// name this list guards.
+const RUST_KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
+    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
+    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
+    "return", "self", "static", "struct", "super", "trait", "true", "try", "type", "typeof",
+    "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+];
+
 fn check_message(
     message: &MessageDescriptor,
     vocabulary: &Vocabulary,
@@ -374,7 +402,33 @@ fn check_message(
         }
     }
 
+    // Oneof names become a field and an enum type in the generated model;
+    // keywords are checked here for the same reason as on fields below.
+    for oneof in message.oneofs() {
+        if !oneof.is_synthetic() && RUST_KEYWORDS.contains(&oneof.name()) {
+            violations.push(Violation {
+                subject: oneof.full_name().to_owned(),
+                reason: Reason::UnusableName,
+            });
+        }
+    }
+
     for field in message.fields() {
+        // The generated model turns a field name into a struct field, an
+        // accessor, and a builder setter. A Rust keyword survives every
+        // schema-side gate — protobuf and buf's naming rules both permit
+        // `type` — and then fails as a generation error attributing a schema
+        // problem to the emitter. Refuse it here, where the name is the
+        // subject. Only lowercase keywords need checking: buf's STANDARD
+        // rules already force lower_snake_case field and oneof names, so
+        // `Self` cannot occur.
+        if RUST_KEYWORDS.contains(&field.name()) {
+            violations.push(Violation {
+                subject: field.full_name().to_owned(),
+                reason: Reason::UnusableName,
+            });
+        }
+
         let invariant = vocabulary.field_invariant(&field);
         if let Some(invariant) = &invariant {
             check_applicability(&field, invariant, vocabulary, hash_visible, violations);

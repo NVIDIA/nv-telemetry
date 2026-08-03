@@ -184,6 +184,18 @@ fn rules_other_than_presence_are_reachable() {
                                  is nothing to skip",
                 }
             ),
+            // Protobuf and buf both permit names Rust reserves; the two
+            // paths are separate rules, so each needs its own case — a oneof
+            // name becomes a field and an enum type, a field name becomes a
+            // field, an accessor, and a setter.
+            (
+                "nv.telemetry.v1.Keyworded.match".to_owned(),
+                lint::Reason::UnusableName
+            ),
+            (
+                "nv.telemetry.v1.Keyworded.type".to_owned(),
+                lint::Reason::UnusableName
+            ),
             (
                 "nv.telemetry.v1.Trace.tag".to_owned(),
                 lint::Reason::NotApplicable {

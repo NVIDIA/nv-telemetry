@@ -256,11 +256,15 @@ name = "nv-telemetry-codegen"
 version = "0.1.0"
 dependencies = [
  "nv-telemetry-schema",
+ "prettyplease",
+ "proc-macro2",
  "prost",
  "prost-build",
  "prost-reflect",
  "prost-types",
  "protox",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -40,6 +40,16 @@ protox = "0.9"
 prost-reflect = "0.16"
 prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 
+# Build-time only, and already in the tree through prost-build: the model
+# emitter assembles `quote` token streams, proves they parse as a Rust file
+# with `syn` — so a template bug fails generation rather than the downstream
+# build — and renders them with `prettyplease`, so nothing hand-manages
+# formatting.
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+prettyplease = "0.2"
+quote = "1"
+proc-macro2 = "1"
+
 
 # CI runs clippy with `-D warnings`, so everything below is effectively an
 # error. Lints live here rather than in the CI invocation so that an editor

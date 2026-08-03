@@ -25,7 +25,6 @@ pub mod lock;
 pub mod options;
 pub mod projection;
 pub mod provenance;
-pub mod validate;
 pub mod wire;
 pub mod wrapper;
 
@@ -40,6 +39,12 @@ const LOCK_PATH: &str = "schema/contract.lock";
 
 /// Path of the generated wire types, relative to the workspace root.
 const WIRE_PATH: &str = "model/src/generated/wire.rs";
+
+/// Path of the generated limit constants, relative to the workspace root.
+const LIMITS_PATH: &str = "model/src/generated/limits.rs";
+
+/// Path of the generated validated model, relative to the workspace root.
+const MODEL_PATH: &str = "model/src/generated/model.rs";
 
 /// Path of the generated module root, relative to the workspace root.
 const GENERATED_MOD_PATH: &str = "model/src/generated/mod.rs";
@@ -65,6 +70,12 @@ const GENERATED_MOD: &str = "\
 // warns and reformats anyway, so a plain `cargo fmt` would rewrite the file
 // and the staleness gate would then report a schema problem that does not
 // exist. This attribute does not depend on a config file being honoured.
+#[rustfmt::skip]
+pub mod limits;
+
+#[rustfmt::skip]
+pub mod model;
+
 #[rustfmt::skip]
 pub mod wire;
 ";
@@ -251,6 +262,11 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
         (
             here.join(WIRE_PATH),
             wire::generate(&pool).map_err(Error::Backend)?,
+        ),
+        (here.join(LIMITS_PATH), wrapper::limits(&pool, &vocabulary)),
+        (
+            here.join(MODEL_PATH),
+            wrapper::model(&pool, &vocabulary).map_err(Error::Backend)?,
         ),
         (here.join(GENERATED_MOD_PATH), GENERATED_MOD.to_owned()),
     ];

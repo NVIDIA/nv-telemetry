@@ -135,9 +135,12 @@ message FieldInvariant {
 
 // Constraints on a message as a whole.
 message MessageInvariant {
-  // Emit a validated wrapper: a newtype holding this message privately,
-  // constructed only through generated builders or fallible conversion, both
-  // of which validate and canonicalize.
+  // Emit a validated type: an owned form of this message with private
+  // fields, constructed only through a generated builder or fallible
+  // conversion from the wire form, both of which run the same checks. The
+  // validated shape is not the wire shape — a required oneof becomes an
+  // enum, a required field sheds its optionality — because absence the
+  // schema forbids is unrepresentable there rather than checked at each use.
   bool validated = 1;
 
   // Emit logical content hashing: a traversal of present known fields

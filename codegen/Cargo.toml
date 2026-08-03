@@ -14,9 +14,13 @@ path = "src/main.rs"
 
 [dependencies]
 nv-telemetry-schema.workspace = true
+prettyplease.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
 prost-build.workspace = true
 prost-reflect.workspace = true
 prost-types.workspace = true
+syn.workspace = true
 
 [dev-dependencies]
 # Fixture schemas for compiler tests are compiled in-process; the depth and

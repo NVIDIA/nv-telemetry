@@ -34,10 +34,11 @@ proto-baseline ?= origin/main
 .PHONY: all ci fmt bench codegen check-codegen proto-lint proto-breaking \
 	check-proto-format require-buf rust-install clean
 
-# `--locked` throughout: generated output is byte-compared, and it is produced
-# by prost-build and prettyplease — the latter reaching us only transitively,
-# so the lockfile is the only thing that can pin it. Without it held
-# authoritative, a patch bump rewrites the generated tree and surfaces as
+# `--locked` throughout: generated output is byte-compared, and its bytes are
+# decided by prost-build and prettyplease. Manifests state semver ranges, and
+# a formatter is free to change its output in a patch release, so the lockfile
+# is the only thing that holds the generated tree to one rendering. Without it
+# held authoritative, a patch bump rewrites the generated tree and surfaces as
 # "generated files differ" on a pull request that touched neither.
 #
 # The cost is that we otherwise only ever build one resolution. The scheduled
