@@ -16,6 +16,7 @@
 //! dependencies.
 
 mod canonical;
+mod encode;
 mod finite;
 mod generated;
 mod invalid;

@@ -517,6 +517,10 @@ struct Plan {
     cmp: TokenStream,
     /// Statements feeding this field to the digest.
     digest: TokenStream,
+    /// Statements emitting this field's wire bytes.
+    emit: TokenStream,
+    /// Expression for this field's encoded length.
+    emit_len: TokenStream,
     /// Declared type in the validated struct.
     decl_ty: TokenStream,
     /// Declared type in the builder.
@@ -626,7 +630,11 @@ fn message_items(
             "protobuf, [`DecodeError::Invalid`](crate::DecodeError) when they decode",
             "but break the contract.",
         ]);
-        let encode_doc = docs(&["Encodes the canonical wire form."]);
+        let encode_doc = docs(&[
+            "Encodes the canonical wire form, straight from the validated".to_owned(),
+            "representation — no intermediate wire tree, no clone. Byte-identical".to_owned(),
+            "to prost encoding the rebuilt tree, which the tests hold it to.".to_owned(),
+        ]);
         quote! {
             #decode_doc
             pub fn decode(bytes: &[u8]) -> Result<Self, crate::DecodeError> {
@@ -638,7 +646,9 @@ fn message_items(
             #encode_doc
             #[must_use]
             pub fn encode_to_vec(&self) -> Vec<u8> {
-                ::prost::Message::encode_to_vec(&wire::#name::from(self.clone()))
+                let mut buf = Vec::with_capacity(crate::encode::Emit::emitted_len(self));
+                crate::encode::Emit::emit(self, &mut buf);
+                buf
             }
         }
     });
@@ -661,6 +671,34 @@ fn message_items(
         .iter()
         .filter(|plan| !plan.metadata)
         .map(|plan| &plan.digest);
+    // Wire order: field numbers ascending, metadata included in place —
+    // encoding is fidelity where hashing is content — matching prost's own
+    // emission of the rebuilt tree byte for byte.
+    let mut wire_plans: Vec<&Plan> = plans.iter().collect();
+    wire_plans.sort_by_key(|plan| plan.number);
+    let emits = wire_plans.iter().map(|plan| &plan.emit);
+    let emit_len_body = {
+        let mut lengths = wire_plans.iter().map(|plan| &plan.emit_len);
+        lengths.next().map_or_else(
+            || quote! { 0 },
+            |first| {
+                let rest = lengths;
+                quote! { #first #(+ #rest)* }
+            },
+        )
+    };
+    let emit_impl = quote! {
+        impl crate::encode::Emit for #name {
+            fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+                #(#emits)*
+            }
+
+            fn emitted_len(&self) -> usize {
+                #emit_len_body
+            }
+        }
+    };
+
     let canonical_impls = quote! {
         impl crate::canonical::Canonical for #name {
             fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -749,6 +787,8 @@ fn message_items(
         }
 
         #canonical_impls
+
+        #emit_impl
 
         impl #name {
             #builder_fn_doc
@@ -908,6 +948,14 @@ fn plan_oneof(
             }
         }
     });
+    let emit_arms = arms.iter().map(|(_, arm, _, arm_number)| {
+        let literal = Literal::u32_unsuffixed(*arm_number);
+        quote! { #enum_name::#arm(inner) => crate::encode::nested(#literal, inner, buf), }
+    });
+    let emit_len_arms = arms.iter().map(|(_, arm, _, arm_number)| {
+        let literal = Literal::u32_unsuffixed(*arm_number);
+        quote! { #enum_name::#arm(inner) => crate::encode::nested_len(#literal, inner), }
+    });
     let payload_enum = quote! {
         #enum_doc
         #[derive(Clone, Debug, PartialEq, Eq)]
@@ -937,6 +985,20 @@ fn plan_oneof(
             fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
                 match self {
                     #(#digest_arms)*
+                }
+            }
+        }
+
+        impl #enum_name {
+            fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+                match self {
+                    #(#emit_arms)*
+                }
+            }
+
+            fn emitted_len(&self) -> usize {
+                match self {
+                    #(#emit_len_arms)*
                 }
             }
         }
@@ -976,6 +1038,8 @@ fn plan_oneof(
             digest: quote! {
                 crate::canonical::Digest::digest(&self.#id, state);
             },
+            emit: quote! { self.#id.emit(buf); },
+            emit_len: quote! { self.#id.emitted_len() },
             decl_ty: quote! { #enum_name },
             builder_ty: quote! { Option<#enum_name> },
             setter,
@@ -1014,6 +1078,14 @@ fn plan_oneof(
                 if let Some(case) = &self.#id {
                     crate::canonical::Digest::digest(case, state);
                 }
+            },
+            emit: quote! {
+                if let Some(case) = &self.#id {
+                    case.emit(buf);
+                }
+            },
+            emit_len: quote! {
+                self.#id.as_ref().map_or(0, |case| case.emitted_len())
             },
             decl_ty: quote! { Option<#enum_name> },
             builder_ty: quote! { Option<#enum_name> },
@@ -1116,6 +1188,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                         crate::canonical::str_value(state, element);
                     }
                 },
+                emit: quote! { ::prost::encoding::string::encode_repeated(#tag, &self.#id, buf); },
+                emit_len: quote! { ::prost::encoding::string::encoded_len_repeated(#tag, &self.#id) },
                 decl_ty: quote! { Vec<String> },
                 builder_ty: quote! { Vec<String> },
                 setter: quote! {
@@ -1194,6 +1268,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                         crate::canonical::tag(state, #tag);
                         crate::canonical::str_value(state, &self.#id);
                     },
+                    emit: quote! { ::prost::encoding::string::encode(#tag, &self.#id, buf); },
+                    emit_len: quote! { ::prost::encoding::string::encoded_len(#tag, &self.#id) },
                     decl_ty: quote! { String },
                     builder_ty: quote! { Option<String> },
                     setter,
@@ -1224,6 +1300,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                             crate::canonical::str_value(state, element);
                         }
                     },
+                    emit: quote! { if let Some(element) = &self.#id { ::prost::encoding::string::encode(#tag, element, buf); } },
+                    emit_len: quote! { self.#id.as_ref().map_or(0, |element| ::prost::encoding::string::encoded_len(#tag, element)) },
                     decl_ty: quote! { Option<String> },
                     builder_ty: quote! { Option<String> },
                     setter,
@@ -1290,6 +1368,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                         crate::canonical::tag(state, #tag);
                         crate::canonical::i32_value(state, i32::from(self.#id));
                     },
+                    emit: quote! { ::prost::encoding::int32::encode(#tag, &i32::from(self.#id), buf); },
+                    emit_len: quote! { ::prost::encoding::int32::encoded_len(#tag, &i32::from(self.#id)) },
                     decl_ty: quote! { #ty },
                     builder_ty: quote! { Option<#ty> },
                     setter,
@@ -1323,6 +1403,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                             crate::canonical::i32_value(state, i32::from(value));
                         }
                     },
+                    emit: quote! { if let Some(value) = self.#id { ::prost::encoding::int32::encode(#tag, &i32::from(value), buf); } },
+                    emit_len: quote! { self.#id.map_or(0, |value| ::prost::encoding::int32::encoded_len(#tag, &i32::from(value))) },
                     decl_ty: quote! { Option<#ty> },
                     builder_ty: quote! { Option<#ty> },
                     setter,
@@ -1366,6 +1448,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                         crate::canonical::map_value(state, map);
                     }
                 },
+                emit: quote! { if let Some(map) = &self.#id { crate::encode::map_field(#tag, map, buf); } },
+                emit_len: quote! { self.#id.as_ref().map_or(0, |map| crate::encode::map_field_len(#tag, map)) },
                 decl_ty: quote! { Option<BTreeMap<String, Value>> },
                 builder_ty: quote! { Option<BTreeMap<String, Value>> },
                 setter: quote! {
@@ -1462,6 +1546,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                             crate::canonical::Digest::digest(element, state);
                         }
                     },
+                    emit: quote! { for element in &self.#id { crate::encode::nested(#tag, element, buf); } },
+                    emit_len: quote! { self.#id.iter().map(|element| crate::encode::nested_len(#tag, element)).sum::<usize>() },
                     decl_ty: quote! { Vec<#ty> },
                     builder_ty: quote! { Vec<#ty> },
                     setter: quote! {
@@ -1509,6 +1595,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                         crate::canonical::tag(state, #tag);
                         crate::canonical::Digest::digest(&self.#id, state);
                     },
+                    emit: quote! { crate::encode::nested(#tag, &self.#id, buf); },
+                    emit_len: quote! { crate::encode::nested_len(#tag, &self.#id) },
                     decl_ty: quote! { #ty },
                     builder_ty: quote! { Option<#ty> },
                     setter: quote! {
@@ -1550,6 +1638,8 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                             crate::canonical::Digest::digest(element, state);
                         }
                     },
+                    emit: quote! { if let Some(element) = &self.#id { crate::encode::nested(#tag, element, buf); } },
+                    emit_len: quote! { self.#id.as_ref().map_or(0, |element| crate::encode::nested_len(#tag, element)) },
                     decl_ty: quote! { Option<#ty> },
                     builder_ty: quote! { Option<#ty> },
                     setter: quote! {
@@ -1640,6 +1730,13 @@ fn copy_plan(
     let number = field.number();
     let tag = Literal::u32_unsuffixed(number);
     let write = ident(writer);
+    // One concept, two vocabularies: the digest writer implies the prost
+    // encoding module for the same scalar.
+    let wire_mod = ident(match writer {
+        "bool_value" => "bool",
+        "u64_value" => "uint64",
+        other => other,
+    });
     let setter_doc = docs(&[format!("Sets `{name}`.")]);
     let setter = quote! {
         #setter_doc
@@ -1659,6 +1756,8 @@ fn copy_plan(
                 crate::canonical::tag(state, #tag);
                 crate::canonical::#write(state, self.#id);
             },
+            emit: quote! { ::prost::encoding::#wire_mod::encode(#tag, &self.#id, buf); },
+            emit_len: quote! { ::prost::encoding::#wire_mod::encoded_len(#tag, &self.#id) },
             decl_ty: quote! { #ty },
             builder_ty: quote! { Option<#ty> },
             setter,
@@ -1688,6 +1787,16 @@ fn copy_plan(
                     crate::canonical::tag(state, #tag);
                     crate::canonical::#write(state, value);
                 }
+            },
+            emit: quote! {
+                if let Some(value) = &self.#id {
+                    ::prost::encoding::#wire_mod::encode(#tag, value, buf);
+                }
+            },
+            emit_len: quote! {
+                self.#id
+                    .as_ref()
+                    .map_or(0, |value| ::prost::encoding::#wire_mod::encoded_len(#tag, value))
             },
             decl_ty: quote! { Option<#ty> },
             builder_ty: quote! { Option<#ty> },

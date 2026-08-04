@@ -312,6 +312,52 @@ impl crate::canonical::Digest for AcquisitionStatus {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for AcquisitionStatus {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.endpoint_id, buf);
+        ::prost::encoding::string::encode(2, &self.provider, buf);
+        ::prost::encoding::string::encode(3, &self.request_class, buf);
+        ::prost::encoding::int32::encode(4, &i32::from(self.outcome), buf);
+        if let Some(value) = self.failure_class {
+            ::prost::encoding::int32::encode(5, &i32::from(value), buf);
+        }
+        if let Some(value) = &self.retryable {
+            ::prost::encoding::bool::encode(6, value, buf);
+        }
+        crate::encode::nested(7, &self.started_at, buf);
+        if let Some(value) = &self.duration_nanos {
+            ::prost::encoding::uint64::encode(8, value, buf);
+        }
+        if let Some(element) = &self.detail {
+            ::prost::encoding::string::encode(9, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.endpoint_id)
+            + ::prost::encoding::string::encoded_len(2, &self.provider)
+            + ::prost::encoding::string::encoded_len(3, &self.request_class)
+            + ::prost::encoding::int32::encoded_len(4, &i32::from(self.outcome))
+            + self
+                .failure_class
+                .map_or(
+                    0,
+                    |value| ::prost::encoding::int32::encoded_len(5, &i32::from(value)),
+                )
+            + self
+                .retryable
+                .as_ref()
+                .map_or(0, |value| ::prost::encoding::bool::encoded_len(6, value))
+            + crate::encode::nested_len(7, &self.started_at)
+            + self
+                .duration_nanos
+                .as_ref()
+                .map_or(0, |value| ::prost::encoding::uint64::encoded_len(8, value))
+            + self
+                .detail
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(9, element))
+    }
+}
 impl AcquisitionStatus {
     /// A builder holding nothing yet.
     #[must_use]
@@ -419,10 +465,14 @@ impl AcquisitionStatus {
             .map_err(crate::DecodeError::Malformed)?;
         Self::try_from(wire).map_err(crate::DecodeError::Invalid)
     }
-    /// Encodes the canonical wire form.
+    /// Encodes the canonical wire form, straight from the validated
+    /// representation — no intermediate wire tree, no clone. Byte-identical
+    /// to prost encoding the rebuilt tree, which the tests hold it to.
     #[must_use]
     pub fn encode_to_vec(&self) -> Vec<u8> {
-        ::prost::Message::encode_to_vec(&wire::AcquisitionStatus::from(self.clone()))
+        let mut buf = Vec::with_capacity(crate::encode::Emit::emitted_len(self));
+        crate::encode::Emit::emit(self, &mut buf);
+        buf
     }
 }
 /// Builds a [`AcquisitionStatus`]. Setters are infallible; [`build`](AcquisitionStatusBuilder::build)
@@ -610,6 +660,21 @@ impl crate::canonical::Digest for Coverage {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for Coverage {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::int32::encode(1, &i32::from(self.completeness), buf);
+        if let Some(element) = &self.scope {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::int32::encoded_len(1, &i32::from(self.completeness))
+            + self
+                .scope
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(2, element))
+    }
+}
 impl Coverage {
     /// A builder holding nothing yet.
     #[must_use]
@@ -730,6 +795,21 @@ impl crate::canonical::Digest for EndpointContext {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for EndpointContext {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.endpoint_id, buf);
+        if let Some(map) = &self.attributes {
+            crate::encode::map_field(2, map, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.endpoint_id)
+            + self
+                .attributes
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(2, map))
+    }
+}
 impl EndpointContext {
     /// A builder holding nothing yet.
     #[must_use]
@@ -847,6 +927,19 @@ impl crate::canonical::Digest for Inventory {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Inventory {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.items {
+            crate::encode::nested(1, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.items
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
     }
 }
 impl Inventory {
@@ -970,6 +1063,28 @@ impl crate::canonical::Digest for InventoryItem {
             crate::canonical::str_value(state, element);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for InventoryItem {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        if let Some(map) = &self.attributes {
+            crate::encode::map_field(2, map, buf);
+        }
+        if let Some(element) = &self.source_key {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + self
+                .attributes
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(2, map))
+            + self
+                .source_key
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
     }
 }
 impl InventoryItem {
@@ -1153,6 +1268,50 @@ impl crate::canonical::Digest for LogRecord {
             crate::canonical::map_value(state, map);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for LogRecord {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        if let Some(element) = &self.occurred_at {
+            crate::encode::nested(1, element, buf);
+        }
+        if let Some(value) = self.severity {
+            ::prost::encoding::int32::encode(2, &i32::from(value), buf);
+        }
+        ::prost::encoding::string::encode(3, &self.message, buf);
+        if let Some(element) = &self.subject {
+            crate::encode::nested(4, element, buf);
+        }
+        if let Some(element) = &self.entry_id {
+            ::prost::encoding::string::encode(5, element, buf);
+        }
+        if let Some(map) = &self.attributes {
+            crate::encode::map_field(6, map, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self
+            .occurred_at
+            .as_ref()
+            .map_or(0, |element| crate::encode::nested_len(1, element))
+            + self
+                .severity
+                .map_or(
+                    0,
+                    |value| ::prost::encoding::int32::encoded_len(2, &i32::from(value)),
+                ) + ::prost::encoding::string::encoded_len(3, &self.message)
+            + self
+                .subject
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(4, element))
+            + self
+                .entry_id
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(5, element))
+            + self
+                .attributes
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(6, map))
     }
 }
 impl LogRecord {
@@ -1356,6 +1515,19 @@ impl crate::canonical::Digest for Logs {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for Logs {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.records {
+            crate::encode::nested(1, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.records
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+    }
+}
 impl Logs {
     /// A builder holding nothing yet.
     #[must_use]
@@ -1510,6 +1682,26 @@ impl crate::canonical::Digest for Payload {
         }
     }
 }
+impl Payload {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        match self {
+            Payload::Readings(inner) => crate::encode::nested(10, inner, buf),
+            Payload::Logs(inner) => crate::encode::nested(11, inner, buf),
+            Payload::States(inner) => crate::encode::nested(12, inner, buf),
+            Payload::Inventory(inner) => crate::encode::nested(13, inner, buf),
+            Payload::Resources(inner) => crate::encode::nested(14, inner, buf),
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        match self {
+            Payload::Readings(inner) => crate::encode::nested_len(10, inner),
+            Payload::Logs(inner) => crate::encode::nested_len(11, inner),
+            Payload::States(inner) => crate::encode::nested_len(12, inner),
+            Payload::Inventory(inner) => crate::encode::nested_len(13, inner),
+            Payload::Resources(inner) => crate::encode::nested_len(14, inner),
+        }
+    }
+}
 /// Validated form of `nv.telemetry.v1.ObservationBatch`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1556,6 +1748,21 @@ impl crate::canonical::Digest for ObservationBatch {
         crate::canonical::Digest::digest(&self.coverage, state);
         crate::canonical::Digest::digest(&self.payload, state);
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ObservationBatch {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.endpoint, buf);
+        crate::encode::nested(2, &self.origin, buf);
+        crate::encode::nested(3, &self.window, buf);
+        crate::encode::nested(4, &self.coverage, buf);
+        self.payload.emit(buf);
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.endpoint)
+            + crate::encode::nested_len(2, &self.origin)
+            + crate::encode::nested_len(3, &self.window)
+            + crate::encode::nested_len(4, &self.coverage) + self.payload.emitted_len()
     }
 }
 impl ObservationBatch {
@@ -1605,10 +1812,14 @@ impl ObservationBatch {
             .map_err(crate::DecodeError::Malformed)?;
         Self::try_from(wire).map_err(crate::DecodeError::Invalid)
     }
-    /// Encodes the canonical wire form.
+    /// Encodes the canonical wire form, straight from the validated
+    /// representation — no intermediate wire tree, no clone. Byte-identical
+    /// to prost encoding the rebuilt tree, which the tests hold it to.
     #[must_use]
     pub fn encode_to_vec(&self) -> Vec<u8> {
-        ::prost::Message::encode_to_vec(&wire::ObservationBatch::from(self.clone()))
+        let mut buf = Vec::with_capacity(crate::encode::Emit::emitted_len(self));
+        crate::encode::Emit::emit(self, &mut buf);
+        buf
     }
 }
 /// Builds a [`ObservationBatch`]. Setters are infallible; [`build`](ObservationBatchBuilder::build)
@@ -1804,6 +2015,21 @@ impl crate::canonical::Digest for ObservationWindow {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for ObservationWindow {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.start, buf);
+        if let Some(element) = &self.end {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.start)
+            + self
+                .end
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(2, element))
+    }
+}
 impl ObservationWindow {
     /// A builder holding nothing yet.
     #[must_use]
@@ -1951,6 +2177,54 @@ impl crate::canonical::Digest for ObservedResource {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ObservedResource {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        ::prost::encoding::string::encode(2, &self.source_key, buf);
+        if let Some(element) = &self.source_schema {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+        if let Some(element) = &self.entity_tag {
+            ::prost::encoding::string::encode(4, element, buf);
+        }
+        if let Some(element) = &self.observed_at {
+            crate::encode::nested(5, element, buf);
+        }
+        if let Some(map) = &self.properties {
+            crate::encode::map_field(6, map, buf);
+        }
+        ::prost::encoding::bool::encode(7, &self.properties_complete, buf);
+        for element in &self.unresolved {
+            crate::encode::nested(8, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + ::prost::encoding::string::encoded_len(2, &self.source_key)
+            + self
+                .source_schema
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
+            + self
+                .entity_tag
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(4, element))
+            + self
+                .observed_at
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(5, element))
+            + self
+                .properties
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(6, map))
+            + ::prost::encoding::bool::encoded_len(7, &self.properties_complete)
+            + self
+                .unresolved
+                .iter()
+                .map(|element| crate::encode::nested_len(8, element))
+                .sum::<usize>()
     }
 }
 impl ObservedResource {
@@ -2232,6 +2506,16 @@ impl crate::canonical::Digest for Origin {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for Origin {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.provider, buf);
+        ::prost::encoding::string::encode(2, &self.request_class, buf);
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.provider)
+            + ::prost::encoding::string::encoded_len(2, &self.request_class)
+    }
+}
 impl Origin {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2370,6 +2654,23 @@ impl crate::canonical::Digest for Reading {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for Reading {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.key, buf);
+        crate::encode::nested(2, &self.value, buf);
+        if let Some(element) = &self.observed_at {
+            crate::encode::nested(3, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.key)
+            + crate::encode::nested_len(2, &self.value)
+            + self
+                .observed_at
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(3, element))
+    }
+}
 impl Reading {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2499,6 +2800,28 @@ impl crate::canonical::Digest for Readings {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Readings {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.descriptors {
+            crate::encode::nested(1, element, buf);
+        }
+        for element in &self.samples {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self
+            .descriptors
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+            + self
+                .samples
+                .iter()
+                .map(|element| crate::encode::nested_len(2, element))
+                .sum::<usize>()
     }
 }
 impl Readings {
@@ -2648,6 +2971,28 @@ impl crate::canonical::Digest for ResourceGraph {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ResourceGraph {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.resources {
+            crate::encode::nested(1, element, buf);
+        }
+        for element in &self.relations {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self
+            .resources
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+            + self
+                .relations
+                .iter()
+                .map(|element| crate::encode::nested_len(2, element))
+                .sum::<usize>()
     }
 }
 impl ResourceGraph {
@@ -2823,6 +3168,18 @@ impl crate::canonical::Digest for ResourceRelation {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for ResourceRelation {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.source, buf);
+        crate::encode::nested(2, &self.target, buf);
+        ::prost::encoding::string::encode(3, &self.kind, buf);
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.source)
+            + crate::encode::nested_len(2, &self.target)
+            + ::prost::encoding::string::encoded_len(3, &self.kind)
+    }
+}
 impl ResourceRelation {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2982,6 +3339,35 @@ impl crate::canonical::Digest for SignalDescriptor {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for SignalDescriptor {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.key, buf);
+        if let Some(element) = &self.kind {
+            ::prost::encoding::string::encode(2, element, buf);
+        }
+        if let Some(element) = &self.unit {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+        if let Some(element) = &self.range {
+            crate::encode::nested(4, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.key)
+            + self
+                .kind
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(2, element))
+            + self
+                .unit
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
+            + self
+                .range
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(4, element))
     }
 }
 impl SignalDescriptor {
@@ -3152,6 +3538,21 @@ impl crate::canonical::Digest for SignalKey {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for SignalKey {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        if let Some(element) = &self.facet {
+            ::prost::encoding::string::encode(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + self
+                .facet
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(2, element))
+    }
+}
 impl SignalKey {
     /// A builder holding nothing yet.
     #[must_use]
@@ -3301,6 +3702,25 @@ impl crate::canonical::Digest for StateObservation {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for StateObservation {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        ::prost::encoding::string::encode(2, &self.name, buf);
+        crate::encode::nested(3, &self.value, buf);
+        if let Some(element) = &self.observed_at {
+            crate::encode::nested(4, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + ::prost::encoding::string::encoded_len(2, &self.name)
+            + crate::encode::nested_len(3, &self.value)
+            + self
+                .observed_at
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(4, element))
     }
 }
 impl StateObservation {
@@ -3455,6 +3875,19 @@ impl crate::canonical::Digest for States {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for States {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.observations {
+            crate::encode::nested(1, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.observations
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+    }
+}
 impl States {
     /// A builder holding nothing yet.
     #[must_use]
@@ -3567,6 +4000,18 @@ impl crate::canonical::Digest for Subject {
         crate::canonical::tag(state, 3);
         crate::canonical::str_value(state, &self.id);
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Subject {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.kind, buf);
+        ::prost::encoding::string::encode_repeated(2, &self.scope, buf);
+        ::prost::encoding::string::encode(3, &self.id, buf);
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.kind)
+            + ::prost::encoding::string::encoded_len_repeated(2, &self.scope)
+            + ::prost::encoding::string::encoded_len(3, &self.id)
     }
 }
 impl Subject {
@@ -3740,6 +4185,21 @@ impl crate::canonical::Digest for UnresolvedReference {
         crate::canonical::end(state);
     }
 }
+impl crate::encode::Emit for UnresolvedReference {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.location, buf);
+        if let Some(element) = &self.property {
+            ::prost::encoding::string::encode(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.location)
+            + self
+                .property
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(2, element))
+    }
+}
 impl UnresolvedReference {
     /// A builder holding nothing yet.
     #[must_use]
@@ -3871,6 +4331,23 @@ impl crate::canonical::Digest for ValueRange {
             crate::canonical::Digest::digest(element, state);
         }
         crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ValueRange {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        if let Some(element) = &self.min {
+            crate::encode::nested(1, element, buf);
+        }
+        if let Some(element) = &self.max {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.min.as_ref().map_or(0, |element| crate::encode::nested_len(1, element))
+            + self
+                .max
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(2, element))
     }
 }
 impl ValueRange {

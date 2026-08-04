@@ -252,8 +252,9 @@ mod unix {
         black_box(batch.encode_to_vec())
     }
 
-    // The clone share of `encode`: the deferred direct encoder deletes
-    // exactly this much work.
+    // What `encode` paid before the direct encoder existed; kept as the
+    // measured cost of duplicating the representation, which is what any
+    // future by-value boundary would pay.
     #[library_benchmark]
     #[bench::readings_bulk(reading_batch(BULK))]
     #[bench::graph(graph_batch())]

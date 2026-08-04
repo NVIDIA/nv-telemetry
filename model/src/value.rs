@@ -684,3 +684,92 @@ impl crate::canonical::Digest for Value {
         }
     }
 }
+
+// --- Direct wire encoding, per docs in `crate::encode` ---
+
+impl crate::encode::Emit for Timestamp {
+    fn emit(&self, buf: &mut impl prost::bytes::BufMut) {
+        prost::encoding::int64::encode(1, &self.seconds, buf);
+        prost::encoding::uint32::encode(2, &self.nanos, buf);
+    }
+
+    fn emitted_len(&self) -> usize {
+        prost::encoding::int64::encoded_len(1, &self.seconds)
+            + prost::encoding::uint32::encoded_len(2, &self.nanos)
+    }
+}
+
+impl crate::encode::Emit for NumericValue {
+    fn emit(&self, buf: &mut impl prost::bytes::BufMut) {
+        match self {
+            Self::Double(value) => prost::encoding::double::encode(1, &value.get(), buf),
+            Self::Int(value) => prost::encoding::sint64::encode(2, value, buf),
+            Self::Uint(value) => prost::encoding::uint64::encode(3, value, buf),
+        }
+    }
+
+    fn emitted_len(&self) -> usize {
+        match self {
+            Self::Double(value) => prost::encoding::double::encoded_len(1, &value.get()),
+            Self::Int(value) => prost::encoding::sint64::encoded_len(2, value),
+            Self::Uint(value) => prost::encoding::uint64::encoded_len(3, value),
+        }
+    }
+}
+
+impl crate::encode::Emit for Value {
+    fn emit(&self, buf: &mut impl prost::bytes::BufMut) {
+        use prost::encoding::encode_key;
+        use prost::encoding::encode_varint;
+        use prost::encoding::WireType;
+        match &self.repr {
+            // An empty nested message: present, and that is all it says.
+            Repr::Null => {
+                encode_key(1, WireType::LengthDelimited, buf);
+                encode_varint(0, buf);
+            }
+            Repr::Bool(value) => prost::encoding::bool::encode(2, value, buf),
+            Repr::Int(value) => prost::encoding::sint64::encode(3, value, buf),
+            Repr::Uint(value) => prost::encoding::uint64::encode(4, value, buf),
+            Repr::Double(value) => prost::encoding::double::encode(5, &value.get(), buf),
+            Repr::String(value) => prost::encoding::string::encode(6, value, buf),
+            Repr::Bytes(value) => prost::encoding::bytes::encode(7, value, buf),
+            Repr::Timestamp(value) => crate::encode::nested(8, value, buf),
+            Repr::List(values) => {
+                let body: usize = values
+                    .iter()
+                    .map(|value| crate::encode::nested_len(1, value))
+                    .sum();
+                encode_key(9, WireType::LengthDelimited, buf);
+                encode_varint(body as u64, buf);
+                for value in values {
+                    crate::encode::nested(1, value, buf);
+                }
+            }
+            Repr::Map(entries) => crate::encode::map_field(10, entries, buf),
+        }
+    }
+
+    fn emitted_len(&self) -> usize {
+        use prost::encoding::encoded_len_varint;
+        use prost::encoding::key_len;
+        match &self.repr {
+            Repr::Null => key_len(1) + 1,
+            Repr::Bool(value) => prost::encoding::bool::encoded_len(2, value),
+            Repr::Int(value) => prost::encoding::sint64::encoded_len(3, value),
+            Repr::Uint(value) => prost::encoding::uint64::encoded_len(4, value),
+            Repr::Double(value) => prost::encoding::double::encoded_len(5, &value.get()),
+            Repr::String(value) => prost::encoding::string::encoded_len(6, value),
+            Repr::Bytes(value) => prost::encoding::bytes::encoded_len(7, value),
+            Repr::Timestamp(value) => crate::encode::nested_len(8, value),
+            Repr::List(values) => {
+                let body: usize = values
+                    .iter()
+                    .map(|value| crate::encode::nested_len(1, value))
+                    .sum();
+                key_len(9) + encoded_len_varint(body as u64) + body
+            }
+            Repr::Map(entries) => crate::encode::map_field_len(10, entries),
+        }
+    }
+}
