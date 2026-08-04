@@ -534,18 +534,18 @@ pub(crate) fn map_into_wire(map: BTreeMap<String, Value>) -> wire::value::Map {
 /// reports it; the index is the sorted position, which is the canonical
 /// order the accessors show.
 pub(crate) fn check_map(map: &BTreeMap<String, Value>, field: &str) -> Result<(), Invalid> {
-    for (index, key) in map.keys().enumerate() {
+    // The loop stays bare — this runs per map on every construction, and
+    // building the indexed error inline once cost a measured 1% of graph
+    // decoding by pushing the key iterator out of inlining. The fault helper
+    // recomputes the index instead, which is free where it runs: rejection.
+    for key in map.keys() {
         if key.is_empty() {
-            return Err(Invalid::field("key", Violation::Empty)
-                .at_index("entries", index)
-                .at(field));
+            return Err(key_fault(map, key, Violation::Empty, field));
         }
         if let Some(violation) =
             crate::invalid::too_long(key.len(), limits::VALUE_MAP_ENTRY_KEY_MAX_LEN)
         {
-            return Err(Invalid::field("key", violation)
-                .at_index("entries", index)
-                .at(field));
+            return Err(key_fault(map, key, violation, field));
         }
     }
     if let Some(violation) =
@@ -554,6 +554,24 @@ pub(crate) fn check_map(map: &BTreeMap<String, Value>, field: &str) -> Result<()
         return Err(Invalid::field(field, violation));
     }
     Ok(())
+}
+
+/// The indexed fault for a key [`check_map`] rejected.
+fn key_fault(
+    map: &BTreeMap<String, Value>,
+    key: &str,
+    violation: Violation,
+    field: &str,
+) -> Invalid {
+    // The key came out of this map's own iterator, so it is always found;
+    // zero is unreachable rather than a default anyone sees.
+    let index = map
+        .keys()
+        .position(|candidate| candidate == key)
+        .unwrap_or(0);
+    Invalid::field("key", violation)
+        .at_index("entries", index)
+        .at(field)
 }
 
 /// Whether `actual` exceeds a schema byte bound.
