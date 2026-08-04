@@ -15,6 +15,8 @@
 //! This crate has no protocol, I/O, async-runtime, dispatcher, or exporter
 //! dependencies.
 
+mod canonical;
+mod encode;
 mod finite;
 mod generated;
 mod invalid;

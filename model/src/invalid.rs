@@ -21,6 +21,12 @@ use std::fmt;
 pub struct Invalid {
     /// Dotted path from the message being constructed to the field at fault,
     /// with indexes into repeated fields: `resources[41].subject.id`.
+    ///
+    /// An index means position in the order the elements had when the check
+    /// ran: for a conversion error that is the wire's order, while checks
+    /// that run after canonicalization — a duplicate identity, a broken
+    /// cross-field rule — index the canonical order, which is what the
+    /// accessors show.
     path: String,
     violation: Violation,
 }

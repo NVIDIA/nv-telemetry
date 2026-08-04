@@ -22,7 +22,6 @@
 #![allow(clippy::pedantic, dead_code)]
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 
 use crate::invalid;
 use crate::rules;
@@ -93,6 +92,11 @@ impl From<FailureClass> for i32 {
         }
     }
 }
+impl crate::canonical::Canonical for FailureClass {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        i32::from(*self).cmp(&i32::from(*other))
+    }
+}
 /// Validated form of `nv.telemetry.v1.AcquisitionStatus.Outcome`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -130,6 +134,11 @@ impl From<Outcome> for i32 {
         }
     }
 }
+impl crate::canonical::Canonical for Outcome {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        i32::from(*self).cmp(&i32::from(*other))
+    }
+}
 /// Validated form of `nv.telemetry.v1.Completeness`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -165,6 +174,11 @@ impl From<Completeness> for i32 {
             Completeness::Partial => 2,
             Completeness::Unrecognized(other) => other,
         }
+    }
+}
+impl crate::canonical::Canonical for Completeness {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        i32::from(*self).cmp(&i32::from(*other))
     }
 }
 /// Validated form of `nv.telemetry.v1.Severity`.
@@ -216,6 +230,11 @@ impl From<Severity> for i32 {
         }
     }
 }
+impl crate::canonical::Canonical for Severity {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        i32::from(*self).cmp(&i32::from(*other))
+    }
+}
 /// Validated form of `nv.telemetry.v1.AcquisitionStatus`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -232,6 +251,112 @@ pub struct AcquisitionStatus {
     started_at: Timestamp,
     duration_nanos: Option<u64>,
     detail: Option<String>,
+}
+impl crate::canonical::Canonical for AcquisitionStatus {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.endpoint_id
+            .cmp(&other.endpoint_id)
+            .then_with(|| self.provider.cmp(&other.provider))
+            .then_with(|| self.request_class.cmp(&other.request_class))
+            .then_with(|| i32::from(self.outcome).cmp(&i32::from(other.outcome)))
+            .then_with(|| crate::canonical::cmp_option(
+                self.failure_class.as_ref(),
+                other.failure_class.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.retryable.as_ref(),
+                other.retryable.as_ref(),
+            ))
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.started_at,
+                &other.started_at,
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.duration_nanos.as_ref(),
+                other.duration_nanos.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.detail.as_ref(),
+                other.detail.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for AcquisitionStatus {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::str_value(state, &self.endpoint_id);
+        crate::canonical::tag(state, 2);
+        crate::canonical::str_value(state, &self.provider);
+        crate::canonical::tag(state, 3);
+        crate::canonical::str_value(state, &self.request_class);
+        crate::canonical::tag(state, 4);
+        crate::canonical::i32_value(state, i32::from(self.outcome));
+        if let Some(value) = self.failure_class {
+            crate::canonical::tag(state, 5);
+            crate::canonical::i32_value(state, i32::from(value));
+        }
+        if let Some(value) = self.retryable {
+            crate::canonical::tag(state, 6);
+            crate::canonical::bool_value(state, value);
+        }
+        crate::canonical::tag(state, 7);
+        crate::canonical::Digest::digest(&self.started_at, state);
+        if let Some(value) = self.duration_nanos {
+            crate::canonical::tag(state, 8);
+            crate::canonical::u64_value(state, value);
+        }
+        if let Some(element) = &self.detail {
+            crate::canonical::tag(state, 9);
+            crate::canonical::str_value(state, element);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for AcquisitionStatus {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.endpoint_id, buf);
+        ::prost::encoding::string::encode(2, &self.provider, buf);
+        ::prost::encoding::string::encode(3, &self.request_class, buf);
+        ::prost::encoding::int32::encode(4, &i32::from(self.outcome), buf);
+        if let Some(value) = self.failure_class {
+            ::prost::encoding::int32::encode(5, &i32::from(value), buf);
+        }
+        if let Some(value) = &self.retryable {
+            ::prost::encoding::bool::encode(6, value, buf);
+        }
+        crate::encode::nested(7, &self.started_at, buf);
+        if let Some(value) = &self.duration_nanos {
+            ::prost::encoding::uint64::encode(8, value, buf);
+        }
+        if let Some(element) = &self.detail {
+            ::prost::encoding::string::encode(9, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.endpoint_id)
+            + ::prost::encoding::string::encoded_len(2, &self.provider)
+            + ::prost::encoding::string::encoded_len(3, &self.request_class)
+            + ::prost::encoding::int32::encoded_len(4, &i32::from(self.outcome))
+            + self
+                .failure_class
+                .map_or(
+                    0,
+                    |value| ::prost::encoding::int32::encoded_len(5, &i32::from(value)),
+                )
+            + self
+                .retryable
+                .as_ref()
+                .map_or(0, |value| ::prost::encoding::bool::encoded_len(6, value))
+            + crate::encode::nested_len(7, &self.started_at)
+            + self
+                .duration_nanos
+                .as_ref()
+                .map_or(0, |value| ::prost::encoding::uint64::encoded_len(8, value))
+            + self
+                .detail
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(9, element))
+    }
 }
 impl AcquisitionStatus {
     /// A builder holding nothing yet.
@@ -340,10 +465,14 @@ impl AcquisitionStatus {
             .map_err(crate::DecodeError::Malformed)?;
         Self::try_from(wire).map_err(crate::DecodeError::Invalid)
     }
-    /// Encodes the canonical wire form.
+    /// Encodes the canonical wire form, straight from the validated
+    /// representation — no intermediate wire tree, no clone. Byte-identical
+    /// to prost encoding the rebuilt tree, which the tests hold it to.
     #[must_use]
     pub fn encode_to_vec(&self) -> Vec<u8> {
-        ::prost::Message::encode_to_vec(&wire::AcquisitionStatus::from(self.clone()))
+        let mut buf = Vec::with_capacity(crate::encode::Emit::emitted_len(self));
+        crate::encode::Emit::emit(self, &mut buf);
+        buf
     }
 }
 /// Builds a [`AcquisitionStatus`]. Setters are infallible; [`build`](AcquisitionStatusBuilder::build)
@@ -510,6 +639,42 @@ pub struct Coverage {
     completeness: Completeness,
     scope: Option<Subject>,
 }
+impl crate::canonical::Canonical for Coverage {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        i32::from(self.completeness)
+            .cmp(&i32::from(other.completeness))
+            .then_with(|| crate::canonical::cmp_option(
+                self.scope.as_ref(),
+                other.scope.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for Coverage {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::i32_value(state, i32::from(self.completeness));
+        if let Some(element) = &self.scope {
+            crate::canonical::tag(state, 2);
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Coverage {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::int32::encode(1, &i32::from(self.completeness), buf);
+        if let Some(element) = &self.scope {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::int32::encoded_len(1, &i32::from(self.completeness))
+            + self
+                .scope
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(2, element))
+    }
+}
 impl Coverage {
     /// A builder holding nothing yet.
     #[must_use]
@@ -608,6 +773,42 @@ impl From<Coverage> for wire::Coverage {
 pub struct EndpointContext {
     endpoint_id: String,
     attributes: Option<BTreeMap<String, Value>>,
+}
+impl crate::canonical::Canonical for EndpointContext {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.endpoint_id
+            .cmp(&other.endpoint_id)
+            .then_with(|| crate::canonical::cmp_option_map(
+                self.attributes.as_ref(),
+                other.attributes.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for EndpointContext {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::str_value(state, &self.endpoint_id);
+        if let Some(map) = &self.attributes {
+            crate::canonical::tag(state, 2);
+            crate::canonical::map_value(state, map);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for EndpointContext {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.endpoint_id, buf);
+        if let Some(map) = &self.attributes {
+            crate::encode::map_field(2, map, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.endpoint_id)
+            + self
+                .attributes
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(2, map))
+    }
 }
 impl EndpointContext {
     /// A builder holding nothing yet.
@@ -713,6 +914,34 @@ impl From<EndpointContext> for wire::EndpointContext {
 pub struct Inventory {
     items: Vec<InventoryItem>,
 }
+impl crate::canonical::Canonical for Inventory {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_slice(&self.items, &other.items)
+    }
+}
+impl crate::canonical::Digest for Inventory {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::count(state, self.items.len());
+        for element in &self.items {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Inventory {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.items {
+            crate::encode::nested(1, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.items
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+    }
+}
 impl Inventory {
     /// A builder holding nothing yet.
     #[must_use]
@@ -731,14 +960,16 @@ impl Inventory {
         ) {
             return Err(Invalid::field("items", violation));
         }
-        let mut seen = BTreeSet::new();
-        for (index, element) in self.items.iter().enumerate() {
-            if !seen.insert(&element.subject) {
+        for index in 1..self.items.len() {
+            if self.items[index].subject == self.items[index - 1].subject {
                 return Err(Invalid::element("items", index, Violation::Duplicate));
             }
         }
         rules::inventory(self)?;
         Ok(())
+    }
+    fn canonicalize(&mut self) {
+        self.items.sort_by(crate::canonical::Canonical::canonical_cmp);
     }
 }
 /// Builds a [`Inventory`]. Setters are infallible; [`build`](InventoryBuilder::build)
@@ -761,7 +992,8 @@ impl InventoryBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<Inventory, Invalid> {
-        let built = Inventory { items: self.items };
+        let mut built = Inventory { items: self.items };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -769,7 +1001,7 @@ impl InventoryBuilder {
 impl TryFrom<wire::Inventory> for Inventory {
     type Error = Invalid;
     fn try_from(wire: wire::Inventory) -> Result<Self, Invalid> {
-        let built = Self {
+        let mut built = Self {
             items: {
                 let mut elements = Vec::with_capacity(wire.items.len());
                 for (index, element) in wire.items.into_iter().enumerate() {
@@ -782,6 +1014,7 @@ impl TryFrom<wire::Inventory> for Inventory {
                 elements
             },
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -803,6 +1036,56 @@ pub struct InventoryItem {
     subject: Subject,
     attributes: Option<BTreeMap<String, Value>>,
     source_key: Option<String>,
+}
+impl crate::canonical::Canonical for InventoryItem {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.subject, &other.subject)
+            .then_with(|| crate::canonical::cmp_option_map(
+                self.attributes.as_ref(),
+                other.attributes.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.source_key.as_ref(),
+                other.source_key.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for InventoryItem {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.subject, state);
+        if let Some(map) = &self.attributes {
+            crate::canonical::tag(state, 2);
+            crate::canonical::map_value(state, map);
+        }
+        if let Some(element) = &self.source_key {
+            crate::canonical::tag(state, 3);
+            crate::canonical::str_value(state, element);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for InventoryItem {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        if let Some(map) = &self.attributes {
+            crate::encode::map_field(2, map, buf);
+        }
+        if let Some(element) = &self.source_key {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + self
+                .attributes
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(2, map))
+            + self
+                .source_key
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
+    }
 }
 impl InventoryItem {
     /// A builder holding nothing yet.
@@ -934,6 +1217,102 @@ pub struct LogRecord {
     subject: Option<Subject>,
     entry_id: Option<String>,
     attributes: Option<BTreeMap<String, Value>>,
+}
+impl crate::canonical::Canonical for LogRecord {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_option(
+                self.occurred_at.as_ref(),
+                other.occurred_at.as_ref(),
+            )
+            .then_with(|| crate::canonical::cmp_option(
+                self.severity.as_ref(),
+                other.severity.as_ref(),
+            ))
+            .then_with(|| self.message.cmp(&other.message))
+            .then_with(|| crate::canonical::cmp_option(
+                self.subject.as_ref(),
+                other.subject.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.entry_id.as_ref(),
+                other.entry_id.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option_map(
+                self.attributes.as_ref(),
+                other.attributes.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for LogRecord {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        if let Some(element) = &self.occurred_at {
+            crate::canonical::tag(state, 1);
+            crate::canonical::Digest::digest(element, state);
+        }
+        if let Some(value) = self.severity {
+            crate::canonical::tag(state, 2);
+            crate::canonical::i32_value(state, i32::from(value));
+        }
+        crate::canonical::tag(state, 3);
+        crate::canonical::str_value(state, &self.message);
+        if let Some(element) = &self.subject {
+            crate::canonical::tag(state, 4);
+            crate::canonical::Digest::digest(element, state);
+        }
+        if let Some(element) = &self.entry_id {
+            crate::canonical::tag(state, 5);
+            crate::canonical::str_value(state, element);
+        }
+        if let Some(map) = &self.attributes {
+            crate::canonical::tag(state, 6);
+            crate::canonical::map_value(state, map);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for LogRecord {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        if let Some(element) = &self.occurred_at {
+            crate::encode::nested(1, element, buf);
+        }
+        if let Some(value) = self.severity {
+            ::prost::encoding::int32::encode(2, &i32::from(value), buf);
+        }
+        ::prost::encoding::string::encode(3, &self.message, buf);
+        if let Some(element) = &self.subject {
+            crate::encode::nested(4, element, buf);
+        }
+        if let Some(element) = &self.entry_id {
+            ::prost::encoding::string::encode(5, element, buf);
+        }
+        if let Some(map) = &self.attributes {
+            crate::encode::map_field(6, map, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self
+            .occurred_at
+            .as_ref()
+            .map_or(0, |element| crate::encode::nested_len(1, element))
+            + self
+                .severity
+                .map_or(
+                    0,
+                    |value| ::prost::encoding::int32::encoded_len(2, &i32::from(value)),
+                ) + ::prost::encoding::string::encoded_len(3, &self.message)
+            + self
+                .subject
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(4, element))
+            + self
+                .entry_id
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(5, element))
+            + self
+                .attributes
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(6, map))
+    }
 }
 impl LogRecord {
     /// A builder holding nothing yet.
@@ -1121,6 +1500,34 @@ impl From<LogRecord> for wire::LogRecord {
 pub struct Logs {
     records: Vec<LogRecord>,
 }
+impl crate::canonical::Canonical for Logs {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_slice(&self.records, &other.records)
+    }
+}
+impl crate::canonical::Digest for Logs {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::count(state, self.records.len());
+        for element in &self.records {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Logs {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.records {
+            crate::encode::nested(1, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.records
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+    }
+}
 impl Logs {
     /// A builder holding nothing yet.
     #[must_use]
@@ -1141,6 +1548,9 @@ impl Logs {
         }
         rules::logs(self)?;
         Ok(())
+    }
+    fn canonicalize(&mut self) {
+        self.records.sort_by(crate::canonical::Canonical::canonical_cmp);
     }
 }
 /// Builds a [`Logs`]. Setters are infallible; [`build`](LogsBuilder::build)
@@ -1163,7 +1573,8 @@ impl LogsBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<Logs, Invalid> {
-        let built = Logs { records: self.records };
+        let mut built = Logs { records: self.records };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -1171,7 +1582,7 @@ impl LogsBuilder {
 impl TryFrom<wire::Logs> for Logs {
     type Error = Invalid;
     fn try_from(wire: wire::Logs) -> Result<Self, Invalid> {
-        let built = Self {
+        let mut built = Self {
             records: {
                 let mut elements = Vec::with_capacity(wire.records.len());
                 for (index, element) in wire.records.into_iter().enumerate() {
@@ -1184,6 +1595,7 @@ impl TryFrom<wire::Logs> for Logs {
                 elements
             },
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -1211,6 +1623,85 @@ pub enum Payload {
     /// `resources`.
     Resources(ResourceGraph),
 }
+impl Payload {
+    fn arm(&self) -> u32 {
+        match self {
+            Payload::Readings(_) => 10,
+            Payload::Logs(_) => 11,
+            Payload::States(_) => 12,
+            Payload::Inventory(_) => 13,
+            Payload::Resources(_) => 14,
+        }
+    }
+}
+impl crate::canonical::Canonical for Payload {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Payload::Readings(left), Payload::Readings(right)) => {
+                crate::canonical::Canonical::canonical_cmp(left, right)
+            }
+            (Payload::Logs(left), Payload::Logs(right)) => {
+                crate::canonical::Canonical::canonical_cmp(left, right)
+            }
+            (Payload::States(left), Payload::States(right)) => {
+                crate::canonical::Canonical::canonical_cmp(left, right)
+            }
+            (Payload::Inventory(left), Payload::Inventory(right)) => {
+                crate::canonical::Canonical::canonical_cmp(left, right)
+            }
+            (Payload::Resources(left), Payload::Resources(right)) => {
+                crate::canonical::Canonical::canonical_cmp(left, right)
+            }
+            _ => self.arm().cmp(&other.arm()),
+        }
+    }
+}
+impl crate::canonical::Digest for Payload {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Payload::Readings(inner) => {
+                crate::canonical::tag(state, 10);
+                crate::canonical::Digest::digest(inner, state);
+            }
+            Payload::Logs(inner) => {
+                crate::canonical::tag(state, 11);
+                crate::canonical::Digest::digest(inner, state);
+            }
+            Payload::States(inner) => {
+                crate::canonical::tag(state, 12);
+                crate::canonical::Digest::digest(inner, state);
+            }
+            Payload::Inventory(inner) => {
+                crate::canonical::tag(state, 13);
+                crate::canonical::Digest::digest(inner, state);
+            }
+            Payload::Resources(inner) => {
+                crate::canonical::tag(state, 14);
+                crate::canonical::Digest::digest(inner, state);
+            }
+        }
+    }
+}
+impl Payload {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        match self {
+            Payload::Readings(inner) => crate::encode::nested(10, inner, buf),
+            Payload::Logs(inner) => crate::encode::nested(11, inner, buf),
+            Payload::States(inner) => crate::encode::nested(12, inner, buf),
+            Payload::Inventory(inner) => crate::encode::nested(13, inner, buf),
+            Payload::Resources(inner) => crate::encode::nested(14, inner, buf),
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        match self {
+            Payload::Readings(inner) => crate::encode::nested_len(10, inner),
+            Payload::Logs(inner) => crate::encode::nested_len(11, inner),
+            Payload::States(inner) => crate::encode::nested_len(12, inner),
+            Payload::Inventory(inner) => crate::encode::nested_len(13, inner),
+            Payload::Resources(inner) => crate::encode::nested_len(14, inner),
+        }
+    }
+}
 /// Validated form of `nv.telemetry.v1.ObservationBatch`; the schema carries the field semantics.
 ///
 /// Holds its invariants for as long as it exists: built through
@@ -1223,6 +1714,56 @@ pub struct ObservationBatch {
     window: ObservationWindow,
     coverage: Coverage,
     payload: Payload,
+}
+impl crate::canonical::Canonical for ObservationBatch {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.endpoint, &other.endpoint)
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.origin,
+                &other.origin,
+            ))
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.window,
+                &other.window,
+            ))
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.coverage,
+                &other.coverage,
+            ))
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.payload,
+                &other.payload,
+            ))
+    }
+}
+impl crate::canonical::Digest for ObservationBatch {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.endpoint, state);
+        crate::canonical::tag(state, 2);
+        crate::canonical::Digest::digest(&self.origin, state);
+        crate::canonical::tag(state, 3);
+        crate::canonical::Digest::digest(&self.window, state);
+        crate::canonical::tag(state, 4);
+        crate::canonical::Digest::digest(&self.coverage, state);
+        crate::canonical::Digest::digest(&self.payload, state);
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ObservationBatch {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.endpoint, buf);
+        crate::encode::nested(2, &self.origin, buf);
+        crate::encode::nested(3, &self.window, buf);
+        crate::encode::nested(4, &self.coverage, buf);
+        self.payload.emit(buf);
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.endpoint)
+            + crate::encode::nested_len(2, &self.origin)
+            + crate::encode::nested_len(3, &self.window)
+            + crate::encode::nested_len(4, &self.coverage) + self.payload.emitted_len()
+    }
 }
 impl ObservationBatch {
     /// A builder holding nothing yet.
@@ -1271,10 +1812,14 @@ impl ObservationBatch {
             .map_err(crate::DecodeError::Malformed)?;
         Self::try_from(wire).map_err(crate::DecodeError::Invalid)
     }
-    /// Encodes the canonical wire form.
+    /// Encodes the canonical wire form, straight from the validated
+    /// representation — no intermediate wire tree, no clone. Byte-identical
+    /// to prost encoding the rebuilt tree, which the tests hold it to.
     #[must_use]
     pub fn encode_to_vec(&self) -> Vec<u8> {
-        ::prost::Message::encode_to_vec(&wire::ObservationBatch::from(self.clone()))
+        let mut buf = Vec::with_capacity(crate::encode::Emit::emitted_len(self));
+        crate::encode::Emit::emit(self, &mut buf);
+        buf
     }
 }
 /// Builds a [`ObservationBatch`]. Setters are infallible; [`build`](ObservationBatchBuilder::build)
@@ -1450,6 +1995,41 @@ pub struct ObservationWindow {
     start: Timestamp,
     end: Option<Timestamp>,
 }
+impl crate::canonical::Canonical for ObservationWindow {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.start, &other.start)
+            .then_with(|| crate::canonical::cmp_option(
+                self.end.as_ref(),
+                other.end.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for ObservationWindow {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.start, state);
+        if let Some(element) = &self.end {
+            crate::canonical::tag(state, 2);
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ObservationWindow {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.start, buf);
+        if let Some(element) = &self.end {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.start)
+            + self
+                .end
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(2, element))
+    }
+}
 impl ObservationWindow {
     /// A builder holding nothing yet.
     #[must_use]
@@ -1548,6 +2128,105 @@ pub struct ObservedResource {
     properties_complete: bool,
     unresolved: Vec<UnresolvedReference>,
 }
+impl crate::canonical::Canonical for ObservedResource {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.subject, &other.subject)
+            .then_with(|| self.source_key.cmp(&other.source_key))
+            .then_with(|| crate::canonical::cmp_option(
+                self.source_schema.as_ref(),
+                other.source_schema.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option_map(
+                self.properties.as_ref(),
+                other.properties.as_ref(),
+            ))
+            .then_with(|| self.properties_complete.cmp(&other.properties_complete))
+            .then_with(|| crate::canonical::cmp_slice(
+                &self.unresolved,
+                &other.unresolved,
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.entity_tag.as_ref(),
+                other.entity_tag.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.observed_at.as_ref(),
+                other.observed_at.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for ObservedResource {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.subject, state);
+        crate::canonical::tag(state, 2);
+        crate::canonical::str_value(state, &self.source_key);
+        if let Some(element) = &self.source_schema {
+            crate::canonical::tag(state, 3);
+            crate::canonical::str_value(state, element);
+        }
+        if let Some(map) = &self.properties {
+            crate::canonical::tag(state, 6);
+            crate::canonical::map_value(state, map);
+        }
+        crate::canonical::tag(state, 7);
+        crate::canonical::bool_value(state, self.properties_complete);
+        crate::canonical::tag(state, 8);
+        crate::canonical::count(state, self.unresolved.len());
+        for element in &self.unresolved {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ObservedResource {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        ::prost::encoding::string::encode(2, &self.source_key, buf);
+        if let Some(element) = &self.source_schema {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+        if let Some(element) = &self.entity_tag {
+            ::prost::encoding::string::encode(4, element, buf);
+        }
+        if let Some(element) = &self.observed_at {
+            crate::encode::nested(5, element, buf);
+        }
+        if let Some(map) = &self.properties {
+            crate::encode::map_field(6, map, buf);
+        }
+        ::prost::encoding::bool::encode(7, &self.properties_complete, buf);
+        for element in &self.unresolved {
+            crate::encode::nested(8, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + ::prost::encoding::string::encoded_len(2, &self.source_key)
+            + self
+                .source_schema
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
+            + self
+                .entity_tag
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(4, element))
+            + self
+                .observed_at
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(5, element))
+            + self
+                .properties
+                .as_ref()
+                .map_or(0, |map| crate::encode::map_field_len(6, map))
+            + ::prost::encoding::bool::encoded_len(7, &self.properties_complete)
+            + self
+                .unresolved
+                .iter()
+                .map(|element| crate::encode::nested_len(8, element))
+                .sum::<usize>()
+    }
+}
 impl ObservedResource {
     /// A builder holding nothing yet.
     #[must_use]
@@ -1642,6 +2321,9 @@ impl ObservedResource {
         rules::observed_resource(self)?;
         Ok(())
     }
+    fn canonicalize(&mut self) {
+        self.unresolved.sort_by(crate::canonical::Canonical::canonical_cmp);
+    }
 }
 /// Builds a [`ObservedResource`]. Setters are infallible; [`build`](ObservedResourceBuilder::build)
 /// validates everything at once, exactly as decoding does.
@@ -1712,7 +2394,7 @@ impl ObservedResourceBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<ObservedResource, Invalid> {
-        let built = ObservedResource {
+        let mut built = ObservedResource {
             subject: self
                 .subject
                 .ok_or_else(|| Invalid::field("subject", Violation::Absent))?,
@@ -1731,6 +2413,7 @@ impl ObservedResourceBuilder {
                 ))?,
             unresolved: self.unresolved,
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -1738,7 +2421,7 @@ impl ObservedResourceBuilder {
 impl TryFrom<wire::ObservedResource> for ObservedResource {
     type Error = Invalid;
     fn try_from(wire: wire::ObservedResource) -> Result<Self, Invalid> {
-        let built = Self {
+        let mut built = Self {
             subject: Subject::try_from(
                     wire
                         .subject
@@ -1778,6 +2461,7 @@ impl TryFrom<wire::ObservedResource> for ObservedResource {
                 elements
             },
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -1805,6 +2489,32 @@ impl From<ObservedResource> for wire::ObservedResource {
 pub struct Origin {
     provider: String,
     request_class: String,
+}
+impl crate::canonical::Canonical for Origin {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.provider
+            .cmp(&other.provider)
+            .then_with(|| self.request_class.cmp(&other.request_class))
+    }
+}
+impl crate::canonical::Digest for Origin {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::str_value(state, &self.provider);
+        crate::canonical::tag(state, 2);
+        crate::canonical::str_value(state, &self.request_class);
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Origin {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.provider, buf);
+        ::prost::encoding::string::encode(2, &self.request_class, buf);
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.provider)
+            + ::prost::encoding::string::encoded_len(2, &self.request_class)
+    }
 }
 impl Origin {
     /// A builder holding nothing yet.
@@ -1918,6 +2628,49 @@ pub struct Reading {
     value: NumericValue,
     observed_at: Option<Timestamp>,
 }
+impl crate::canonical::Canonical for Reading {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.key, &other.key)
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.value,
+                &other.value,
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.observed_at.as_ref(),
+                other.observed_at.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for Reading {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.key, state);
+        crate::canonical::tag(state, 2);
+        crate::canonical::Digest::digest(&self.value, state);
+        if let Some(element) = &self.observed_at {
+            crate::canonical::tag(state, 3);
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Reading {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.key, buf);
+        crate::encode::nested(2, &self.value, buf);
+        if let Some(element) = &self.observed_at {
+            crate::encode::nested(3, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.key)
+            + crate::encode::nested_len(2, &self.value)
+            + self
+                .observed_at
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(3, element))
+    }
+}
 impl Reading {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2028,6 +2781,49 @@ pub struct Readings {
     descriptors: Vec<SignalDescriptor>,
     samples: Vec<Reading>,
 }
+impl crate::canonical::Canonical for Readings {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_slice(&self.descriptors, &other.descriptors)
+            .then_with(|| crate::canonical::cmp_slice(&self.samples, &other.samples))
+    }
+}
+impl crate::canonical::Digest for Readings {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::count(state, self.descriptors.len());
+        for element in &self.descriptors {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::tag(state, 2);
+        crate::canonical::count(state, self.samples.len());
+        for element in &self.samples {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Readings {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.descriptors {
+            crate::encode::nested(1, element, buf);
+        }
+        for element in &self.samples {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self
+            .descriptors
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+            + self
+                .samples
+                .iter()
+                .map(|element| crate::encode::nested_len(2, element))
+                .sum::<usize>()
+    }
+}
 impl Readings {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2051,9 +2847,8 @@ impl Readings {
         ) {
             return Err(Invalid::field("descriptors", violation));
         }
-        let mut seen = BTreeSet::new();
-        for (index, element) in self.descriptors.iter().enumerate() {
-            if !seen.insert(&element.key) {
+        for index in 1..self.descriptors.len() {
+            if self.descriptors[index].key == self.descriptors[index - 1].key {
                 return Err(Invalid::element("descriptors", index, Violation::Duplicate));
             }
         }
@@ -2065,6 +2860,10 @@ impl Readings {
         }
         rules::readings(self)?;
         Ok(())
+    }
+    fn canonicalize(&mut self) {
+        self.descriptors.sort_by(crate::canonical::Canonical::canonical_cmp);
+        self.samples.sort_by(crate::canonical::Canonical::canonical_cmp);
     }
 }
 /// Builds a [`Readings`]. Setters are infallible; [`build`](ReadingsBuilder::build)
@@ -2094,10 +2893,11 @@ impl ReadingsBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<Readings, Invalid> {
-        let built = Readings {
+        let mut built = Readings {
             descriptors: self.descriptors,
             samples: self.samples,
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -2105,7 +2905,7 @@ impl ReadingsBuilder {
 impl TryFrom<wire::Readings> for Readings {
     type Error = Invalid;
     fn try_from(wire: wire::Readings) -> Result<Self, Invalid> {
-        let built = Self {
+        let mut built = Self {
             descriptors: {
                 let mut elements = Vec::with_capacity(wire.descriptors.len());
                 for (index, element) in wire.descriptors.into_iter().enumerate() {
@@ -2129,6 +2929,7 @@ impl TryFrom<wire::Readings> for Readings {
                 elements
             },
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -2151,6 +2952,49 @@ pub struct ResourceGraph {
     resources: Vec<ObservedResource>,
     relations: Vec<ResourceRelation>,
 }
+impl crate::canonical::Canonical for ResourceGraph {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_slice(&self.resources, &other.resources)
+            .then_with(|| crate::canonical::cmp_slice(&self.relations, &other.relations))
+    }
+}
+impl crate::canonical::Digest for ResourceGraph {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::count(state, self.resources.len());
+        for element in &self.resources {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::tag(state, 2);
+        crate::canonical::count(state, self.relations.len());
+        for element in &self.relations {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ResourceGraph {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.resources {
+            crate::encode::nested(1, element, buf);
+        }
+        for element in &self.relations {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self
+            .resources
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+            + self
+                .relations
+                .iter()
+                .map(|element| crate::encode::nested_len(2, element))
+                .sum::<usize>()
+    }
+}
 impl ResourceGraph {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2167,6 +3011,21 @@ impl ResourceGraph {
     pub fn relations(&self) -> &[ResourceRelation] {
         &self.relations
     }
+    /// Feeds this message's logical content into `state`.
+    ///
+    /// Present hash-visible fields, labeled by field number; collection
+    /// metadata is skipped, transitively. Equal content produces equal
+    /// bytes because construction canonicalized the representation, and
+    /// the stream is injective, so distinct content cannot collide by
+    /// construction of the bytes alone. Encoded wire bytes are never
+    /// fed to a hash.
+    ///
+    /// The hasher is the caller's: whoever stores or compares hashes
+    /// owns the choice of function, and the standard library's default
+    /// is deliberately not stable across processes.
+    pub fn content_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::Digest::digest(self, state);
+    }
     fn check(&self) -> Result<(), Invalid> {
         if let Some(violation) = invalid::too_many(
             self.resources.len(),
@@ -2174,9 +3033,8 @@ impl ResourceGraph {
         ) {
             return Err(Invalid::field("resources", violation));
         }
-        let mut seen = BTreeSet::new();
-        for (index, element) in self.resources.iter().enumerate() {
-            if !seen.insert(&element.subject) {
+        for index in 1..self.resources.len() {
+            if self.resources[index].subject == self.resources[index - 1].subject {
                 return Err(Invalid::element("resources", index, Violation::Duplicate));
             }
         }
@@ -2186,14 +3044,20 @@ impl ResourceGraph {
         ) {
             return Err(Invalid::field("relations", violation));
         }
-        let mut seen = BTreeSet::new();
-        for (index, element) in self.relations.iter().enumerate() {
-            if !seen.insert((&element.source, &element.target, &element.kind)) {
+        for index in 1..self.relations.len() {
+            if self.relations[index].source == self.relations[index - 1].source
+                && self.relations[index].target == self.relations[index - 1].target
+                && self.relations[index].kind == self.relations[index - 1].kind
+            {
                 return Err(Invalid::element("relations", index, Violation::Duplicate));
             }
         }
         rules::resource_graph(self)?;
         Ok(())
+    }
+    fn canonicalize(&mut self) {
+        self.resources.sort_by(crate::canonical::Canonical::canonical_cmp);
+        self.relations.sort_by(crate::canonical::Canonical::canonical_cmp);
     }
 }
 /// Builds a [`ResourceGraph`]. Setters are infallible; [`build`](ResourceGraphBuilder::build)
@@ -2223,10 +3087,11 @@ impl ResourceGraphBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<ResourceGraph, Invalid> {
-        let built = ResourceGraph {
+        let mut built = ResourceGraph {
             resources: self.resources,
             relations: self.relations,
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -2234,7 +3099,7 @@ impl ResourceGraphBuilder {
 impl TryFrom<wire::ResourceGraph> for ResourceGraph {
     type Error = Invalid;
     fn try_from(wire: wire::ResourceGraph) -> Result<Self, Invalid> {
-        let built = Self {
+        let mut built = Self {
             resources: {
                 let mut elements = Vec::with_capacity(wire.resources.len());
                 for (index, element) in wire.resources.into_iter().enumerate() {
@@ -2258,6 +3123,7 @@ impl TryFrom<wire::ResourceGraph> for ResourceGraph {
                 elements
             },
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -2280,6 +3146,39 @@ pub struct ResourceRelation {
     source: Subject,
     target: Subject,
     kind: String,
+}
+impl crate::canonical::Canonical for ResourceRelation {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.source, &other.source)
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.target,
+                &other.target,
+            ))
+            .then_with(|| self.kind.cmp(&other.kind))
+    }
+}
+impl crate::canonical::Digest for ResourceRelation {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.source, state);
+        crate::canonical::tag(state, 2);
+        crate::canonical::Digest::digest(&self.target, state);
+        crate::canonical::tag(state, 3);
+        crate::canonical::str_value(state, &self.kind);
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ResourceRelation {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.source, buf);
+        crate::encode::nested(2, &self.target, buf);
+        ::prost::encoding::string::encode(3, &self.kind, buf);
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.source)
+            + crate::encode::nested_len(2, &self.target)
+            + ::prost::encoding::string::encoded_len(3, &self.kind)
+    }
 }
 impl ResourceRelation {
     /// A builder holding nothing yet.
@@ -2405,6 +3304,71 @@ pub struct SignalDescriptor {
     kind: Option<String>,
     unit: Option<String>,
     range: Option<ValueRange>,
+}
+impl crate::canonical::Canonical for SignalDescriptor {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.key, &other.key)
+            .then_with(|| crate::canonical::cmp_option(
+                self.kind.as_ref(),
+                other.kind.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.unit.as_ref(),
+                other.unit.as_ref(),
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.range.as_ref(),
+                other.range.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for SignalDescriptor {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.key, state);
+        if let Some(element) = &self.kind {
+            crate::canonical::tag(state, 2);
+            crate::canonical::str_value(state, element);
+        }
+        if let Some(element) = &self.unit {
+            crate::canonical::tag(state, 3);
+            crate::canonical::str_value(state, element);
+        }
+        if let Some(element) = &self.range {
+            crate::canonical::tag(state, 4);
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for SignalDescriptor {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.key, buf);
+        if let Some(element) = &self.kind {
+            ::prost::encoding::string::encode(2, element, buf);
+        }
+        if let Some(element) = &self.unit {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+        if let Some(element) = &self.range {
+            crate::encode::nested(4, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.key)
+            + self
+                .kind
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(2, element))
+            + self
+                .unit
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
+            + self
+                .range
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(4, element))
+    }
 }
 impl SignalDescriptor {
     /// A builder holding nothing yet.
@@ -2554,6 +3518,41 @@ pub struct SignalKey {
     subject: Subject,
     facet: Option<String>,
 }
+impl crate::canonical::Canonical for SignalKey {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.subject, &other.subject)
+            .then_with(|| crate::canonical::cmp_option(
+                self.facet.as_ref(),
+                other.facet.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for SignalKey {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.subject, state);
+        if let Some(element) = &self.facet {
+            crate::canonical::tag(state, 2);
+            crate::canonical::str_value(state, element);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for SignalKey {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        if let Some(element) = &self.facet {
+            ::prost::encoding::string::encode(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + self
+                .facet
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(2, element))
+    }
+}
 impl SignalKey {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2569,6 +3568,21 @@ impl SignalKey {
     #[must_use]
     pub fn facet(&self) -> Option<&str> {
         self.facet.as_deref()
+    }
+    /// Feeds this message's logical content into `state`.
+    ///
+    /// Present hash-visible fields, labeled by field number; collection
+    /// metadata is skipped, transitively. Equal content produces equal
+    /// bytes because construction canonicalized the representation, and
+    /// the stream is injective, so distinct content cannot collide by
+    /// construction of the bytes alone. Encoded wire bytes are never
+    /// fed to a hash.
+    ///
+    /// The hasher is the caller's: whoever stores or compares hashes
+    /// owns the choice of function, and the standard library's default
+    /// is deliberately not stable across processes.
+    pub fn content_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::Digest::digest(self, state);
     }
     fn check(&self) -> Result<(), Invalid> {
         if let Some(element) = &self.facet {
@@ -2660,6 +3674,54 @@ pub struct StateObservation {
     name: String,
     value: Value,
     observed_at: Option<Timestamp>,
+}
+impl crate::canonical::Canonical for StateObservation {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.subject, &other.subject)
+            .then_with(|| self.name.cmp(&other.name))
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.value,
+                &other.value,
+            ))
+            .then_with(|| crate::canonical::cmp_option(
+                self.observed_at.as_ref(),
+                other.observed_at.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for StateObservation {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.subject, state);
+        crate::canonical::tag(state, 2);
+        crate::canonical::str_value(state, &self.name);
+        crate::canonical::tag(state, 3);
+        crate::canonical::Digest::digest(&self.value, state);
+        if let Some(element) = &self.observed_at {
+            crate::canonical::tag(state, 4);
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for StateObservation {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.subject, buf);
+        ::prost::encoding::string::encode(2, &self.name, buf);
+        crate::encode::nested(3, &self.value, buf);
+        if let Some(element) = &self.observed_at {
+            crate::encode::nested(4, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.subject)
+            + ::prost::encoding::string::encoded_len(2, &self.name)
+            + crate::encode::nested_len(3, &self.value)
+            + self
+                .observed_at
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(4, element))
+    }
 }
 impl StateObservation {
     /// A builder holding nothing yet.
@@ -2798,6 +3860,34 @@ impl From<StateObservation> for wire::StateObservation {
 pub struct States {
     observations: Vec<StateObservation>,
 }
+impl crate::canonical::Canonical for States {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_slice(&self.observations, &other.observations)
+    }
+}
+impl crate::canonical::Digest for States {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::count(state, self.observations.len());
+        for element in &self.observations {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for States {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        for element in &self.observations {
+            crate::encode::nested(1, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.observations
+            .iter()
+            .map(|element| crate::encode::nested_len(1, element))
+            .sum::<usize>()
+    }
+}
 impl States {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2818,6 +3908,9 @@ impl States {
         }
         rules::states(self)?;
         Ok(())
+    }
+    fn canonicalize(&mut self) {
+        self.observations.sort_by(crate::canonical::Canonical::canonical_cmp);
     }
 }
 /// Builds a [`States`]. Setters are infallible; [`build`](StatesBuilder::build)
@@ -2840,9 +3933,10 @@ impl StatesBuilder {
     /// [`Invalid`] naming the first field that is absent or breaks its
     /// schema invariants.
     pub fn build(self) -> Result<States, Invalid> {
-        let built = States {
+        let mut built = States {
             observations: self.observations,
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -2850,7 +3944,7 @@ impl StatesBuilder {
 impl TryFrom<wire::States> for States {
     type Error = Invalid;
     fn try_from(wire: wire::States) -> Result<Self, Invalid> {
-        let built = Self {
+        let mut built = Self {
             observations: {
                 let mut elements = Vec::with_capacity(wire.observations.len());
                 for (index, element) in wire.observations.into_iter().enumerate() {
@@ -2863,6 +3957,7 @@ impl TryFrom<wire::States> for States {
                 elements
             },
         };
+        built.canonicalize();
         built.check()?;
         Ok(built)
     }
@@ -2885,6 +3980,40 @@ pub struct Subject {
     scope: Vec<String>,
     id: String,
 }
+impl crate::canonical::Canonical for Subject {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.kind
+            .cmp(&other.kind)
+            .then_with(|| crate::canonical::cmp_slice(&self.scope, &other.scope))
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+impl crate::canonical::Digest for Subject {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::str_value(state, &self.kind);
+        crate::canonical::tag(state, 2);
+        crate::canonical::count(state, self.scope.len());
+        for element in &self.scope {
+            crate::canonical::str_value(state, element);
+        }
+        crate::canonical::tag(state, 3);
+        crate::canonical::str_value(state, &self.id);
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for Subject {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.kind, buf);
+        ::prost::encoding::string::encode_repeated(2, &self.scope, buf);
+        ::prost::encoding::string::encode(3, &self.id, buf);
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.kind)
+            + ::prost::encoding::string::encoded_len_repeated(2, &self.scope)
+            + ::prost::encoding::string::encoded_len(3, &self.id)
+    }
+}
 impl Subject {
     /// A builder holding nothing yet.
     #[must_use]
@@ -2905,6 +4034,21 @@ impl Subject {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+    /// Feeds this message's logical content into `state`.
+    ///
+    /// Present hash-visible fields, labeled by field number; collection
+    /// metadata is skipped, transitively. Equal content produces equal
+    /// bytes because construction canonicalized the representation, and
+    /// the stream is injective, so distinct content cannot collide by
+    /// construction of the bytes alone. Encoded wire bytes are never
+    /// fed to a hash.
+    ///
+    /// The hasher is the caller's: whoever stores or compares hashes
+    /// owns the choice of function, and the standard library's default
+    /// is deliberately not stable across processes.
+    pub fn content_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::Digest::digest(self, state);
     }
     fn check(&self) -> Result<(), Invalid> {
         if self.kind.is_empty() {
@@ -3020,6 +4164,42 @@ pub struct UnresolvedReference {
     location: String,
     property: Option<String>,
 }
+impl crate::canonical::Canonical for UnresolvedReference {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.location
+            .cmp(&other.location)
+            .then_with(|| crate::canonical::cmp_option(
+                self.property.as_ref(),
+                other.property.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for UnresolvedReference {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::str_value(state, &self.location);
+        if let Some(element) = &self.property {
+            crate::canonical::tag(state, 2);
+            crate::canonical::str_value(state, element);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for UnresolvedReference {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.location, buf);
+        if let Some(element) = &self.property {
+            ::prost::encoding::string::encode(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.location)
+            + self
+                .property
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(2, element))
+    }
+}
 impl UnresolvedReference {
     /// A builder holding nothing yet.
     #[must_use]
@@ -3130,6 +4310,45 @@ impl From<UnresolvedReference> for wire::UnresolvedReference {
 pub struct ValueRange {
     min: Option<NumericValue>,
     max: Option<NumericValue>,
+}
+impl crate::canonical::Canonical for ValueRange {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::cmp_option(self.min.as_ref(), other.min.as_ref())
+            .then_with(|| crate::canonical::cmp_option(
+                self.max.as_ref(),
+                other.max.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for ValueRange {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        if let Some(element) = &self.min {
+            crate::canonical::tag(state, 1);
+            crate::canonical::Digest::digest(element, state);
+        }
+        if let Some(element) = &self.max {
+            crate::canonical::tag(state, 2);
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ValueRange {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        if let Some(element) = &self.min {
+            crate::encode::nested(1, element, buf);
+        }
+        if let Some(element) = &self.max {
+            crate::encode::nested(2, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        self.min.as_ref().map_or(0, |element| crate::encode::nested_len(1, element))
+            + self
+                .max
+                .as_ref()
+                .map_or(0, |element| crate::encode::nested_len(2, element))
+    }
 }
 impl ValueRange {
     /// A builder holding nothing yet.

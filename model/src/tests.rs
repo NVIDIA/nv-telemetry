@@ -869,8 +869,17 @@ fn every_field_survives_the_validated_round_trip() {
         };
 
         let validated = ObservationBatch::try_from(maximal.clone()).expect("maximal batch valid");
+        // The direct encoder against prost encoding the rebuilt wire tree:
+        // byte equality, with every field of every domain present — the
+        // strongest form of "same wire form, no intermediate tree".
+        let direct = validated.encode_to_vec();
         let rebuilt = wire::ObservationBatch::from(validated);
         assert_eq!(rebuilt, maximal, "a field was dropped on the round trip");
+        assert_eq!(
+            direct,
+            rebuilt.encode_to_vec(),
+            "the direct encoder diverged from prost"
+        );
     }
 
     let status = wire::AcquisitionStatus {
@@ -885,9 +894,354 @@ fn every_field_survives_the_validated_round_trip() {
         detail: Some("timed out".into()),
     };
     let validated = AcquisitionStatus::try_from(status.clone()).expect("maximal status valid");
+    let direct = validated.encode_to_vec();
     assert_eq!(
         wire::AcquisitionStatus::from(validated),
         status,
         "a status field was dropped on the round trip"
     );
+    assert_eq!(
+        direct,
+        status.encode_to_vec(),
+        "the direct status encoder diverged from prost"
+    );
+}
+
+// The maximal-batch test covers every field of every message, but its values
+// exercise only two arms of the value vocabulary. The hand-written `Emit`
+// impls are transcriptions of `value.proto`'s wire types — `sint64` zigzag on
+// the integer arms, an empty nested message for null, `int64` for a
+// timestamp's seconds — and a slip there (say `int64` where the schema says
+// `sint64`) would survive every other test in this file. The next two tests
+// hold every arm of `Value` and `NumericValue` to byte identity with prost,
+// in a batch whose optional context fields are all absent — which is itself
+// the pin that absence contributes no bytes on either path.
+
+/// A minimal batch — required context only — around `payload`, asserted to
+/// encode byte-identically through the direct encoder and through prost.
+fn assert_direct_encoder_matches_prost(payload: wire::observation_batch::Payload) {
+    let wire_batch = wire::ObservationBatch {
+        endpoint: Some(wire::EndpointContext {
+            endpoint_id: Some("bmc-lab-07".into()),
+            attributes: None,
+        }),
+        origin: Some(wire::Origin {
+            provider: Some("redfish".into()),
+            request_class: Some("read".into()),
+        }),
+        window: Some(wire::ObservationWindow {
+            start: Some(wire::Timestamp {
+                seconds: Some(1),
+                nanos: Some(0),
+            }),
+            end: None,
+        }),
+        coverage: Some(wire::Coverage {
+            completeness: Some(wire::Completeness::Complete as i32),
+            scope: None,
+        }),
+        payload: Some(payload),
+    };
+    let validated = ObservationBatch::try_from(wire_batch).expect("a valid batch");
+    assert_eq!(
+        validated.encode_to_vec(),
+        wire::ObservationBatch::from(validated).encode_to_vec(),
+        "the direct encoder diverged from prost on a value arm"
+    );
+}
+
+#[test]
+fn every_value_arm_encodes_byte_identically_to_prost() {
+    use wire::value::Kind;
+    let wire_value = |kind: Kind| wire::Value { kind: Some(kind) };
+    let entry = |key: &str, kind: Kind| wire::value::map::Entry {
+        key: Some(key.into()),
+        value: Some(wire_value(kind)),
+    };
+    let every_arm = Kind::MapValue(wire::value::Map {
+        entries: vec![
+            entry("null", Kind::NullValue(wire::Null {})),
+            // `false` also pins that a present zero scalar still encodes.
+            entry("bool", Kind::BoolValue(false)),
+            // Negative, so a zigzag slip would double the bytes.
+            entry("int", Kind::IntValue(-3)),
+            // Above 2^53, so the arm cannot be quietly a double.
+            entry("uint", Kind::UintValue(91_827_364_554_433_777)),
+            entry("double", Kind::DoubleValue(2.5)),
+            entry("string", Kind::StringValue("s".into())),
+            entry("bytes", Kind::BytesValue(vec![0, 255])),
+            // Negative seconds: `int64`, not zigzag — a ten-byte varint.
+            entry(
+                "ts",
+                Kind::TimestampValue(wire::Timestamp {
+                    seconds: Some(-5),
+                    nanos: Some(7),
+                }),
+            ),
+            entry(
+                "list",
+                Kind::ListValue(wire::value::List {
+                    values: vec![
+                        wire_value(Kind::IntValue(5)),
+                        // An empty container: a zero-length nested message.
+                        wire_value(Kind::ListValue(wire::value::List { values: vec![] })),
+                    ],
+                }),
+            ),
+            // A map inside a `Value` — arm 10 — distinct from the bare map
+            // fields the maximal test covers.
+            entry(
+                "map",
+                Kind::MapValue(wire::value::Map {
+                    entries: vec![entry("k", Kind::NullValue(wire::Null {}))],
+                }),
+            ),
+        ],
+    });
+
+    assert_direct_encoder_matches_prost(wire::observation_batch::Payload::States(wire::States {
+        observations: vec![wire::StateObservation {
+            subject: Some(wire::Subject {
+                kind: Some("sensor".into()),
+                scope: vec![],
+                id: Some("Fan1".into()),
+            }),
+            name: Some("health".into()),
+            value: Some(wire_value(every_arm)),
+            observed_at: None,
+        }],
+    }));
+}
+
+#[test]
+fn every_numeric_arm_encodes_byte_identically_to_prost() {
+    use wire::numeric_value::Kind;
+    let key = |id: &str| wire::SignalKey {
+        subject: Some(wire::Subject {
+            kind: Some("sensor".into()),
+            scope: vec![],
+            id: Some(id.into()),
+        }),
+        facet: None,
+    };
+    let sample = |id: &str, kind: Kind| wire::Reading {
+        key: Some(key(id)),
+        value: Some(wire::NumericValue { kind: Some(kind) }),
+        observed_at: None,
+    };
+    let descriptor = |id: &str| wire::SignalDescriptor {
+        key: Some(key(id)),
+        kind: Some("counter".into()),
+        unit: None,
+        range: None,
+    };
+
+    assert_direct_encoder_matches_prost(wire::observation_batch::Payload::Readings(
+        wire::Readings {
+            descriptors: vec![descriptor("A"), descriptor("B"), descriptor("C")],
+            samples: vec![
+                // Negative, so a zigzag slip would double the bytes.
+                sample("A", Kind::IntValue(-47)),
+                // Above 2^53, so the arm cannot be quietly a double.
+                sample("B", Kind::UintValue(91_827_364_554_433_777)),
+                sample("C", Kind::DoubleValue(47.5)),
+            ],
+        },
+    ));
+}
+
+/// A hasher that keeps the bytes: hash tests assert on the digest stream
+/// itself, which is the contract, rather than on any hash function's output.
+#[derive(Default)]
+struct Collect(Vec<u8>);
+
+impl std::hash::Hasher for Collect {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        0
+    }
+}
+
+fn digest_bytes(graph: &ResourceGraph) -> Vec<u8> {
+    let mut sink = Collect::default();
+    graph.content_hash(&mut sink);
+    sink.0
+}
+
+fn built_resource(id: &str, tag: &str) -> ObservedResource {
+    ObservedResource::builder()
+        .subject(built_subject("chassis", id))
+        .source_key(format!("/redfish/v1/Chassis/{id}"))
+        .entity_tag(tag)
+        .properties_complete(true)
+        .build()
+        .expect("a valid resource")
+}
+
+#[test]
+fn canonicalization_makes_input_order_vanish() {
+    let forward = ResourceGraph::builder()
+        .resources(vec![built_resource("A", "e1"), built_resource("B", "e2")])
+        .build()
+        .expect("a valid graph");
+    let backward = ResourceGraph::builder()
+        .resources(vec![built_resource("B", "e2"), built_resource("A", "e1")])
+        .build()
+        .expect("a valid graph");
+
+    // Same content, one representation: equal values, equal wire bytes,
+    // equal hash streams — regardless of arrival order.
+    assert_eq!(forward, backward);
+    assert_eq!(
+        wire::ResourceGraph::from(forward.clone()).encode_to_vec(),
+        wire::ResourceGraph::from(backward.clone()).encode_to_vec(),
+        "canonical wire bytes depend on input order"
+    );
+    assert_eq!(digest_bytes(&forward), digest_bytes(&backward));
+
+    // And the order a consumer sees is the canonical one.
+    let ids: Vec<&str> = forward
+        .resources()
+        .iter()
+        .map(|resource| resource.subject().id())
+        .collect();
+    assert_eq!(ids, ["A", "B"]);
+}
+
+#[test]
+fn collection_metadata_breaks_ties_but_never_moves_the_hash() {
+    // Two graphs identical in everything hashing sees, different in entity
+    // tags: the reason the annotation exists is that a re-poll must not read
+    // as a device change.
+    let first = ResourceGraph::builder()
+        .resources(vec![built_resource("A", "before")])
+        .build()
+        .expect("a valid graph");
+    let second = ResourceGraph::builder()
+        .resources(vec![built_resource("A", "after")])
+        .build()
+        .expect("a valid graph");
+
+    assert_eq!(digest_bytes(&first), digest_bytes(&second));
+    assert_ne!(first, second, "the tags are still content of the value");
+
+    // A hash-visible difference moves the stream.
+    let third = ResourceGraph::builder()
+        .resources(vec![ObservedResource::builder()
+            .subject(built_subject("chassis", "A"))
+            .source_key("/redfish/v1/Chassis/other")
+            .entity_tag("before")
+            .properties_complete(true)
+            .build()
+            .expect("a valid resource")])
+        .build()
+        .expect("a valid graph");
+    assert_ne!(digest_bytes(&first), digest_bytes(&third));
+
+    // Ties on every hash-visible field still order deterministically, by
+    // the metadata tiebreak. Pinned at the comparator: two such elements can
+    // never share a collection — equal subjects are duplicates by design, and
+    // that is the uniqueness test above — but the total order must still
+    // decide them, or canonical bytes would depend on the sort's whims.
+    {
+        use crate::canonical::Canonical as _;
+        let earlier = built_resource("A", "a-earlier");
+        let later = built_resource("A", "z-later");
+        assert_eq!(
+            earlier.canonical_cmp(&later),
+            std::cmp::Ordering::Less,
+            "metadata did not break the tie"
+        );
+        let mut left = Collect::default();
+        let mut right = Collect::default();
+        crate::canonical::Digest::digest(&earlier, &mut left);
+        crate::canonical::Digest::digest(&later, &mut right);
+        assert_eq!(left.0, right.0, "the tiebreaker leaked into the digest");
+    }
+}
+
+#[test]
+fn the_digest_stream_is_injective_where_concatenation_would_lie() {
+    use crate::canonical::Digest as _;
+
+    let stream = |kind: &str, id: &str| {
+        let mut sink = Collect::default();
+        built_subject(kind, id).content_hash(&mut sink);
+        sink.0
+    };
+    // Without length prefixes these two would concatenate identically.
+    assert_ne!(stream("ab", "c"), stream("a", "bc"));
+
+    // An integer and a double holding the same number are different content:
+    // arm selection is fixed by the source's declared type.
+    let arm = |value: Value| {
+        let mut sink = Collect::default();
+        value.digest(&mut sink);
+        sink.0
+    };
+    assert_ne!(arm(Value::int(5)), arm(Value::uint(5)));
+    assert_ne!(arm(Value::int(5)), arm(Value::double(5.0).expect("finite")));
+}
+
+#[test]
+fn duplicates_are_caught_even_when_they_arrive_far_apart() {
+    // The adjacent scan only works because canonicalization sorted first;
+    // this pins that ordering, with the duplicates separated on arrival.
+    let error = ResourceGraph::builder()
+        .resources(vec![
+            built_resource("A", "e1"),
+            built_resource("B", "e2"),
+            built_resource("A", "e3"),
+        ])
+        .build()
+        .unwrap_err();
+    assert_eq!(error.violation(), &Violation::Duplicate);
+}
+
+#[test]
+fn public_ord_on_identities_matches_the_canonical_order() {
+    use crate::canonical::Canonical as _;
+
+    // `rules::readings` binary-searches canonically sorted descriptors using
+    // the public `Ord`, which is sound only while the two orders agree. They
+    // agree today because Subject and SignalKey have no metadata fields and
+    // declare their fields in number order; if this test fails, a schema
+    // change broke that coincidence and the rules must switch to the
+    // canonical comparator.
+    // Scoped and unscoped subjects both, because the coincidence must cover
+    // every field: `scope` is the one Vec in the pair, and `facet` the one
+    // Option, and either diverging between the two orders would silently
+    // corrupt the rules' binary searches.
+    let scoped = Subject::builder()
+        .kind("sensor")
+        .scope(vec!["1U".into(), "PSU1".into()])
+        .id("A")
+        .build()
+        .expect("a valid subject");
+    let subjects = [
+        built_subject("chassis", "A"),
+        built_subject("sensor", "B"),
+        built_subject("chassis", "B"),
+        scoped,
+    ];
+    for left in &subjects {
+        for right in &subjects {
+            assert_eq!(left.cmp(right), left.canonical_cmp(right));
+        }
+    }
+
+    let faceted = SignalKey::builder()
+        .subject(built_subject("sensor", "A"))
+        .facet("state/counters")
+        .build()
+        .expect("a valid key");
+    let keys = [built_key("A"), built_key("B"), faceted];
+    for left in &keys {
+        for right in &keys {
+            assert_eq!(left.cmp(right), left.canonical_cmp(right));
+        }
+    }
 }

@@ -114,13 +114,16 @@ pub(crate) fn reading(_reading: &Reading) -> Result<(), Invalid> {
 /// a batch is self-describing to a consumer that arrives mid-stream or reads
 /// it out of storage."
 pub(crate) fn readings(readings: &Readings) -> Result<(), Invalid> {
-    let described: BTreeSet<&SignalKey> = readings
-        .descriptors()
-        .iter()
-        .map(SignalDescriptor::key)
-        .collect();
+    // Canonicalization has already sorted `descriptors`, and the key is the
+    // canonical order's most significant field, so resolution is a binary
+    // search over what is in hand — the set this rule once built duplicated,
+    // measurably, the one the uniqueness check had just thrown away.
     for (index, sample) in readings.samples().iter().enumerate() {
-        if !described.contains(sample.key()) {
+        let described = readings
+            .descriptors()
+            .binary_search_by(|descriptor| descriptor.key().cmp(sample.key()))
+            .is_ok();
+        if !described {
             return Err(Invalid::element(
                 "samples",
                 index,
@@ -184,13 +187,14 @@ pub(crate) fn resource_relation(_relation: &ResourceRelation) -> Result<(), Inva
 /// source is the resource on which the relation was observed." The target may
 /// be outside the graph, so partial walks retain external links.
 pub(crate) fn resource_graph(graph: &ResourceGraph) -> Result<(), Invalid> {
-    let present: BTreeSet<&Subject> = graph
-        .resources()
-        .iter()
-        .map(ObservedResource::subject)
-        .collect();
+    // `resources` is canonically sorted with the subject leading, so
+    // membership is a binary search rather than a set built per validation.
     for (index, relation) in graph.relations().iter().enumerate() {
-        if !present.contains(relation.source()) {
+        let present = graph
+            .resources()
+            .binary_search_by(|resource| resource.subject().cmp(relation.source()))
+            .is_ok();
+        if !present {
             return Err(Invalid::element(
                 "relations",
                 index,
