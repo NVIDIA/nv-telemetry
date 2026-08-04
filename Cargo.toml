@@ -50,10 +50,22 @@ prettyplease = "0.2"
 quote = "1"
 proc-macro2 = "1"
 
+# Build-time only, and the same crate prost-build itself converts names with.
+# The model emitter derives module paths and type names that must land on what
+# prost-build generated — `GPUState` names the module `gpu_state`, not
+# `g_p_u_state` — so both sides must run one algorithm, not two that agree on
+# easy inputs.
+heck = "0.5"
+
 # Benchmarks measure instruction counts under Valgrind, so numbers are
 # machine-load independent and comparable across runs. Dev-only; running
 # needs valgrind and a gungraun-runner of the same version.
 gungraun = "0.19.4"
+
+# Property-based tests over the model's central claims — the encoder's byte
+# identity with prost, order-independence of canonical bytes and hashes, and
+# the total-order laws — on inputs no fixture thought of. Dev-only.
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 
 # CI runs clippy with `-D warnings`, so everything below is effectively an

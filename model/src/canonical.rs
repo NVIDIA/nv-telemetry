@@ -147,26 +147,24 @@ pub(crate) fn cmp_option<T: Canonical>(left: Option<&T>, right: Option<&T>) -> O
 /// Element-wise, shorter-prefix-first: slice order under the canonical
 /// element order.
 pub(crate) fn cmp_slice<T: Canonical>(left: &[T], right: &[T]) -> Ordering {
-    for (left, right) in left.iter().zip(right) {
-        let ordering = left.canonical_cmp(right);
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-    }
-    left.len().cmp(&right.len())
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left.canonical_cmp(right))
+        .find(|&ordering| ordering != Ordering::Equal)
+        .unwrap_or_else(|| left.len().cmp(&right.len()))
 }
 
 /// Entry-wise over two sorted maps.
 pub(crate) fn cmp_map(left: &BTreeMap<String, Value>, right: &BTreeMap<String, Value>) -> Ordering {
-    for ((left_key, left_value), (right_key, right_value)) in left.iter().zip(right) {
-        let ordering = left_key
-            .cmp(right_key)
-            .then_with(|| left_value.canonical_cmp(right_value));
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-    }
-    left.len().cmp(&right.len())
+    left.iter()
+        .zip(right)
+        .map(|((left_key, left_value), (right_key, right_value))| {
+            left_key
+                .cmp(right_key)
+                .then_with(|| left_value.canonical_cmp(right_value))
+        })
+        .find(|&ordering| ordering != Ordering::Equal)
+        .unwrap_or_else(|| left.len().cmp(&right.len()))
 }
 
 impl Canonical for String {

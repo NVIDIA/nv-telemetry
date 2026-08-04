@@ -32,6 +32,9 @@ use crate::Finite;
 use crate::Invalid;
 use crate::Violation;
 
+/// Nanoseconds in one second: the bound `Timestamp::new` holds `nanos` under.
+const NANOS_PER_SECOND: u32 = 1_000_000_000;
+
 /// An instant in time, UTC.
 ///
 /// One instant has exactly one representation: nanoseconds are bounded below
@@ -53,7 +56,7 @@ impl Timestamp {
     pub fn new(seconds: i64, nanos: u32) -> Result<Self, Invalid> {
         // A prose rule from the schema, not an annotation: the vocabulary has
         // no numeric range.
-        if nanos >= 1_000_000_000 {
+        if nanos >= NANOS_PER_SECOND {
             return Err(Invalid::field(
                 "nanos",
                 Violation::Rule("nanoseconds must fall within the second"),
@@ -400,23 +403,7 @@ impl TryFrom<wire::Value> for Value {
                 Self::list(values).map_err(|error| error.at("list_value"))
             }
             wire::value::Kind::MapValue(map) => {
-                let mut entries = Vec::with_capacity(map.entries.len());
-                for (index, entry) in map.entries.into_iter().enumerate() {
-                    let key = entry.key.ok_or_else(|| {
-                        Invalid::field("key", Violation::Absent)
-                            .at_index("entries", index)
-                            .at("map_value")
-                    })?;
-                    let value = entry.value.ok_or_else(|| {
-                        Invalid::field("value", Violation::Absent)
-                            .at_index("entries", index)
-                            .at("map_value")
-                    })?;
-                    let value = Self::try_from(value).map_err(|error| {
-                        error.at("value").at_index("entries", index).at("map_value")
-                    })?;
-                    entries.push((key, value));
-                }
+                let entries = entries_from_wire(map).map_err(|error| error.at("map_value"))?;
                 Self::map(entries).map_err(|error| error.at("map_value"))
             }
         }
@@ -481,19 +468,27 @@ fn container_depth<'a>(
 /// For the fields typed `Value.Map` directly — attribute sets and observed
 /// properties — which hold the map without a `Value` around it.
 pub(crate) fn map_from_wire(map: wire::value::Map) -> Result<BTreeMap<String, Value>, Invalid> {
+    collect_map(entries_from_wire(map)?)
+}
+
+/// The one walk over wire map entries, shared by the map arm of a `Value` and
+/// the bare map fields: presence of key and value, then the value's own
+/// conversion, each fault indexed as `entries[i]`. Callers prefix their own
+/// outer segment.
+fn entries_from_wire(map: wire::value::Map) -> Result<Vec<(String, Value)>, Invalid> {
     let mut entries = Vec::with_capacity(map.entries.len());
     for (index, entry) in map.entries.into_iter().enumerate() {
         let key = entry
             .key
-            .ok_or_else(|| Invalid::field(&format!("entries[{index}].key"), Violation::Absent))?;
+            .ok_or_else(|| Invalid::field("key", Violation::Absent).at_index("entries", index))?;
         let value = entry
             .value
-            .ok_or_else(|| Invalid::field(&format!("entries[{index}].value"), Violation::Absent))?;
+            .ok_or_else(|| Invalid::field("value", Violation::Absent).at_index("entries", index))?;
         let value =
-            Value::try_from(value).map_err(|error| error.at(&format!("entries[{index}].value")))?;
+            Value::try_from(value).map_err(|error| error.at("value").at_index("entries", index))?;
         entries.push((key, value));
     }
-    collect_map(entries)
+    Ok(entries)
 }
 
 /// Collects entries into the sorted, duplicate-free representation, checking
@@ -534,15 +529,23 @@ pub(crate) fn map_into_wire(map: BTreeMap<String, Value>) -> wire::value::Map {
 /// pass through [`map_from_wire`]: the representation already guarantees
 /// sorted, duplicate-free keys, so what is left is each key's own bounds and
 /// the entry count.
+///
+/// A key at fault is indexed as `entries[i]`, exactly as the wire path
+/// reports it; the index is the sorted position, which is the canonical
+/// order the accessors show.
 pub(crate) fn check_map(map: &BTreeMap<String, Value>, field: &str) -> Result<(), Invalid> {
-    for key in map.keys() {
+    for (index, key) in map.keys().enumerate() {
         if key.is_empty() {
-            return Err(Invalid::field(field, Violation::Empty));
+            return Err(Invalid::field("key", Violation::Empty)
+                .at_index("entries", index)
+                .at(field));
         }
         if let Some(violation) =
             crate::invalid::too_long(key.len(), limits::VALUE_MAP_ENTRY_KEY_MAX_LEN)
         {
-            return Err(Invalid::field(field, violation));
+            return Err(Invalid::field("key", violation)
+                .at_index("entries", index)
+                .at(field));
         }
     }
     if let Some(violation) =
