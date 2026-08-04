@@ -226,3 +226,93 @@ message Holder {{
         "the required accessor changed shape"
     );
 }
+
+#[test]
+fn uniqueness_uses_the_scan_only_where_sorting_makes_it_sound() {
+    // Keys leading the canonical order of a sorted collection: equal keys are
+    // neighbors and the scan is sound.
+    let pool = pool_from(
+        "scan",
+        &format!(
+            "{PREFIX}
+message Elem {{
+  optional string id = 1 [(nv.telemetry.options.v1.field_invariant) = {{required: true}}];
+
+  optional string note = 2;
+}}
+message Holder {{
+  repeated Elem items = 1 [(nv.telemetry.options.v1.field_invariant) = {{
+    unordered: true
+    unique_by: [ \"id\" ]
+  }}];
+}}
+"
+        ),
+    );
+    let vocabulary = Vocabulary::resolve(&pool).expect("vocabulary resolves");
+    let rendered = wrapper::model(&pool, &vocabulary).expect("generates");
+    assert!(
+        rendered.contains("self.items[index - 1]"),
+        "the sorted prefix case did not use the adjacent scan"
+    );
+    assert!(
+        !rendered.contains("BTreeSet::new"),
+        "a set was built where the scan is sound"
+    );
+
+    // A key that does not lead the canonical order: equal keys need not be
+    // adjacent after sorting, so the set must survive.
+    let pool = pool_from(
+        "set",
+        &format!(
+            "{PREFIX}
+message Elem {{
+  optional string label = 1 [(nv.telemetry.options.v1.field_invariant) = {{required: true}}];
+
+  optional string id = 2 [(nv.telemetry.options.v1.field_invariant) = {{required: true}}];
+}}
+message Holder {{
+  repeated Elem items = 1 [(nv.telemetry.options.v1.field_invariant) = {{
+    unordered: true
+    unique_by: [ \"id\" ]
+  }}];
+}}
+"
+        ),
+    );
+    let vocabulary = Vocabulary::resolve(&pool).expect("vocabulary resolves");
+    let rendered = wrapper::model(&pool, &vocabulary).expect("generates");
+    assert!(
+        rendered.contains("BTreeSet::new"),
+        "a non-prefix key fell through to the scan, which sorting cannot justify"
+    );
+    assert!(
+        rendered.contains("use std::collections::BTreeSet;"),
+        "the fallback's import did not follow it"
+    );
+
+    // A unique key on an *ordered* collection: the keys lead the element,
+    // but nothing ever sorts the field — order is data — so equal keys need
+    // not be adjacent and a scan would wave non-neighboring duplicates
+    // through. The two soundness conditions are separate checks, and this is
+    // the one a prefix-only test cannot see.
+    let pool = pool_from(
+        "ordered",
+        &format!(
+            "{PREFIX}
+message Elem {{
+  optional string id = 1 [(nv.telemetry.options.v1.field_invariant) = {{required: true}}];
+}}
+message Holder {{
+  repeated Elem items = 1 [(nv.telemetry.options.v1.field_invariant) = {{unique_by: [ \"id\" ]}}];
+}}
+"
+        ),
+    );
+    let vocabulary = Vocabulary::resolve(&pool).expect("vocabulary resolves");
+    let rendered = wrapper::model(&pool, &vocabulary).expect("generates");
+    assert!(
+        rendered.contains("BTreeSet::new"),
+        "an unsorted collection was given the adjacent scan"
+    );
+}

@@ -59,9 +59,8 @@ than sharing one.
 `schema`, `codegen`, and `model` carry code today; the other crates are
 placeholders whose doc comments state what belongs in them. The contract's
 messages exist, every gate runs over them, and `model` is the generated
-validated data plane — canonical ordering and content hashing are the next
-stage, and the source and export crates stay empty until there is data to
-move.
+validated data plane, canonically ordered and content-hashable. The source
+and export crates stay empty until there is data to move.
 
 Exporters are separate crates because their dependency trees are disjoint;
 `export` holds only what they share, such as joining readings to descriptors

@@ -568,3 +568,119 @@ fn check_count(actual: usize, limit: u32, field: &str) -> Result<(), Invalid> {
         None => Ok(()),
     }
 }
+
+// --- Canonical order and content digest, per docs in `crate::canonical` ---
+
+impl crate::canonical::Canonical for Timestamp {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Field-number order: seconds (1), nanos (2) — which is also time
+        // order, and what the derived `Ord` implements.
+        self.cmp(other)
+    }
+}
+
+impl crate::canonical::Digest for Timestamp {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::i64_value(state, self.seconds);
+        crate::canonical::tag(state, 2);
+        crate::canonical::u32_value(state, self.nanos);
+        crate::canonical::end(state);
+    }
+}
+
+impl NumericValue {
+    /// The arm's wire field number: the discriminant both ordering and
+    /// hashing label the payload with, so an integer 5 and a double 5.0 are
+    /// different content — arm selection is fixed by the source's declared
+    /// type, and a value must not drift between arms.
+    fn arm(&self) -> u32 {
+        match self {
+            Self::Double(_) => 1,
+            Self::Int(_) => 2,
+            Self::Uint(_) => 3,
+        }
+    }
+}
+
+impl crate::canonical::Canonical for NumericValue {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Self::Double(left), Self::Double(right)) => left.cmp(right),
+            (Self::Int(left), Self::Int(right)) => left.cmp(right),
+            (Self::Uint(left), Self::Uint(right)) => left.cmp(right),
+            _ => self.arm().cmp(&other.arm()),
+        }
+    }
+}
+
+impl crate::canonical::Digest for NumericValue {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, self.arm());
+        match self {
+            Self::Double(value) => crate::canonical::f64_value(state, value.get()),
+            Self::Int(value) => crate::canonical::i64_value(state, *value),
+            Self::Uint(value) => crate::canonical::u64_value(state, *value),
+        }
+    }
+}
+
+impl Value {
+    /// The arm's wire field number, as for [`NumericValue::arm`].
+    fn arm(&self) -> u32 {
+        match &self.repr {
+            Repr::Null => 1,
+            Repr::Bool(_) => 2,
+            Repr::Int(_) => 3,
+            Repr::Uint(_) => 4,
+            Repr::Double(_) => 5,
+            Repr::String(_) => 6,
+            Repr::Bytes(_) => 7,
+            Repr::Timestamp(_) => 8,
+            Repr::List(_) => 9,
+            Repr::Map(_) => 10,
+        }
+    }
+}
+
+impl crate::canonical::Canonical for Value {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (&self.repr, &other.repr) {
+            (Repr::Null, Repr::Null) => std::cmp::Ordering::Equal,
+            (Repr::Bool(left), Repr::Bool(right)) => left.cmp(right),
+            (Repr::Int(left), Repr::Int(right)) => left.cmp(right),
+            (Repr::Uint(left), Repr::Uint(right)) => left.cmp(right),
+            (Repr::Double(left), Repr::Double(right)) => left.cmp(right),
+            (Repr::String(left), Repr::String(right)) => left.cmp(right),
+            (Repr::Bytes(left), Repr::Bytes(right)) => left.cmp(right),
+            (Repr::Timestamp(left), Repr::Timestamp(right)) => left.canonical_cmp(right),
+            (Repr::List(left), Repr::List(right)) => crate::canonical::cmp_slice(left, right),
+            (Repr::Map(left), Repr::Map(right)) => crate::canonical::cmp_map(left, right),
+            _ => self.arm().cmp(&other.arm()),
+        }
+    }
+}
+
+impl crate::canonical::Digest for Value {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, self.arm());
+        match &self.repr {
+            // The arm alone: null's content is that it is null.
+            Repr::Null => {}
+            Repr::Bool(value) => crate::canonical::bool_value(state, *value),
+            Repr::Int(value) => crate::canonical::i64_value(state, *value),
+            Repr::Uint(value) => crate::canonical::u64_value(state, *value),
+            Repr::Double(value) => crate::canonical::f64_value(state, value.get()),
+            Repr::String(value) => crate::canonical::str_value(state, value),
+            Repr::Bytes(value) => crate::canonical::bytes_value(state, value),
+            Repr::Timestamp(value) => value.digest(state),
+            Repr::List(values) => {
+                crate::canonical::count(state, values.len());
+                for value in values {
+                    value.digest(state);
+                }
+            }
+            Repr::Map(entries) => crate::canonical::map_value(state, entries),
+        }
+    }
+}

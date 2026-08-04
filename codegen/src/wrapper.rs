@@ -188,7 +188,6 @@ const MODEL_HEADER: &str = "\
 #![allow(clippy::pedantic, dead_code)]
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 
 use crate::invalid;
 use crate::rules;
@@ -280,10 +279,18 @@ pub fn model(pool: &DescriptorPool, vocabulary: &Vocabulary) -> Result<String, S
         )
     })?;
 
-    Ok(format!(
-        "{MODEL_HEADER}\n{}",
-        prettyplease::unparse(&parsed)
-    ))
+    let body = prettyplease::unparse(&parsed);
+    // The uniqueness fallback is the one consumer of BTreeSet, and today's
+    // contract never takes it: every unique collection is unordered with its
+    // keys leading the canonical order, so the adjacent scan wins everywhere.
+    // Import on demand rather than carry an allow for an import that is
+    // usually dead.
+    let set_import = if body.contains("BTreeSet") {
+        "use std::collections::BTreeSet;\n"
+    } else {
+        ""
+    };
+    Ok(format!("{MODEL_HEADER}{set_import}\n{body}"))
 }
 
 /// Generated messages needing `Ord` and `Hash`: every message type a
@@ -487,6 +494,12 @@ fn enum_items(
                 }
             }
         }
+
+        impl crate::canonical::Canonical for #name {
+            fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+                i32::from(*self).cmp(&i32::from(*other))
+            }
+        }
     })
 }
 
@@ -494,6 +507,16 @@ fn enum_items(
 struct Plan {
     /// Field name as an identifier; also names the accessor and setter.
     ident: Ident,
+    /// Field number: the canonical order compares and the digest labels by
+    /// it, never by declaration order.
+    number: u32,
+    /// Collection metadata: skipped by the digest, compared only in the
+    /// canonical order's tiebreak phase.
+    metadata: bool,
+    /// Comparison expression against `other` for the canonical order.
+    cmp: TokenStream,
+    /// Statements feeding this field to the digest.
+    digest: TokenStream,
     /// Declared type in the validated struct.
     decl_ty: TokenStream,
     /// Declared type in the builder.
@@ -620,6 +643,94 @@ fn message_items(
         }
     });
 
+    // Canonical order walks fields by number — hash-visible first, metadata
+    // as the tiebreak — never by declaration order.
+    let mut ordered_plans: Vec<&Plan> = plans.iter().collect();
+    ordered_plans.sort_by_key(|plan| (plan.metadata, plan.number));
+    let cmp_chain = {
+        let mut comparisons = ordered_plans.iter().map(|plan| &plan.cmp);
+        comparisons.next().map_or_else(
+            || quote! { std::cmp::Ordering::Equal },
+            |first| {
+                let rest = comparisons;
+                quote! { #first #(.then_with(|| #rest))* }
+            },
+        )
+    };
+    let digests = ordered_plans
+        .iter()
+        .filter(|plan| !plan.metadata)
+        .map(|plan| &plan.digest);
+    let canonical_impls = quote! {
+        impl crate::canonical::Canonical for #name {
+            fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+                #cmp_chain
+            }
+        }
+
+        impl crate::canonical::Digest for #name {
+            fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+                #(#digests)*
+                crate::canonical::end(state);
+            }
+        }
+    };
+
+    // Canonicalization sorts what the schema calls `unordered`, so equal
+    // content is one representation: encode emits it, hashing counts on it,
+    // and the uniqueness scan reads neighbors instead of building sets.
+    let sortable: Vec<&Ident> = plans
+        .iter()
+        .filter(|plan| {
+            message
+                .get_field_by_name(&plan.ident.to_string())
+                .and_then(|field| vocabulary.field_invariant(&field))
+                .is_some_and(|invariant| invariant.unordered)
+        })
+        .map(|plan| &plan.ident)
+        .collect();
+    let canonicalize = (!sortable.is_empty()).then(|| {
+        quote! {
+            fn canonicalize(&mut self) {
+                #(self.#sortable.sort_by(crate::canonical::Canonical::canonical_cmp);)*
+            }
+        }
+    });
+    let canonicalize_call = canonicalize
+        .is_some()
+        .then(|| quote! { built.canonicalize(); });
+    let built_binding = if canonicalize.is_some() {
+        quote! { let mut built }
+    } else {
+        quote! { let built }
+    };
+
+    let content_hash = vocabulary
+        .message_invariant(message)
+        .is_some_and(|invariant| invariant.hashable)
+        .then(|| {
+            let hash_doc = docs(&[
+                "Feeds this message's logical content into `state`.".to_owned(),
+                String::new(),
+                "Present hash-visible fields, labeled by field number; collection".to_owned(),
+                "metadata is skipped, transitively. Equal content produces equal".to_owned(),
+                "bytes because construction canonicalized the representation, and".to_owned(),
+                "the stream is injective, so distinct content cannot collide by".to_owned(),
+                "construction of the bytes alone. Encoded wire bytes are never".to_owned(),
+                "fed to a hash.".to_owned(),
+                String::new(),
+                "The hasher is the caller's: whoever stores or compares hashes".to_owned(),
+                "owns the choice of function, and the standard library's default".to_owned(),
+                "is deliberately not stable across processes.".to_owned(),
+            ]);
+            quote! {
+                #hash_doc
+                pub fn content_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                    crate::canonical::Digest::digest(self, state);
+                }
+            }
+        });
+
     let idents: Vec<&Ident> = plans.iter().map(|plan| &plan.ident).collect();
     let decl_tys: Vec<&TokenStream> = plans.iter().map(|plan| &plan.decl_ty).collect();
     let builder_tys: Vec<&TokenStream> = plans.iter().map(|plan| &plan.builder_ty).collect();
@@ -637,6 +748,8 @@ fn message_items(
             #(#idents: #decl_tys,)*
         }
 
+        #canonical_impls
+
         impl #name {
             #builder_fn_doc
             #[must_use]
@@ -646,11 +759,15 @@ fn message_items(
 
             #(#accessors)*
 
+            #content_hash
+
             fn check(&self) -> Result<(), Invalid> {
                 #(#checks)*
                 rules::#rules_fn(self)?;
                 Ok(())
             }
+
+            #canonicalize
 
             #codec
         }
@@ -666,9 +783,10 @@ fn message_items(
 
             #build_doc
             pub fn build(self) -> Result<#name, Invalid> {
-                let built = #name {
+                #built_binding = #name {
                     #(#idents: #build_inits,)*
                 };
+                #canonicalize_call
                 built.check()?;
                 Ok(built)
             }
@@ -678,9 +796,10 @@ fn message_items(
             type Error = Invalid;
 
             fn try_from(wire: wire::#name) -> Result<Self, Invalid> {
-                let built = Self {
+                #built_binding = Self {
                     #(#idents: #from_wires,)*
                 };
+                #canonicalize_call
                 built.check()?;
                 Ok(built)
             }
@@ -700,8 +819,14 @@ fn message_items(
 
 /// Plans a oneof: returns its enum's items and the field plan the
 /// containing message uses.
-// Two plans differing in five fields; splitting them apart would hide that
-// they are one shape with and without absence.
+///
+/// The shape follows the oneof's own annotation. `required` reshapes absence
+/// away — the field is the enum, and a wire message without a case is
+/// invalid — while a oneof the schema leaves optional stays `Option`, because
+/// a validator stricter than the schema is inventing a rule, which is the
+/// mirror image of missing one.
+// Two plans differing in a handful of fields; splitting them apart would
+// hide that they are one shape with and without absence.
 #[allow(clippy::too_many_lines)]
 fn plan_oneof(
     oneof: &prost_reflect::OneofDescriptor,
@@ -721,6 +846,14 @@ fn plan_oneof(
     let required = vocabulary
         .oneof_invariant(oneof)
         .is_some_and(|invariant| invariant.required);
+    // The oneof sits in the canonical field order at its members' position;
+    // members share one contiguous block by construction, so the smallest
+    // number stands for all of them.
+    let number = oneof
+        .fields()
+        .map(|member| member.number())
+        .min()
+        .unwrap_or(u32::MAX);
 
     let mut arms = Vec::new();
     for member in oneof.fields() {
@@ -735,6 +868,7 @@ fn plan_oneof(
             member.name().to_owned(),
             ident(&camel(member.name())),
             ident(&short_name(inner.full_name())),
+            member.number(),
         ));
     }
 
@@ -748,9 +882,31 @@ fn plan_oneof(
             "The `{name}` of an `nv.telemetry.v1.{parent}`: one case when set."
         )])
     };
-    let variants = arms.iter().map(|(field_name, arm, inner)| {
+    let variants = arms.iter().map(|(field_name, arm, inner, _)| {
         let doc = docs(&[format!("`{field_name}`.")]);
         quote! { #doc #arm(#inner), }
+    });
+    // The case is ordered and labeled by its arm's field number, exactly as a
+    // field would be: two cases are compared by number first, and the digest
+    // tags the payload with it, so different arms are different content.
+    let cmp_arms = arms.iter().map(|(_, arm, _, _)| {
+        quote! {
+            (#enum_name::#arm(left), #enum_name::#arm(right)) =>
+                crate::canonical::Canonical::canonical_cmp(left, right),
+        }
+    });
+    let number_arms = arms.iter().map(|(_, arm, _, arm_number)| {
+        let literal = Literal::u32_unsuffixed(*arm_number);
+        quote! { #enum_name::#arm(_) => #literal, }
+    });
+    let digest_arms = arms.iter().map(|(_, arm, _, arm_number)| {
+        let literal = Literal::u32_unsuffixed(*arm_number);
+        quote! {
+            #enum_name::#arm(inner) => {
+                crate::canonical::tag(state, #literal);
+                crate::canonical::Digest::digest(inner, state);
+            }
+        }
     });
     let payload_enum = quote! {
         #enum_doc
@@ -759,16 +915,41 @@ fn plan_oneof(
         pub enum #enum_name {
             #(#variants)*
         }
+
+        impl #enum_name {
+            fn arm(&self) -> u32 {
+                match self {
+                    #(#number_arms)*
+                }
+            }
+        }
+
+        impl crate::canonical::Canonical for #enum_name {
+            fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+                match (self, other) {
+                    #(#cmp_arms)*
+                    _ => self.arm().cmp(&other.arm()),
+                }
+            }
+        }
+
+        impl crate::canonical::Digest for #enum_name {
+            fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+                match self {
+                    #(#digest_arms)*
+                }
+            }
+        }
     };
 
-    let from_arms = arms.iter().map(|(field_name, arm, inner)| {
+    let from_arms = arms.iter().map(|(field_name, arm, inner, _)| {
         quote! {
             wire::#parent_module::#enum_name::#arm(inner) => #enum_name::#arm(
                 #inner::try_from(inner).map_err(|error| error.at(#field_name))?,
             ),
         }
     });
-    let into_arms = arms.iter().map(|(_, arm, _)| {
+    let into_arms = arms.iter().map(|(_, arm, _, _)| {
         quote! {
             #enum_name::#arm(inner) => wire::#parent_module::#enum_name::#arm(inner.into()),
         }
@@ -787,6 +968,14 @@ fn plan_oneof(
     let plan = if required {
         let accessor_doc = docs(&[format!("The `{name}`.")]);
         Plan {
+            number,
+            metadata: false,
+            cmp: quote! {
+                crate::canonical::Canonical::canonical_cmp(&self.#id, &other.#id)
+            },
+            digest: quote! {
+                crate::canonical::Digest::digest(&self.#id, state);
+            },
             decl_ty: quote! { #enum_name },
             builder_ty: quote! { Option<#enum_name> },
             setter,
@@ -816,6 +1005,16 @@ fn plan_oneof(
     } else {
         let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
         Plan {
+            number,
+            metadata: false,
+            cmp: quote! {
+                crate::canonical::cmp_option(self.#id.as_ref(), other.#id.as_ref())
+            },
+            digest: quote! {
+                if let Some(case) = &self.#id {
+                    crate::canonical::Digest::digest(case, state);
+                }
+            },
             decl_ty: quote! { Option<#enum_name> },
             builder_ty: quote! { Option<#enum_name> },
             setter,
@@ -858,6 +1057,9 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
     let name = field.name().to_owned();
     let id = ident(&name);
     let lit = name.as_str();
+    let number = field.number();
+    let tag = Literal::u32_unsuffixed(number);
+    let metadata = invariant.collection_metadata;
 
     let absent = quote! { .ok_or_else(|| Invalid::field(#lit, Violation::Absent))? };
 
@@ -904,6 +1106,16 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
             let setter_doc = docs(&[format!("Sets `{name}`.")]);
             let accessor_doc = docs(&[format!("The `{name}`.")]);
             Plan {
+                number,
+                metadata,
+                cmp: quote! { crate::canonical::cmp_slice(&self.#id, &other.#id) },
+                digest: quote! {
+                    crate::canonical::tag(state, #tag);
+                    crate::canonical::count(state, self.#id.len());
+                    for element in &self.#id {
+                        crate::canonical::str_value(state, element);
+                    }
+                },
                 decl_ty: quote! { Vec<String> },
                 builder_ty: quote! { Vec<String> },
                 setter: quote! {
@@ -975,6 +1187,13 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
             if required {
                 let accessor_doc = docs(&[format!("The `{name}`.")]);
                 Plan {
+                    number,
+                    metadata,
+                    cmp: quote! { self.#id.cmp(&other.#id) },
+                    digest: quote! {
+                        crate::canonical::tag(state, #tag);
+                        crate::canonical::str_value(state, &self.#id);
+                    },
                     decl_ty: quote! { String },
                     builder_ty: quote! { Option<String> },
                     setter,
@@ -994,6 +1213,17 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
             } else {
                 let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
                 Plan {
+                    number,
+                    metadata,
+                    cmp: quote! {
+                        crate::canonical::cmp_option(self.#id.as_ref(), other.#id.as_ref())
+                    },
+                    digest: quote! {
+                        if let Some(element) = &self.#id {
+                            crate::canonical::tag(state, #tag);
+                            crate::canonical::str_value(state, element);
+                        }
+                    },
                     decl_ty: quote! { Option<String> },
                     builder_ty: quote! { Option<String> },
                     setter,
@@ -1012,7 +1242,15 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                 }
             }
         }
-        Kind::Bool => copy_plan(&invariant, id, lit, &quote! { bool }, &absent),
+        Kind::Bool => copy_plan(
+            &invariant,
+            field,
+            id,
+            lit,
+            &quote! { bool },
+            &absent,
+            "bool_value",
+        ),
         Kind::Uint64 => {
             if invariant.required {
                 return Err(format!(
@@ -1021,7 +1259,15 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                     field.full_name()
                 ));
             }
-            copy_plan(&invariant, id, lit, &quote! { u64 }, &absent)
+            copy_plan(
+                &invariant,
+                field,
+                id,
+                lit,
+                &quote! { u64 },
+                &absent,
+                "u64_value",
+            )
         }
         Kind::Enum(declared) => {
             let ty = ident(&short_name(declared.full_name()));
@@ -1037,6 +1283,13 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
             if invariant.required {
                 let accessor_doc = docs(&[format!("The `{name}`.")]);
                 Plan {
+                    number,
+                    metadata,
+                    cmp: quote! { i32::from(self.#id).cmp(&i32::from(other.#id)) },
+                    digest: quote! {
+                        crate::canonical::tag(state, #tag);
+                        crate::canonical::i32_value(state, i32::from(self.#id));
+                    },
                     decl_ty: quote! { #ty },
                     builder_ty: quote! { Option<#ty> },
                     setter,
@@ -1059,6 +1312,17 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
             } else {
                 let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
                 Plan {
+                    number,
+                    metadata,
+                    cmp: quote! {
+                        crate::canonical::cmp_option(self.#id.as_ref(), other.#id.as_ref())
+                    },
+                    digest: quote! {
+                        if let Some(value) = self.#id {
+                            crate::canonical::tag(state, #tag);
+                            crate::canonical::i32_value(state, i32::from(value));
+                        }
+                    },
                     decl_ty: quote! { Option<#ty> },
                     builder_ty: quote! { Option<#ty> },
                     setter,
@@ -1091,6 +1355,17 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
             let setter_doc = docs(&[format!("Sets `{name}`.")]);
             let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
             Plan {
+                number,
+                metadata,
+                cmp: quote! {
+                    crate::canonical::cmp_option_map(self.#id.as_ref(), other.#id.as_ref())
+                },
+                digest: quote! {
+                    if let Some(map) = &self.#id {
+                        crate::canonical::tag(state, #tag);
+                        crate::canonical::map_value(state, map);
+                    }
+                },
                 decl_ty: quote! { Option<BTreeMap<String, Value>> },
                 builder_ty: quote! { Option<BTreeMap<String, Value>> },
                 setter: quote! {
@@ -1137,24 +1412,56 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                 if !invariant.unique_by.is_empty() {
                     let keys: Vec<Ident> =
                         invariant.unique_by.iter().map(|key| ident(key)).collect();
-                    let key_expr = if keys.len() == 1 {
-                        let key = &keys[0];
-                        quote! { &element.#key }
-                    } else {
-                        quote! { (#(&element.#keys),*) }
-                    };
-                    checks.extend(quote! {
-                        let mut seen = BTreeSet::new();
-                        for (index, element) in self.#id.iter().enumerate() {
-                            if !seen.insert(#key_expr) {
-                                return Err(Invalid::element(#lit, index, Violation::Duplicate));
+                    if adjacent_scan_sound(&inner, &invariant, vocabulary) {
+                        // Canonicalization has sorted the elements, and the
+                        // keys are the most significant fields of that order,
+                        // so equal keys are neighbors: one pass, no set, no
+                        // per-probe string comparisons — the cost the benches
+                        // indicted.
+                        let first = &keys[0];
+                        let rest = &keys[1..];
+                        checks.extend(quote! {
+                            for index in 1..self.#id.len() {
+                                if self.#id[index].#first == self.#id[index - 1].#first
+                                    #(&& self.#id[index].#rest == self.#id[index - 1].#rest)*
+                                {
+                                    return Err(Invalid::element(#lit, index, Violation::Duplicate));
+                                }
                             }
-                        }
-                    });
+                        });
+                    } else {
+                        // The keys are not the leading fields of the canonical
+                        // order (or the field is not sorted at all), so equal
+                        // keys need not be adjacent and a set does the work.
+                        let key_expr = if keys.len() == 1 {
+                            let key = &keys[0];
+                            quote! { &element.#key }
+                        } else {
+                            quote! { (#(&element.#keys),*) }
+                        };
+                        checks.extend(quote! {
+                            let mut seen = BTreeSet::new();
+                            for (index, element) in self.#id.iter().enumerate() {
+                                if !seen.insert(#key_expr) {
+                                    return Err(Invalid::element(#lit, index, Violation::Duplicate));
+                                }
+                            }
+                        });
+                    }
                 }
                 let setter_doc = docs(&[format!("Sets `{name}`.")]);
                 let accessor_doc = docs(&[format!("The `{name}`.")]);
                 Plan {
+                    number,
+                    metadata,
+                    cmp: quote! { crate::canonical::cmp_slice(&self.#id, &other.#id) },
+                    digest: quote! {
+                        crate::canonical::tag(state, #tag);
+                        crate::canonical::count(state, self.#id.len());
+                        for element in &self.#id {
+                            crate::canonical::Digest::digest(element, state);
+                        }
+                    },
                     decl_ty: quote! { Vec<#ty> },
                     builder_ty: quote! { Vec<#ty> },
                     setter: quote! {
@@ -1189,62 +1496,87 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
                     checks,
                     ident: id,
                 }
+            } else if invariant.required {
+                let setter_doc = docs(&[format!("Sets `{name}`.")]);
+                let accessor_doc = docs(&[format!("The `{name}`.")]);
+                Plan {
+                    number,
+                    metadata,
+                    cmp: quote! {
+                        crate::canonical::Canonical::canonical_cmp(&self.#id, &other.#id)
+                    },
+                    digest: quote! {
+                        crate::canonical::tag(state, #tag);
+                        crate::canonical::Digest::digest(&self.#id, state);
+                    },
+                    decl_ty: quote! { #ty },
+                    builder_ty: quote! { Option<#ty> },
+                    setter: quote! {
+                        #setter_doc
+                        #[must_use]
+                        pub fn #id(mut self, #id: #ty) -> Self {
+                            self.#id = Some(#id);
+                            self
+                        }
+                    },
+                    build_init: quote! { self.#id #absent },
+                    from_wire: quote! {
+                        #ty::try_from(wire.#id #absent)
+                            .map_err(|error| error.at(#lit))?
+                    },
+                    into_wire: quote! { Some(value.#id.into()) },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> &#ty {
+                            &self.#id
+                        }
+                    },
+                    checks,
+                    ident: id,
+                }
             } else {
                 let setter_doc = docs(&[format!("Sets `{name}`.")]);
-                let setter = quote! {
-                    #setter_doc
-                    #[must_use]
-                    pub fn #id(mut self, #id: #ty) -> Self {
-                        self.#id = Some(#id);
-                        self
-                    }
-                };
-                if invariant.required {
-                    let accessor_doc = docs(&[format!("The `{name}`.")]);
-                    Plan {
-                        decl_ty: quote! { #ty },
-                        builder_ty: quote! { Option<#ty> },
-                        setter,
-                        build_init: quote! { self.#id #absent },
-                        from_wire: quote! {
-                            #ty::try_from(wire.#id #absent)
-                                .map_err(|error| error.at(#lit))?
-                        },
-                        into_wire: quote! { Some(value.#id.into()) },
-                        accessor: quote! {
-                            #accessor_doc
-                            #[must_use]
-                            pub fn #id(&self) -> &#ty {
-                                &self.#id
-                            }
-                        },
-                        checks,
-                        ident: id,
-                    }
-                } else {
-                    let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
-                    Plan {
-                        decl_ty: quote! { Option<#ty> },
-                        builder_ty: quote! { Option<#ty> },
-                        setter,
-                        build_init: quote! { self.#id },
-                        from_wire: quote! {
-                            wire.#id
-                                .map(#ty::try_from)
-                                .transpose()
-                                .map_err(|error| error.at(#lit))?
-                        },
-                        into_wire: quote! { value.#id.map(Into::into) },
-                        accessor: quote! {
-                            #accessor_doc
-                            #[must_use]
-                            pub fn #id(&self) -> Option<&#ty> {
-                                self.#id.as_ref()
-                            }
-                        },
-                        checks,
-                        ident: id,
-                    }
+                let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
+                Plan {
+                    number,
+                    metadata,
+                    cmp: quote! {
+                        crate::canonical::cmp_option(self.#id.as_ref(), other.#id.as_ref())
+                    },
+                    digest: quote! {
+                        if let Some(element) = &self.#id {
+                            crate::canonical::tag(state, #tag);
+                            crate::canonical::Digest::digest(element, state);
+                        }
+                    },
+                    decl_ty: quote! { Option<#ty> },
+                    builder_ty: quote! { Option<#ty> },
+                    setter: quote! {
+                        #setter_doc
+                        #[must_use]
+                        pub fn #id(mut self, #id: #ty) -> Self {
+                            self.#id = Some(#id);
+                            self
+                        }
+                    },
+                    build_init: quote! { self.#id },
+                    from_wire: quote! {
+                        wire.#id
+                            .map(#ty::try_from)
+                            .transpose()
+                            .map_err(|error| error.at(#lit))?
+                    },
+                    into_wire: quote! { value.#id.map(Into::into) },
+                    accessor: quote! {
+                        #accessor_doc
+                        #[must_use]
+                        pub fn #id(&self) -> Option<&#ty> {
+                            self.#id.as_ref()
+                        }
+                    },
+                    checks,
+                    ident: id,
                 }
             }
         }
@@ -1259,16 +1591,55 @@ fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Result<Plan, 
     Ok(plan)
 }
 
+/// Whether a sorted adjacent scan can replace the uniqueness set: the field
+/// must be `unordered` — canonicalization only sorts those — and its keys
+/// must be exactly the leading hash-visible field numbers of the element, so
+/// the canonical order groups equal keys together.
+fn adjacent_scan_sound(
+    element: &MessageDescriptor,
+    invariant: &FieldInvariant,
+    vocabulary: &Vocabulary,
+) -> bool {
+    if !invariant.unordered {
+        return false;
+    }
+    let mut visible: Vec<u32> = element
+        .fields()
+        .filter(|member| {
+            !vocabulary
+                .field_invariant(member)
+                .is_some_and(|member| member.collection_metadata)
+        })
+        .map(|member| member.number())
+        .collect();
+    visible.sort_unstable();
+
+    let mut keys: Vec<u32> = invariant
+        .unique_by
+        .iter()
+        .filter_map(|key| element.get_field_by_name(key))
+        .map(|member| member.number())
+        .collect();
+    keys.sort_unstable();
+
+    visible.len() >= keys.len() && visible[..keys.len()] == keys[..]
+}
+
 /// The plan for a `Copy` scalar — `bool`, `u64` — where required and optional
 /// differ only in the declared type and the absence check.
 fn copy_plan(
     invariant: &FieldInvariant,
+    field: &FieldDescriptor,
     id: Ident,
     lit: &str,
     ty: &TokenStream,
     absent: &TokenStream,
+    writer: &str,
 ) -> Plan {
     let name = lit;
+    let number = field.number();
+    let tag = Literal::u32_unsuffixed(number);
+    let write = ident(writer);
     let setter_doc = docs(&[format!("Sets `{name}`.")]);
     let setter = quote! {
         #setter_doc
@@ -1281,6 +1652,13 @@ fn copy_plan(
     if invariant.required {
         let accessor_doc = docs(&[format!("The `{name}`.")]);
         Plan {
+            number,
+            metadata: invariant.collection_metadata,
+            cmp: quote! { self.#id.cmp(&other.#id) },
+            digest: quote! {
+                crate::canonical::tag(state, #tag);
+                crate::canonical::#write(state, self.#id);
+            },
             decl_ty: quote! { #ty },
             builder_ty: quote! { Option<#ty> },
             setter,
@@ -1300,6 +1678,17 @@ fn copy_plan(
     } else {
         let accessor_doc = docs(&[format!("The `{name}`, when present.")]);
         Plan {
+            number,
+            metadata: invariant.collection_metadata,
+            cmp: quote! {
+                crate::canonical::cmp_option(self.#id.as_ref(), other.#id.as_ref())
+            },
+            digest: quote! {
+                if let Some(value) = self.#id {
+                    crate::canonical::tag(state, #tag);
+                    crate::canonical::#write(state, value);
+                }
+            },
             decl_ty: quote! { Option<#ty> },
             builder_ty: quote! { Option<#ty> },
             setter,

@@ -529,7 +529,7 @@ rules": `ValueRange` needs at least one bound with min not exceeding max,
 `failure_class` exactly when it failed, `Timestamp.nanos` is bounded below one
 second, every `SignalKey` a sample references must resolve in the same batch,
 and a complete `ResourceGraph` must be reachable from its scope subject.
-Validators will enforce them; the vocabulary cannot state them, because each
+Validators enforce them; the vocabulary cannot state them, because each
 relates one field to another.
 
 Two absolute bounds are also missing: a minimum item count, and a value range

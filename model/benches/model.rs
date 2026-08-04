@@ -148,6 +148,14 @@ mod unix {
         ))
     }
 
+    /// The graph from [`graph_batch`], bare, for hashing.
+    fn graph_payload() -> ResourceGraph {
+        match graph_batch().payload() {
+            Payload::Resources(graph) => graph.clone(),
+            _ => unreachable!("graph_batch builds a resources payload"),
+        }
+    }
+
     /// A chassis subtree: one root, `RESOURCES - 1` children hanging off it,
     /// each resource carrying a small property map.
     fn graph_batch() -> ObservationBatch {
@@ -302,6 +310,30 @@ mod unix {
         black_box(Value::map(entries).expect("a valid map"))
     }
 
+    // --- hashing: the content digest over the canonical representation ---
+
+    // Discards bytes: the stream's traversal is what is measured, not any
+    // hash function.
+    struct Discard;
+
+    impl std::hash::Hasher for Discard {
+        fn write(&mut self, bytes: &[u8]) {
+            black_box(bytes);
+        }
+
+        fn finish(&self) -> u64 {
+            0
+        }
+    }
+
+    #[library_benchmark]
+    #[bench::graph(graph_payload())]
+    pub fn content_hash(graph: ResourceGraph) -> u64 {
+        let mut sink = Discard;
+        graph.content_hash(&mut sink);
+        std::hash::Hasher::finish(&black_box(sink))
+    }
+
     #[library_benchmark]
     #[bench::depth_16()]
     pub fn build_value_deep() -> Value {
@@ -326,6 +358,8 @@ use unix::build_value_deep;
 use unix::build_value_map;
 #[cfg(unix)]
 use unix::clone_batch;
+#[cfg(unix)]
+use unix::content_hash;
 #[cfg(unix)]
 use unix::decode;
 #[cfg(unix)]
@@ -352,7 +386,18 @@ gungraun::library_benchmark_group!(
 );
 
 #[cfg(unix)]
-gungraun::main!(library_benchmark_groups = boundary, construct, values);
+gungraun::library_benchmark_group!(
+    name = hashing;
+    benchmarks = content_hash
+);
+
+#[cfg(unix)]
+gungraun::main!(
+    library_benchmark_groups = boundary,
+    construct,
+    values,
+    hashing
+);
 
 #[cfg(not(unix))]
 fn main() {}
