@@ -175,9 +175,13 @@ fn public_ord_on_identities_matches_the_canonical_order() {
 
     // `rules::readings` binary-searches canonically sorted descriptors using
     // the public `Ord`, which is sound only while the two orders agree. They
-    // agree by construction: the generator emits `Ord` for ordered types as a
-    // delegation to `canonical_cmp` rather than a derive, so this is a
-    // regression pin on that delegation, not a coincidence held by a test.
+    // agree today because Subject and SignalKey have no metadata fields and
+    // declare their fields in number order — and this test is the guarantee,
+    // deliberately: an `Ord` written in terms of the canonical comparators
+    // was tried and cost a measured 2.5% of graph decoding on the pinned CI
+    // toolchain by perturbing inlining, so the generator derives instead. If
+    // this fails, a schema change broke the agreement: fix the schema's
+    // field order, or switch the rules to `canonical_cmp` knowingly.
     // Scoped and unscoped subjects both, because the agreement must cover
     // every field: `scope` is the one Vec in the pair, and `facet` the one
     // Option, and either diverging between the two orders would silently

@@ -3511,20 +3511,10 @@ impl From<SignalDescriptor> for wire::SignalDescriptor {
 /// Holds its invariants for as long as it exists: built through
 /// [`SignalKeyBuilder`] or decoded from the wire, both of which run the same
 /// checks, including this message's cross-field rules.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignalKey {
     subject: Subject,
     facet: Option<String>,
-}
-impl PartialOrd for SignalKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for SignalKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        crate::canonical::Canonical::canonical_cmp(self, other)
-    }
 }
 impl crate::canonical::Canonical for SignalKey {
     fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -3982,21 +3972,11 @@ impl From<States> for wire::States {
 /// Holds its invariants for as long as it exists: built through
 /// [`SubjectBuilder`] or decoded from the wire, both of which run the same
 /// checks, including this message's cross-field rules.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Subject {
     kind: String,
     scope: Vec<String>,
     id: String,
-}
-impl PartialOrd for Subject {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for Subject {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        crate::canonical::Canonical::canonical_cmp(self, other)
-    }
 }
 impl crate::canonical::Canonical for Subject {
     fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {

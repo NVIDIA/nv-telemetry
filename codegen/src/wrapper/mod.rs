@@ -467,33 +467,20 @@ fn message_items(
         plans.push(plan);
     }
 
-    // Ordered types carry a *manual* `Ord` that delegates to the canonical
-    // order. A derived one would compare fields in declaration order, and its
-    // agreement with `canonical_cmp` — which the rules module's binary
-    // searches are sound by — would be a coincidence of today's schema, held
-    // only by a test. Delegation makes it a property of construction.
-    // Consistency with the derived `Eq` holds because `canonical_cmp` visits
-    // every field: it returns `Equal` exactly when they all do.
+    // Ordered types *derive* `Ord`, and its agreement with `canonical_cmp` —
+    // which the rules module's binary searches are sound by — is pinned by
+    // the model's public-order test rather than by construction. The
+    // by-construction alternative was tried and measured: any `Ord` written
+    // in terms of the canonical comparators, delegated or inlined, cost 2.5%
+    // of graph decoding on the pinned CI toolchain by perturbing inlining
+    // across the crate. If the pin ever fires, a schema reordered fields
+    // against their numbers; fix the schema, or switch the rules to
+    // `canonical_cmp` and accept the cost knowingly.
     let derive = if ordered {
-        quote! { #[derive(Clone, Debug, PartialEq, Eq, Hash)] }
+        quote! { #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] }
     } else {
         quote! { #[derive(Clone, Debug, PartialEq, Eq)] }
     };
-    let public_order = ordered.then(|| {
-        quote! {
-            impl PartialOrd for #name {
-                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                    Some(self.cmp(other))
-                }
-            }
-
-            impl Ord for #name {
-                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                    crate::canonical::Canonical::canonical_cmp(self, other)
-                }
-            }
-        }
-    });
 
     let struct_doc = docs(&[
         format!("Validated form of `{full}`; the schema carries the field semantics."),
@@ -677,7 +664,6 @@ fn message_items(
             #(#idents: #decl_tys,)*
         }
 
-        #public_order
 
         #canonical_impls
 
