@@ -60,7 +60,7 @@ const VOCABULARY_PACKAGE: &str = "nv.telemetry.options.v1";
 /// `nv.telemetry.options.v1.experimental` would otherwise be silently
 /// unchecked, which is the hole the caller exists to close.
 fn is_vocabulary_package(package: &str) -> bool {
-    package == VOCABULARY_PACKAGE || package.starts_with(&format!("{VOCABULARY_PACKAGE}."))
+    crate::package_within(package, VOCABULARY_PACKAGE)
 }
 
 /// Every option this compiler reads. An extension declared in the vocabulary

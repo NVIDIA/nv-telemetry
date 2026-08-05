@@ -1633,6 +1633,24 @@ impl Payload {
             Payload::Resources(_) => 14,
         }
     }
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        match self {
+            Payload::Readings(inner) => crate::encode::nested(10, inner, buf),
+            Payload::Logs(inner) => crate::encode::nested(11, inner, buf),
+            Payload::States(inner) => crate::encode::nested(12, inner, buf),
+            Payload::Inventory(inner) => crate::encode::nested(13, inner, buf),
+            Payload::Resources(inner) => crate::encode::nested(14, inner, buf),
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        match self {
+            Payload::Readings(inner) => crate::encode::nested_len(10, inner),
+            Payload::Logs(inner) => crate::encode::nested_len(11, inner),
+            Payload::States(inner) => crate::encode::nested_len(12, inner),
+            Payload::Inventory(inner) => crate::encode::nested_len(13, inner),
+            Payload::Resources(inner) => crate::encode::nested_len(14, inner),
+        }
+    }
 }
 impl crate::canonical::Canonical for Payload {
     fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -1679,26 +1697,6 @@ impl crate::canonical::Digest for Payload {
                 crate::canonical::tag(state, 14);
                 crate::canonical::Digest::digest(inner, state);
             }
-        }
-    }
-}
-impl Payload {
-    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
-        match self {
-            Payload::Readings(inner) => crate::encode::nested(10, inner, buf),
-            Payload::Logs(inner) => crate::encode::nested(11, inner, buf),
-            Payload::States(inner) => crate::encode::nested(12, inner, buf),
-            Payload::Inventory(inner) => crate::encode::nested(13, inner, buf),
-            Payload::Resources(inner) => crate::encode::nested(14, inner, buf),
-        }
-    }
-    fn emitted_len(&self) -> usize {
-        match self {
-            Payload::Readings(inner) => crate::encode::nested_len(10, inner),
-            Payload::Logs(inner) => crate::encode::nested_len(11, inner),
-            Payload::States(inner) => crate::encode::nested_len(12, inner),
-            Payload::Inventory(inner) => crate::encode::nested_len(13, inner),
-            Payload::Resources(inner) => crate::encode::nested_len(14, inner),
         }
     }
 }

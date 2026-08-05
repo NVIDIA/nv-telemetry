@@ -19,7 +19,6 @@ use std::path::PathBuf;
 
 use prost_reflect::DescriptorPool;
 
-pub mod hash;
 pub mod lint;
 pub mod lock;
 pub mod options;
@@ -86,7 +85,15 @@ pub mod wire;
 /// `nv.telemetry.v1.gpu` is covered rather than silently unchecked.
 #[must_use]
 pub fn is_contract_package(package: &str) -> bool {
-    package == CONTRACT_PACKAGE || package.starts_with(&format!("{CONTRACT_PACKAGE}."))
+    package_within(package, CONTRACT_PACKAGE)
+}
+
+/// Whether `package` is `root` itself or a sub-package of it — and not a
+/// sibling that merely shares the spelling, which is what the dot demands.
+pub(crate) fn package_within(package: &str, root: &str) -> bool {
+    package
+        .strip_prefix(root)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
 }
 
 /// What the compiler was asked to do.

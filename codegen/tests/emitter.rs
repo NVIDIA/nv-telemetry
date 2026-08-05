@@ -126,6 +126,39 @@ message Holder {{
 }
 
 #[test]
+fn an_acronym_name_lands_on_prosts_module() {
+    // prost-build names a nested type's module with heck's `to_snake_case`,
+    // so the emitter must run the same algorithm. `GPUState` is `gpu_state`
+    // to heck and `g_p_u_state` to a letter-by-letter split, and the
+    // divergence would be a checked-in file referencing a module prost never
+    // generated — a build failure blamed on the emitter rather than the name.
+    let pool = pool_from(
+        "acronym",
+        &format!(
+            "{PREFIX}
+message Inner {{}}
+message GPUState {{
+  oneof kind {{
+    Inner a = 1;
+  }}
+}}
+"
+        ),
+    );
+    let vocabulary = Vocabulary::resolve(&pool).expect("vocabulary resolves");
+
+    let rendered = wrapper::model(&pool, &vocabulary).expect("an acronym name generates");
+    assert!(
+        rendered.contains("wire::gpu_state::"),
+        "the oneof's wire path does not use prost-build's module name"
+    );
+    assert!(
+        !rendered.contains("g_p_u_state"),
+        "the letter-by-letter split came back"
+    );
+}
+
+#[test]
 fn a_message_whose_rules_name_is_a_keyword_is_refused() {
     // `Match` is a legal, styled message name; its rules-registry function
     // would be `fn match`, which is not a function anyone can write.

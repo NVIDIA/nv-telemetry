@@ -184,8 +184,11 @@ jobs:
             done <<< "$PAIRS"
             exit 0
           fi
+          # Regression limits are deliberately not passed here: they live in
+          # the bench sources (`config = ...` on `main!` and per benchmark),
+          # where a micro benchmark can carry a looser gate than the bulk
+          # ones. A command-line limit would override all of them.
           while read -r pkg bench; do
             cargo bench -p "$pkg" --all-features --bench "$bench" -- \
-              --baseline=base \
-              --callgrind-limits='ir=2%'
+              --baseline=base
           done <<< "$PAIRS"

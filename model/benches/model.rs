@@ -24,16 +24,27 @@
 //! million-element run, and Callgrind makes big inputs slow.
 
 // The `library_benchmark` macro expands to code the workspace's
-// `unused_qualifications` lint misreads as our own spans; and a benchmark
+// `unused_qualifications` lint misreads as our own spans — and, when the
+// attribute carries a `config`, it additionally wraps the function and emits
+// an `Option`-returning `__get_config`, tripping `unreachable_pub` and
+// `clippy::unnecessary_wraps` on spans this file cannot edit. A benchmark
 // takes its setup output by value because that is how gungraun hands it
 // over — borrowing instead would measure a call shape no consumer uses.
-#![allow(unused_qualifications, clippy::needless_pass_by_value)]
+#![allow(
+    unused_qualifications,
+    unreachable_pub,
+    clippy::needless_pass_by_value,
+    clippy::unnecessary_wraps
+)]
 
 #[cfg(unix)]
 mod unix {
     use std::hint::black_box;
 
     use gungraun::library_benchmark;
+    use gungraun::Callgrind;
+    use gungraun::EventKind;
+    use gungraun::LibraryBenchmarkConfig;
     use nv_telemetry_model::AcquisitionStatus;
     use nv_telemetry_model::Completeness;
     use nv_telemetry_model::Coverage;
@@ -57,6 +68,14 @@ mod unix {
 
     /// Bulk size for readings: a large-but-plausible per-endpoint batch.
     const BULK: usize = 1024;
+
+    /// The regression gate for benchmarks whose counts sit under a few tens
+    /// of thousands of instructions. At that size a single inlining decision
+    /// moved by unrelated code is several percent by itself — a +100 swing on
+    /// a 611-instruction build once failed CI with the source of that path
+    /// line-identical — while a real regression arrives in tens of percent.
+    /// Everything bulk-sized holds the strict default set at `main!`.
+    const MICRO_IR_LIMIT: f64 = 15.0;
 
     /// Graph size: resources in a chassis subtree walk.
     const RESOURCES: usize = 128;
@@ -232,14 +251,23 @@ mod unix {
     // --- boundary: the process edge ---
 
     #[library_benchmark]
-    #[bench::readings_small(reading_batch(1).encode_to_vec())]
     #[bench::readings_bulk(reading_batch(BULK).encode_to_vec())]
     #[bench::graph(graph_batch().encode_to_vec())]
     pub fn decode(bytes: Vec<u8>) -> ObservationBatch {
         black_box(ObservationBatch::decode(&bytes).expect("a valid batch"))
     }
 
-    #[library_benchmark]
+    // Its own benchmark rather than a case of `decode`, because the gate is
+    // per benchmark and a one-reading batch needs the micro one.
+    #[library_benchmark(config = LibraryBenchmarkConfig::default()
+        .tool(Callgrind::default().soft_limits([(EventKind::Ir, MICRO_IR_LIMIT)])))]
+    #[bench::readings_small(reading_batch(1).encode_to_vec())]
+    pub fn decode_small(bytes: Vec<u8>) -> ObservationBatch {
+        black_box(ObservationBatch::decode(&bytes).expect("a valid batch"))
+    }
+
+    #[library_benchmark(config = LibraryBenchmarkConfig::default()
+        .tool(Callgrind::default().soft_limits([(EventKind::Ir, MICRO_IR_LIMIT)])))]
     #[bench::status(status_bytes())]
     pub fn decode_status(bytes: Vec<u8>) -> AcquisitionStatus {
         black_box(AcquisitionStatus::decode(&bytes).expect("a valid status"))
@@ -264,7 +292,8 @@ mod unix {
 
     // --- construct: what a source pays per poll ---
 
-    #[library_benchmark]
+    #[library_benchmark(config = LibraryBenchmarkConfig::default()
+        .tool(Callgrind::default().soft_limits([(EventKind::Ir, MICRO_IR_LIMIT)])))]
     #[bench::one()]
     pub fn build_reading() -> Reading {
         black_box(
@@ -335,7 +364,8 @@ mod unix {
         std::hash::Hasher::finish(&black_box(sink))
     }
 
-    #[library_benchmark]
+    #[library_benchmark(config = LibraryBenchmarkConfig::default()
+        .tool(Callgrind::default().soft_limits([(EventKind::Ir, MICRO_IR_LIMIT)])))]
     #[bench::depth_16()]
     pub fn build_value_deep() -> Value {
         // Fifteen wraps over a scalar reach the schema's depth bound of 16;
@@ -364,6 +394,8 @@ use unix::content_hash;
 #[cfg(unix)]
 use unix::decode;
 #[cfg(unix)]
+use unix::decode_small;
+#[cfg(unix)]
 use unix::decode_status;
 #[cfg(unix)]
 use unix::encode;
@@ -371,7 +403,7 @@ use unix::encode;
 #[cfg(unix)]
 gungraun::library_benchmark_group!(
     name = boundary;
-    benchmarks = decode, decode_status, encode, clone_batch
+    benchmarks = decode, decode_small, decode_status, encode, clone_batch
 );
 
 #[cfg(unix)]
@@ -392,8 +424,13 @@ gungraun::library_benchmark_group!(
     benchmarks = content_hash
 );
 
+// The regression gate lives here rather than on the CI command line, so the
+// thresholds sit next to the benchmarks they judge and a benchmark can carry
+// its own — a command-line limit would override every one of them.
 #[cfg(unix)]
 gungraun::main!(
+    config = gungraun::LibraryBenchmarkConfig::default()
+        .tool(gungraun::Callgrind::default().soft_limits([(gungraun::EventKind::Ir, 2.0)]));
     library_benchmark_groups = boundary,
     construct,
     values,

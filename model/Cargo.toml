@@ -17,6 +17,7 @@ nv-telemetry-schema.workspace = true
 prost-reflect.workspace = true
 
 gungraun.workspace = true
+proptest.workspace = true
 
 [[bench]]
 name = "model"
