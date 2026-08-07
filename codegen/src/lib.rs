@@ -126,6 +126,12 @@ pub enum Error {
     Vocabulary(options::VocabularyError),
     /// The schema violates a rule the compiler enforces.
     Schema(Vec<lint::Violation>),
+    /// A projection manifest could not be loaded.
+    ManifestLoad(projection::ManifestError),
+    /// The source schema index could not be built.
+    Index(projection::IndexError),
+    /// A projection manifest declares what the compiler cannot honor.
+    Manifests(Vec<projection::Violation>),
     /// Wire types could not be rendered from the descriptors.
     Backend(String),
     /// The workspace root could not be located from the working directory.
@@ -156,6 +162,15 @@ impl fmt::Display for Error {
                 Ok(())
             }
             Self::Backend(detail) => write!(f, "{detail}"),
+            Self::ManifestLoad(error) => write!(f, "{error}"),
+            Self::Index(error) => write!(f, "{error}"),
+            Self::Manifests(violations) => {
+                writeln!(f, "manifests rejected by {} rule(s):", violations.len())?;
+                for violation in violations {
+                    writeln!(f, "  {violation}")?;
+                }
+                Ok(())
+            }
             Self::Root(from) => write!(
                 f,
                 "no workspace root above `{}`: expected an ancestor containing `{ROOT_MARKER}`. \
@@ -186,7 +201,9 @@ impl std::error::Error for Error {
             Self::Pool(error) => Some(error),
             Self::Vocabulary(error) => Some(error),
             Self::Io { error, .. } => Some(error),
-            Self::Schema(_) | Self::Backend(_) | Self::Root(_) => None,
+            Self::ManifestLoad(error) => Some(error),
+            Self::Index(error) => Some(error),
+            Self::Schema(_) | Self::Backend(_) | Self::Root(_) | Self::Manifests(_) => None,
         }
     }
 }
@@ -261,6 +278,17 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
 
     let here = workspace_root()?;
     let here = here.as_path();
+
+    // The CSDL bundle is parsed only when a manifest exists to check.
+    let manifests = projection::load(here, &pool).map_err(Error::ManifestLoad)?;
+    if !manifests.is_empty() {
+        let bundle = projection::Bundle::dmtf().map_err(Error::Index)?;
+        let index = bundle.index().map_err(Error::Index)?;
+        let violations = projection::check(&manifests, &index, &pool, &vocabulary);
+        if !violations.is_empty() {
+            return Err(Error::Manifests(violations));
+        }
+    }
     let artifacts = [
         (
             here.join(LOCK_PATH),
