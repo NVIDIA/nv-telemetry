@@ -1,1 +1,4 @@
 /target/
+
+# Local dependency overrides (e.g. sibling nv-redfish checkout).
+/.cargo/

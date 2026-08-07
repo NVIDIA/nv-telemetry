@@ -81,6 +81,11 @@ message Manifest {
   string index = 3;
 
   repeated Projection projections = 4;
+
+  // The subject every projection derives unless it declares its own: one
+  // identity derivation, so restatements cannot drift apart and silently
+  // split a resource into two subjects.
+  Subject subject = 5;
 }
 
 message Projection {
@@ -105,6 +110,67 @@ message Projection {
   // Source schema versions this projection is checked against. Empty means
   // every version the index knows.
   repeated VersionRange versions = 7;
+
+  // Target fields set to a literal rather than routed from the source,
+  // such as a state observation's `name`.
+  repeated ConstantField constants = 8;
+
+  // Target fields assembled as maps from several source paths. Declared
+  // apart from `fields` because assembly has its own emission rule: see
+  // MapAssembly.
+  repeated MapAssembly map_assemblies = 9;
+
+  Expansion expansion = 10;
+}
+
+// Expands a projection once per member of a fixed set, such as the six
+// Redfish threshold members. The declarations that vary by member live
+// here; the projection's own declarations are shared by every instance.
+// Within the contained source paths and constant values, `{member}`
+// substitutes the member's name and `{member-kebab}` its kebab-case form —
+// placeholders are meaningless outside an expansion.
+message Expansion {
+  repeated string members = 1;
+
+  repeated FieldMapping fields = 2;
+
+  repeated ConstantField constants = 3;
+
+  repeated MapAssembly map_assemblies = 4;
+}
+
+// One target field set to a literal.
+message ConstantField {
+  // Dotted path into the target message, as FieldMapping.target_field.
+  string target_field = 1;
+
+  string value = 2;
+}
+
+// One map-valued target field built from a fixed set of source paths. The
+// assembly emits only when at least one entry is usable; empty means the
+// projection produces no output at all, so an assembly is its own anchor.
+message MapAssembly {
+  // Dotted path of the map-valued target field.
+  string target_field = 1;
+
+  repeated MapEntry entries = 2;
+}
+
+// One entry of an assembled map.
+message MapEntry {
+  // The entry's key in the contract's vocabulary.
+  string key = 1;
+
+  // Source path the entry's value comes from. An absent source omits the
+  // entry silently; an unusable one is reported and the entry is omitted.
+  string source_path = 2;
+
+  // What an explicitly null source value means for this entry.
+  NullPolicy null_policy = 3;
+
+  // Rewrites for the entry's value, as FieldMapping.value_map.
+  repeated ValueMapping value_map = 4;
 }
 
 // A version range for one source type, half-open at the upper end.
@@ -168,6 +234,12 @@ message FieldMapping {
   // A missing required field prevents the projection from producing output
   // and is reported as a projection issue; a missing optional field is not.
   bool required = 3;
+
+  // The field the target message exists to carry: absent means no output
+  // and *no issue* — the absence of the source fact is the absence of the
+  // observation. Distinct from `required`, which reports what should have
+  // been there. A sensor's Reading is the sample's anchor.
+  bool anchor = 10;
 
   // Unit to record when the source does not carry one, in UCUM.
   string unit = 4;

@@ -1,0 +1,170 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The Sensor mapping (docs/DATA-MODEL.md worked example 1): one document,
+# two observation domains. An nv.telemetry.mapping.v1.Manifest in protobuf
+# text format, checked against the DMTF schema index and the contract at
+# `make codegen` time; emission generates src/generated/ from it.
+
+source: "redfish"
+backend: BACKEND_SCHEMA_INDEX
+index: "nv-redfish-schema/dmtf"
+
+# The chassis segment of the requested location scopes the subject, `Id`
+# names it; the location itself is provenance, never identity.
+subject {
+  kind: "sensor"
+  scope {
+    location_template: "/redfish/v1/Chassis/{chassis}/Sensors/{id}"
+    capture: "chassis"
+  }
+  id_path: "Id"
+}
+
+projections {
+  name: "sensor-descriptor"
+  source_type: "Sensor"
+  target_type: "nv.telemetry.v1.SignalDescriptor"
+  # Unit-suffixed variants collapse: kind states what is measured, unit
+  # carries the scale.
+  fields {
+    source_path: "ReadingType"
+    target_field: "kind"
+    null_policy: NULL_POLICY_ABSENT
+    value_map { from: "Temperature" to: "temperature" }
+    value_map { from: "Humidity" to: "humidity" }
+    value_map { from: "Power" to: "power" }
+    value_map { from: "EnergykWh" to: "energy" }
+    value_map { from: "EnergyJoules" to: "energy" }
+    value_map { from: "EnergyWh" to: "energy" }
+    value_map { from: "ChargeAh" to: "charge" }
+    value_map { from: "Voltage" to: "voltage" }
+    value_map { from: "Current" to: "current" }
+    value_map { from: "Frequency" to: "frequency" }
+    value_map { from: "Pressure" to: "pressure" }
+    value_map { from: "PressurekPa" to: "pressure" }
+    value_map { from: "PressurePa" to: "pressure" }
+    value_map { from: "LiquidLevel" to: "liquid-level" }
+    value_map { from: "Rotational" to: "rotational" }
+    value_map { from: "AirFlow" to: "air-flow" }
+    value_map { from: "AirFlowCMM" to: "air-flow" }
+    value_map { from: "LiquidFlow" to: "liquid-flow" }
+    value_map { from: "LiquidFlowLPM" to: "liquid-flow" }
+    value_map { from: "Barometric" to: "barometric" }
+    value_map { from: "Altitude" to: "altitude" }
+    value_map { from: "Percent" to: "percent" }
+    value_map { from: "AbsoluteHumidity" to: "absolute-humidity" }
+    value_map { from: "Heat" to: "heat" }
+    value_map { from: "LinearPosition" to: "linear-position" }
+    value_map { from: "LinearVelocity" to: "linear-velocity" }
+    value_map { from: "LinearAcceleration" to: "linear-acceleration" }
+    value_map { from: "RotationalPosition" to: "rotational-position" }
+    value_map { from: "RotationalVelocity" to: "rotational-velocity" }
+    value_map { from: "RotationalAcceleration" to: "rotational-acceleration" }
+    value_map { from: "Valve" to: "valve" }
+  }
+  # UCUM per DMTF; verbatim passthrough.
+  fields {
+    source_path: "ReadingUnits"
+    target_field: "unit"
+    null_policy: NULL_POLICY_ABSENT
+  }
+  fields {
+    source_path: "ReadingRangeMin"
+    target_field: "range.min.double_value"
+    null_policy: NULL_POLICY_ABSENT
+  }
+  fields {
+    source_path: "ReadingRangeMax"
+    target_field: "range.max.double_value"
+    null_policy: NULL_POLICY_ABSENT
+  }
+}
+
+projections {
+  name: "sensor-sample"
+  source_type: "Sensor"
+  target_type: "nv.telemetry.v1.Reading"
+  # Absent or null Reading is a device that stayed quiet: no sample, no
+  # issue.
+  fields {
+    source_path: "Reading"
+    target_field: "value.double_value"
+    anchor: true
+    null_policy: NULL_POLICY_ABSENT
+  }
+}
+
+projections {
+  name: "sensor-state"
+  source_type: "Sensor"
+  target_type: "nv.telemetry.v1.StateObservation"
+  constants { target_field: "name" value: "state" }
+  # DMTF spelling verbatim; the wire enumeration is open, so an unlisted
+  # value is reported rather than coerced.
+  fields {
+    source_path: "Status.State"
+    target_field: "value.string_value"
+    anchor: true
+    null_policy: NULL_POLICY_ABSENT
+    known_values: "Enabled"
+    known_values: "Disabled"
+    known_values: "StandbyOffline"
+    known_values: "StandbySpare"
+    known_values: "InTest"
+    known_values: "Starting"
+    known_values: "Absent"
+    known_values: "UnavailableOffline"
+    known_values: "Deferring"
+    known_values: "Quiesced"
+    known_values: "Updating"
+    known_values: "Qualified"
+    known_values: "Degraded"
+  }
+}
+
+projections {
+  name: "sensor-health"
+  source_type: "Sensor"
+  target_type: "nv.telemetry.v1.StateObservation"
+  constants { target_field: "name" value: "health" }
+  fields {
+    source_path: "Status.Health"
+    target_field: "value.string_value"
+    anchor: true
+    null_policy: NULL_POLICY_ABSENT
+    known_values: "OK"
+    known_values: "Warning"
+    known_values: "Critical"
+  }
+}
+
+projections {
+  name: "sensor-threshold"
+  source_type: "Sensor"
+  target_type: "nv.telemetry.v1.StateObservation"
+  # Thresholds are writable device configuration — state, not descriptor
+  # metadata. One form, expanded per member.
+  expansion {
+    members: "UpperCaution"
+    members: "UpperCritical"
+    members: "UpperFatal"
+    members: "LowerCaution"
+    members: "LowerCritical"
+    members: "LowerFatal"
+    constants { target_field: "name" value: "threshold.{member-kebab}" }
+    map_assemblies {
+      target_field: "value"
+      entries {
+        key: "activation"
+        source_path: "Thresholds.{member}.Activation"
+        null_policy: NULL_POLICY_ABSENT
+      }
+      entries {
+        key: "reading"
+        source_path: "Thresholds.{member}.Reading"
+        null_policy: NULL_POLICY_ABSENT
+      }
+    }
+  }
+}
