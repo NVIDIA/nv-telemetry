@@ -537,9 +537,11 @@ for numbers. The first is why an empty payload with `COMPLETE` is a valid batch
 asserting total absence — though that is partly semantic, since a genuinely
 empty complete collection is a real observation.
 
-**No projection-issue type.** The missing-versus-invalid distinction the design
-rests on has no wire representation yet, so "the device answered NaN" and "the
-device did not answer" reach a cross-process consumer identically.
+**No projection-issue wire type.** The missing-versus-invalid distinction the
+design rests on now has an in-process type — `ProjectionIssue` in
+`nv-telemetry-source`, attached to acquisition results — but no wire
+representation yet, so "the device answered NaN" and "the device did not
+answer" still reach a *cross-process* consumer identically.
 
 **gNMI JSON payloads.** `json_ietf_val` is the dominant production encoding and
 cannot currently be carried: `Value.bytes_value` caps at 4096 bytes and a

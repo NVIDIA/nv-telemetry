@@ -12,12 +12,14 @@
 //! the compiler cannot honor is an error rather than a warning; it never emits
 //! silently degraded code.
 
+use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 
 use prost_reflect::DescriptorPool;
+
+mod artifact;
 
 pub mod lint;
 pub mod lock;
@@ -115,6 +117,11 @@ pub struct Outcome {
     pub written: Vec<PathBuf>,
     /// Files whose content on disk differs from what would be generated.
     pub stale: Vec<PathBuf>,
+    /// Positively identified generated files removed as orphans, in
+    /// [`Mode::Generate`].
+    pub removed: Vec<PathBuf>,
+    /// Unexpected files preserved under a generator-owned directory.
+    pub unrecognized: Vec<PathBuf>,
 }
 
 /// Why compilation could not proceed.
@@ -134,11 +141,14 @@ pub enum Error {
     Manifests(Vec<projection::Violation>),
     /// Wire types could not be rendered from the descriptors.
     Backend(String),
+    /// Two compiler outputs resolved to the same artifact path.
+    DuplicateArtifact(PathBuf),
     /// The workspace root could not be located from the working directory.
     Root(PathBuf),
-    /// A generated file could not be read or written. Carries whatever was
-    /// already written, because a failure partway through leaves artifacts
-    /// that disagree with each other and the operator has to know which.
+    /// A generated file could not be read, written, or removed. Carries
+    /// whatever was already written, because a failure partway through leaves
+    /// artifacts that disagree with each other and the operator has to know
+    /// which.
     Io {
         /// The path that failed.
         path: PathBuf,
@@ -162,6 +172,9 @@ impl fmt::Display for Error {
                 Ok(())
             }
             Self::Backend(detail) => write!(f, "{detail}"),
+            Self::DuplicateArtifact(path) => {
+                write!(f, "two compiler outputs resolve to `{}`", path.display())
+            }
             Self::ManifestLoad(error) => write!(f, "{error}"),
             Self::Index(error) => write!(f, "{error}"),
             Self::Manifests(violations) => {
@@ -203,7 +216,11 @@ impl std::error::Error for Error {
             Self::Io { error, .. } => Some(error),
             Self::ManifestLoad(error) => Some(error),
             Self::Index(error) => Some(error),
-            Self::Schema(_) | Self::Backend(_) | Self::Root(_) | Self::Manifests(_) => None,
+            Self::Schema(_)
+            | Self::Backend(_)
+            | Self::DuplicateArtifact(_)
+            | Self::Root(_)
+            | Self::Manifests(_) => None,
         }
     }
 }
@@ -279,17 +296,7 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
     let here = workspace_root()?;
     let here = here.as_path();
 
-    // The CSDL bundle is parsed only when a manifest exists to check.
-    let manifests = projection::load(here, &pool).map_err(Error::ManifestLoad)?;
-    if !manifests.is_empty() {
-        let bundle = projection::Bundle::dmtf().map_err(Error::Index)?;
-        let index = bundle.index().map_err(Error::Index)?;
-        let violations = projection::check(&manifests, &index, &pool, &vocabulary);
-        if !violations.is_empty() {
-            return Err(Error::Manifests(violations));
-        }
-    }
-    let artifacts = [
+    let mut artifacts = vec![
         (
             here.join(LOCK_PATH),
             lock::Snapshot::capture(&pool, &vocabulary).render(),
@@ -306,52 +313,56 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
         (here.join(GENERATED_MOD_PATH), GENERATED_MOD.to_owned()),
     ];
 
-    let mut outcome = Outcome {
-        examined,
-        written: Vec::new(),
-        stale: Vec::new(),
-    };
-
-    for (path, rendered) in artifacts {
-        let committed = match fs::read_to_string(&path) {
-            Ok(text) => Some(text),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(Error::Io {
-                    path,
-                    written: outcome.written,
-                    error,
-                })
+    // The CSDL bundle is parsed only when a manifest exists to compile.
+    let manifests = projection::load(here, &pool).map_err(Error::ManifestLoad)?;
+    let mut projection_artifacts = BTreeSet::new();
+    if !manifests.is_empty() {
+        let bundle = projection::Bundle::dmtf().map_err(Error::Index)?;
+        let index = bundle.index().map_err(Error::Index)?;
+        let compiled = projection::compile(&manifests, &index, &pool, &vocabulary)
+            .map_err(Error::Manifests)?;
+        let generated = projection::emit(&compiled).map_err(Error::Backend)?;
+        for (path, rendered) in generated {
+            let path = here.join(path);
+            if !projection_artifacts.insert(path.clone()) {
+                return Err(Error::DuplicateArtifact(path));
             }
-        };
-
-        if committed.as_deref() == Some(rendered.as_str()) {
-            continue;
-        }
-
-        match mode {
-            Mode::Check => outcome.stale.push(path),
-            Mode::Generate => {
-                if let Some(parent) = path.parent() {
-                    if let Err(error) = fs::create_dir_all(parent) {
-                        return Err(Error::Io {
-                            path: parent.to_path_buf(),
-                            written: outcome.written,
-                            error,
-                        });
-                    }
-                }
-                if let Err(error) = fs::write(&path, &rendered) {
-                    return Err(Error::Io {
-                        path,
-                        written: outcome.written,
-                        error,
-                    });
-                }
-                outcome.written.push(path);
-            }
+            artifacts.push((path, rendered));
         }
     }
+
+    let mut unique_artifacts = BTreeSet::new();
+    for (path, _) in &artifacts {
+        if !unique_artifacts.insert(path.clone()) {
+            return Err(Error::DuplicateArtifact(path.clone()));
+        }
+    }
+
+    let expected =
+        artifact::reconcile_expected_artifacts(here, artifacts, mode).map_err(|failure| {
+            Error::Io {
+                path: failure.failure.path,
+                written: failure.written,
+                error: failure.failure.error,
+            }
+        })?;
+    let mut outcome = Outcome {
+        examined,
+        written: expected.written,
+        stale: expected.stale,
+        removed: Vec::new(),
+        unrecognized: Vec::new(),
+    };
+
+    let owned = artifact::reconcile_projection_artifacts(here, &projection_artifacts, mode)
+        .map_err(|failure| Error::Io {
+            path: failure.path,
+            written: outcome.written.clone(),
+            error: failure.error,
+        })?;
+    outcome.stale.extend(owned.stale);
+    outcome.removed = owned.removed;
+    outcome.unrecognized = owned.unrecognized;
 
     Ok(outcome)
 }

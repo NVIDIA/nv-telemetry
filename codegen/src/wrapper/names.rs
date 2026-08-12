@@ -17,8 +17,9 @@ use quote::format_ident;
 use quote::quote;
 
 /// `#[doc = " line"]` attributes from plain text lines, the token spelling of
-/// `///` comments; prettyplease renders them back as `///`.
-pub(super) fn docs<S: AsRef<str>>(lines: &[S]) -> TokenStream {
+/// `///` comments; prettyplease renders them back as `///`. Crate-visible:
+/// the projection emitter renders docs through the same spelling.
+pub(crate) fn docs<S: AsRef<str>>(lines: &[S]) -> TokenStream {
     let attrs = lines.iter().map(|line| {
         let line = line.as_ref();
         let text = if line.is_empty() {
@@ -31,12 +32,15 @@ pub(super) fn docs<S: AsRef<str>>(lines: &[S]) -> TokenStream {
     quote! { #(#attrs)* }
 }
 
-pub(super) fn ident(name: &str) -> Ident {
+pub(crate) fn ident(name: &str) -> Ident {
     format_ident!("{name}")
 }
 
 /// `nv.telemetry.v1.Value.Map.Entry.key` -> `VALUE_MAP_ENTRY_KEY`.
-pub(super) fn constant_stem(full_name: &str) -> String {
+///
+/// Crate-visible because the projection emitter references the same
+/// constants the limits module renders; one naming rule, two consumers.
+pub(crate) fn constant_stem(full_name: &str) -> String {
     full_name
         .strip_prefix(&format!("{}.", crate::CONTRACT_PACKAGE))
         .unwrap_or(full_name)
@@ -60,7 +64,7 @@ pub(super) fn separated(bound: u32) -> String {
 }
 
 /// `nv.telemetry.v1.AcquisitionStatus.FailureClass` -> `FailureClass`.
-pub(super) fn short_name(full_name: &str) -> String {
+pub(crate) fn short_name(full_name: &str) -> String {
     full_name.rsplit('.').next().unwrap_or(full_name).to_owned()
 }
 

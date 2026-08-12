@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 
-use heck::ToKebabCase as _;
+use heck::ToSnakeCase as _;
 use prost_reflect::DescriptorPool;
 use prost_reflect::FieldDescriptor;
 use prost_reflect::Kind;
@@ -17,6 +17,10 @@ use prost_reflect::MessageDescriptor;
 
 use crate::is_contract_package;
 use crate::options::Vocabulary;
+use crate::projection::compile::target_profile;
+use crate::projection::compile::IdentityKind;
+use crate::projection::location::LocationPattern;
+use crate::projection::spec;
 use crate::projection::spec::AssemblySpec;
 use crate::projection::spec::ConstantSpec;
 use crate::projection::spec::FieldSpec;
@@ -30,6 +34,11 @@ use crate::projection::ResolvedField;
 // Enum numbers mirror manifest.proto; buf breaking guards the mirror.
 const SCHEMA_INDEX: i32 = 1;
 const NULL_UNSPECIFIED: i32 = 0;
+const NULL_ABSENT: i32 = 1;
+const NULL_INVALID: i32 = 2;
+const NULL_EXPLICIT: i32 = 3;
+const CARDINALITY_UNSPECIFIED: i32 = 0;
+const CARDINALITY_SINGLE: i32 = 1;
 const ELEMENTWISE: i32 = 2;
 
 /// The one index this build can construct: nv-redfish's vendored DMTF bundle.
@@ -37,6 +46,15 @@ const DMTF_INDEX: &str = "nv-redfish-schema/dmtf";
 
 /// The one target type a map assembly can build.
 const VALUE: &str = "nv.telemetry.v1.Value";
+const VALUE_STRING: &str = "string_value";
+const VALUE_MAP: &str = "nv.telemetry.v1.Value.Map";
+const VALUE_MAP_ENTRY: &str = "nv.telemetry.v1.Value.Map.Entry";
+
+/// Contract messages that carry identity. A target path that sets one — or
+/// reaches into one — is reserved: the subject declaration populates
+/// identity, never a field mapping.
+const SIGNAL_KEY: &str = "nv.telemetry.v1.SignalKey";
+const SUBJECT_TYPE: &str = "nv.telemetry.v1.Subject";
 
 /// One manifest declaration that breaks a rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +74,13 @@ impl Violation {
     pub fn reason(&self) -> &Reason {
         &self.reason
     }
+
+    pub(crate) fn cannot_emit(subject: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            subject: subject.into(),
+            reason: Reason::CannotEmit(detail.into()),
+        }
+    }
 }
 
 impl fmt::Display for Violation {
@@ -68,41 +93,106 @@ impl fmt::Display for Violation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Reason {
-    SourceMismatch { declared: String, directory: String },
+    SourceMismatch {
+        declared: String,
+        directory: String,
+    },
     UnsupportedBackend,
-    UnknownIndex { declared: String },
+    UnknownIndex {
+        declared: String,
+    },
     Unnamed,
     DuplicateName(String),
-    NotHonored { feature: &'static str },
+    ReservedManifestStem(String),
+    DuplicateManifestModule(String),
+    NotHonored {
+        feature: &'static str,
+    },
     UnknownSourceType(String),
     UnknownSourcePath(String),
     UnknownTargetType(String),
     UnvalidatedTarget(String),
+    UnsupportedTargetProfile(String),
+    TargetProfileDrift {
+        target: String,
+        detail: String,
+    },
+    UncoveredRequiredTarget(String),
     UnknownTargetField(String),
     ReservedTarget(String),
     DuplicateTarget(String),
-    OverlappingTargets { outer: String, inner: String },
-    OneofConflict { first: String, second: String },
+    OverlappingTargets {
+        outer: String,
+        inner: String,
+    },
+    OneofConflict {
+        first: String,
+        second: String,
+    },
     MissingSubject,
     EmptyScopeSource,
-    CaptureNotInTemplate { template: String, capture: String },
-    NonScalarSubject { path: String, actual: String },
+    CaptureNotInTemplate {
+        template: String,
+        capture: String,
+    },
+    NonScalarSubject {
+        path: String,
+        actual: String,
+    },
     SubjectNeverInherited,
     AnchorConflict(String),
     MultipleAnchors,
     UndecidedNull(String),
+    UnknownNullPolicy {
+        path: String,
+        value: i32,
+    },
+    UnknownCardinality {
+        path: String,
+        value: i32,
+    },
     EmptyValueMapping(String),
-    DuplicateValueMapping { path: String, from: String },
+    DuplicateValueMapping {
+        path: String,
+        from: String,
+    },
     EmptySubjectKind,
+    StaticValueBeyondBound {
+        declaration: String,
+        actual: usize,
+        limit: u32,
+    },
+    TooManyStaticValues {
+        declaration: String,
+        actual: usize,
+        limit: u32,
+    },
+    InvalidLocationTemplate {
+        template: String,
+        detail: String,
+    },
     EmptyConstant(String),
-    AssemblyTargetNotValue { field: String, actual: String },
+    ConstantBeyondBound {
+        field: String,
+        actual: usize,
+        limit: u32,
+    },
+    AssemblyTargetNotValue {
+        field: String,
+        actual: String,
+    },
     EmptyEntryKey,
     DuplicateEntryKey(String),
-    UnknownEnumValue { path: String, value: String },
+    UnknownEnumValue {
+        path: String,
+        value: String,
+    },
+    EmptyKnownValue(String),
     UnresolvedPlaceholder(String),
     DuplicateMember(String),
     MembersWithoutVariation,
     ExpansionWithoutMembers,
+    CannotEmit(String),
 }
 
 impl fmt::Display for Reason {
@@ -131,6 +221,15 @@ impl fmt::Display for Reason {
             Self::DuplicateName(name) => {
                 write!(f, "a second projection named `{name}`")
             }
+            Self::ReservedManifestStem(module) => write!(
+                f,
+                "manifest module `{module}` is owned by the generator; rename the manifest"
+            ),
+            Self::DuplicateManifestModule(module) => write!(
+                f,
+                "module `{module}` is already generated by another manifest in this crate; \
+                 rename one of the files"
+            ),
             Self::NotHonored { feature } => write!(
                 f,
                 "`{feature}` is declared but the compiler does not implement \
@@ -155,6 +254,20 @@ impl fmt::Display for Reason {
                 "target `{name}` is not `validated`; nothing would enforce \
                  what this projection produces"
             ),
+            Self::UnsupportedTargetProfile(name) => write!(
+                f,
+                "target `{name}` has no projection profile; PR 2 supports only \
+                 SignalDescriptor, Reading, and StateObservation"
+            ),
+            Self::TargetProfileDrift { target, detail } => write!(
+                f,
+                "target profile `{target}` no longer matches the contract: {detail}"
+            ),
+            Self::UncoveredRequiredTarget(field) => write!(
+                f,
+                "required target field `{field}` is not populated by identity, \
+                 a mapping, a constant, or an assembly"
+            ),
             Self::UnknownTargetField(path) => write!(
                 f,
                 "target field `{path}` resolves to nothing in the target \
@@ -162,9 +275,9 @@ impl fmt::Display for Reason {
             ),
             Self::ReservedTarget(path) => write!(
                 f,
-                "`{path}` writes into `subject`, which the subject \
-                 declaration populates; identity never comes from a field \
-                 mapping"
+                "`{path}` writes into the target's identity, which the \
+                 subject declaration populates; identity never comes from a \
+                 field mapping"
             ),
             Self::DuplicateTarget(path) => write!(
                 f,
@@ -215,6 +328,14 @@ impl fmt::Display for Reason {
                 "`{path}` is nullable at the source and declares no \
                  null_policy; what a null means is a decision, not a default"
             ),
+            Self::UnknownNullPolicy { path, value } => write!(
+                f,
+                "`{path}` carries unknown null_policy number {value}; only declared manifest enum values are accepted"
+            ),
+            Self::UnknownCardinality { path, value } => write!(
+                f,
+                "`{path}` carries unknown cardinality number {value}; only declared manifest enum values are accepted"
+            ),
             Self::EmptyValueMapping(path) => {
                 write!(f, "`{path}` has a value mapping with an empty side")
             }
@@ -224,9 +345,38 @@ impl fmt::Display for Reason {
                  silently win"
             ),
             Self::EmptySubjectKind => f.write_str("the subject has no kind, so it names nothing"),
+            Self::StaticValueBeyondBound {
+                declaration,
+                actual,
+                limit,
+            } => write!(
+                f,
+                "{declaration} is {actual} bytes long, over the target's bound of {limit}"
+            ),
+            Self::TooManyStaticValues {
+                declaration,
+                actual,
+                limit,
+            } => write!(
+                f,
+                "{declaration} has {actual} items, over the target's bound of {limit}"
+            ),
+            Self::InvalidLocationTemplate { template, detail } => {
+                write!(f, "location template `{template}` is invalid: {detail}")
+            }
             Self::EmptyConstant(field) => {
                 write!(f, "constant for `{field}` is empty")
             }
+            Self::ConstantBeyondBound {
+                field,
+                actual,
+                limit,
+            } => write!(
+                f,
+                "constant for `{field}` is {actual} bytes long, over the \
+                 target's bound of {limit}; the generated builder would \
+                 refuse it on every projection"
+            ),
             Self::AssemblyTargetNotValue { field, actual } => write!(
                 f,
                 "map assembly targets `{field}`, which is `{actual}`; \
@@ -240,6 +390,10 @@ impl fmt::Display for Reason {
                 f,
                 "`{path}` names `{value}`, which the source enumeration does \
                  not declare; the row would never match anything"
+            ),
+            Self::EmptyKnownValue(path) => write!(
+                f,
+                "`{path}` declares an empty known enum value; no Rust enum variant can represent it"
             ),
             Self::UnresolvedPlaceholder(text) => write!(
                 f,
@@ -257,6 +411,7 @@ impl fmt::Display for Reason {
             Self::ExpansionWithoutMembers => {
                 f.write_str("an expansion without members expands nothing")
             }
+            Self::CannotEmit(detail) => f.write_str(detail),
         }
     }
 }
@@ -273,6 +428,7 @@ pub fn check(
     // Keyed by crate: a crate's manifest files share one emitted module,
     // so a name reused across files collides just as within one.
     let mut names = BTreeSet::new();
+    let mut modules = BTreeSet::new();
     for manifest in manifests {
         check_manifest(
             manifest,
@@ -280,6 +436,7 @@ pub fn check(
             contract,
             vocabulary,
             &mut names,
+            &mut modules,
             &mut violations,
         );
     }
@@ -292,6 +449,7 @@ fn check_manifest(
     contract: &DescriptorPool,
     vocabulary: &Vocabulary,
     names: &mut BTreeSet<(String, String)>,
+    modules: &mut BTreeSet<(String, String)>,
     violations: &mut Vec<Violation>,
 ) {
     let file = manifest.path.display().to_string();
@@ -321,6 +479,18 @@ fn check_manifest(
                 declared: manifest.index.clone(),
             },
         );
+    }
+
+    let module = manifest
+        .path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_snake_case())
+        .unwrap_or_default();
+    if matches!(module.as_str(), "mod" | "provenance") {
+        report(violations, Reason::ReservedManifestStem(module.clone()));
+    }
+    if !module.is_empty() && !modules.insert((manifest.crate_source.clone(), module.clone())) {
+        report(violations, Reason::DuplicateManifestModule(module));
     }
 
     let inherited = manifest
@@ -361,6 +531,8 @@ struct Checker<'a, 'b> {
     source_type: &'b str,
     known: bool,
     target: Option<MessageDescriptor>,
+    contract: &'b DescriptorPool,
+    vocabulary: &'b Vocabulary,
     subject: &'b str,
     seen: BTreeSet<String>,
     violations: &'b mut Vec<Violation>,
@@ -372,8 +544,8 @@ impl<'a, 'b> Checker<'a, 'b> {
         manifest_subject: Option<&SubjectSpec>,
         subject: &'b str,
         index: &'b RedfishIndex<'a>,
-        contract: &DescriptorPool,
-        vocabulary: &Vocabulary,
+        contract: &'b DescriptorPool,
+        vocabulary: &'b Vocabulary,
         violations: &'b mut Vec<Violation>,
     ) {
         let mut checker = Self {
@@ -383,6 +555,8 @@ impl<'a, 'b> Checker<'a, 'b> {
             target: contract
                 .get_message_by_name(&projection.target_type)
                 .filter(|message| is_contract_package(message.package_name())),
+            contract,
+            vocabulary,
             subject,
             seen: BTreeSet::new(),
             violations,
@@ -436,7 +610,9 @@ impl<'a, 'b> Checker<'a, 'b> {
             Some(true) => {}
         }
 
-        self.check_subject(projection.subject.as_ref().or(manifest_subject));
+        self.check_target_profile(&projection.target_type);
+
+        self.check_subject(projection.subject.as_ref().or(manifest_subject), vocabulary);
 
         for instance in self.expand(projection) {
             let mut anchors = 0usize;
@@ -452,24 +628,169 @@ impl<'a, 'b> Checker<'a, 'b> {
                 if constant.value.is_empty() {
                     self.push(Reason::EmptyConstant(constant.target_field.clone()));
                 }
-                self.check_target(&constant.target_field);
+                // The literal and the target's bound are both in hand here;
+                // unchecked, the fault surfaces as a builder refusal on
+                // every projection, discarding the batches it rode with.
+                if let Some(leaf) = self.check_target(&constant.target_field) {
+                    let limit = vocabulary
+                        .field_invariant(&leaf)
+                        .and_then(|invariant| invariant.max_len);
+                    if let Some(limit) = limit {
+                        if constant.value.len() > limit as usize {
+                            self.push(Reason::ConstantBeyondBound {
+                                field: constant.target_field.clone(),
+                                actual: constant.value.len(),
+                                limit,
+                            });
+                        }
+                    }
+                }
             }
 
             for assembly in &instance.map_assemblies {
                 self.check_assembly(assembly);
             }
 
-            self.check_targets(&instance);
+            self.check_targets(&instance, vocabulary);
         }
     }
 
-    fn check_subject(&mut self, subject: Option<&SubjectSpec>) {
+    /// A projection target is an explicit compiler capability, not a shape
+    /// inferred from whichever identity-typed fields reflection happens to
+    /// find. Verify the small PR-2 allowlist against the live contract so a
+    /// schema change fails compilation instead of changing identity behavior.
+    fn check_target_profile(&mut self, target_name: &str) {
+        let Some(target) = self.target.clone() else {
+            return;
+        };
+        let Some(profile) = target_profile(target_name) else {
+            self.push(Reason::UnsupportedTargetProfile(target_name.to_owned()));
+            return;
+        };
+        let Some(identity) = target.get_field_by_name(profile.identity_field) else {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!("identity field `{}` is absent", profile.identity_field),
+            });
+            return;
+        };
+        let expected = match profile.identity {
+            IdentityKind::SignalKey => SIGNAL_KEY,
+            IdentityKind::Subject => SUBJECT_TYPE,
+        };
+        let actual = match identity.kind() {
+            Kind::Message(message) => message.full_name().to_owned(),
+            other => format!("{other:?}"),
+        };
+        if actual != expected {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!(
+                    "identity field `{}` is `{actual}`, expected `{expected}`",
+                    profile.identity_field
+                ),
+            });
+        }
+
+        let identity_fields: Vec<String> = target
+            .fields()
+            .filter_map(|field| match field.kind() {
+                Kind::Message(message)
+                    if message.full_name() == SIGNAL_KEY || message.full_name() == SUBJECT_TYPE =>
+                {
+                    Some(field.name().to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        if identity_fields.as_slice() != [profile.identity_field] {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!(
+                    "identity fields are {identity_fields:?}, expected only `{}`",
+                    profile.identity_field
+                ),
+            });
+        }
+
+        let Some(payload) = self.contract.get_message_by_name(profile.payload) else {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!("payload `{}` is absent", profile.payload),
+            });
+            return;
+        };
+        let Some(payload_field) = payload.get_field_by_name(profile.payload_field) else {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!(
+                    "payload field `{}.{}` is absent",
+                    profile.payload, profile.payload_field
+                ),
+            });
+            return;
+        };
+        let element = match payload_field.kind() {
+            Kind::Message(message) if payload_field.is_list() => message.full_name().to_owned(),
+            other => format!("{other:?}"),
+        };
+        if element != profile.target {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!(
+                    "payload field `{}.{}` contains `{element}`, expected repeated `{}`",
+                    profile.payload, profile.payload_field, profile.target
+                ),
+            });
+        }
+        if self
+            .vocabulary
+            .field_invariant(&payload_field)
+            .and_then(|invariant| invariant.max_items)
+            .is_none()
+        {
+            self.push(Reason::TargetProfileDrift {
+                target: target_name.to_owned(),
+                detail: format!(
+                    "payload field `{}.{}` has no max_items bound",
+                    profile.payload, profile.payload_field
+                ),
+            });
+        }
+    }
+
+    fn check_subject(&mut self, subject: Option<&SubjectSpec>, vocabulary: &Vocabulary) {
         let Some(spec) = subject else {
             self.push(Reason::MissingSubject);
             return;
         };
         if spec.kind.is_empty() {
             self.push(Reason::EmptySubjectKind);
+        }
+        if let Some(kind) = self
+            .contract
+            .get_message_by_name(SUBJECT_TYPE)
+            .and_then(|subject| subject.get_field_by_name("kind"))
+        {
+            self.check_static_text("subject kind", &spec.kind, &kind);
+        }
+        if let Some(scope) = self
+            .contract
+            .get_message_by_name(SUBJECT_TYPE)
+            .and_then(|subject| subject.get_field_by_name("scope"))
+        {
+            if let Some(limit) = vocabulary
+                .field_invariant(&scope)
+                .and_then(|invariant| invariant.max_items)
+            {
+                if spec.scope.len() > limit as usize {
+                    self.push(Reason::TooManyStaticValues {
+                        declaration: "subject scope".to_owned(),
+                        actual: spec.scope.len(),
+                        limit,
+                    });
+                }
+            }
         }
         self.check_subject_path(&spec.id_path);
         for contributor in &spec.scope {
@@ -484,6 +805,12 @@ impl<'a, 'b> Checker<'a, 'b> {
                             capture: capture.clone(),
                         });
                     }
+                    if let Err(detail) = LocationPattern::parse(template, capture) {
+                        self.push(Reason::InvalidLocationTemplate {
+                            template: template.clone(),
+                            detail,
+                        });
+                    }
                 }
                 ScopeSpec::PathKey(_) => {
                     self.push(Reason::NotHonored {
@@ -496,11 +823,16 @@ impl<'a, 'b> Checker<'a, 'b> {
     }
 
     /// A subject path must name one scalar value; a collection or a
-    /// structured type cannot name a resource.
+    /// structured type cannot name a resource. A path with a nullable segment
+    /// cannot serve as identity either: the subject vocabulary has no null
+    /// policy to declare what an explicit null anywhere along the read means,
+    /// and honoring one is emission work, so declaring it is an error until
+    /// then.
     fn check_subject_path(&mut self, path: &str) {
         if !self.known {
             return;
         }
+        let nullable_prefix = self.check_prefixes(path);
         match self.resolve(path) {
             None => self.push(Reason::UnknownSourcePath(path.to_owned())),
             Some(resolved) if resolved.collection => self.push(Reason::NonScalarSubject {
@@ -511,15 +843,22 @@ impl<'a, 'b> Checker<'a, 'b> {
                 path: path.to_owned(),
                 actual: format!("complex type `{}`", resolved.type_name),
             }),
+            Some(resolved) if resolved.nullable || nullable_prefix => {
+                self.push(Reason::NotHonored {
+                    feature: "nullable subject sources",
+                });
+            }
             Some(_) => {}
         }
     }
 
-    /// One instance per member — the projection's shared declarations plus
-    /// the expansion's, placeholders substituted — or the projection itself
-    /// when it declares no expansion.
+    /// The projection's instances, from the one expansion
+    /// [`ProjectionSpec::instances`] defines for checking and emission
+    /// alike, with the declarations only the lint judges: placeholders are
+    /// meaningless outside an expansion, and any brace surviving
+    /// substitution is a placeholder that failed — a misspelling would
+    /// otherwise be emitted verbatim.
     fn expand(&mut self, projection: &ProjectionSpec) -> Vec<ProjectionSpec> {
-        // Placeholders are meaningless outside an expansion.
         let shared = template_sites(
             &projection.fields,
             &projection.constants,
@@ -530,82 +869,72 @@ impl<'a, 'b> Checker<'a, 'b> {
                 self.push(Reason::UnresolvedPlaceholder(site.to_owned()));
             }
         }
-        let Some(expansion) = &projection.expansion else {
-            return vec![projection.clone()];
-        };
-
-        if expansion.members.is_empty() {
-            self.push(Reason::ExpansionWithoutMembers);
-        }
-        let mut seen = BTreeSet::new();
-        for member in &expansion.members {
-            if !seen.insert(member.as_str()) {
-                self.push(Reason::DuplicateMember(member.clone()));
+        if let Some(expansion) = &projection.expansion {
+            if expansion.members.is_empty() {
+                self.push(Reason::ExpansionWithoutMembers);
+            }
+            let mut seen = BTreeSet::new();
+            for member in &expansion.members {
+                if !seen.insert(member.as_str()) {
+                    self.push(Reason::DuplicateMember(member.clone()));
+                }
+            }
+            let varying = || {
+                template_sites(
+                    &expansion.fields,
+                    &expansion.constants,
+                    &expansion.map_assemblies,
+                )
+            };
+            if !varying().any(|site| site.contains("{member")) {
+                self.push(Reason::MembersWithoutVariation);
+            }
+            for member in &expansion.members {
+                for site in varying() {
+                    if spec::substitute(site, member).contains('{') {
+                        self.push(Reason::UnresolvedPlaceholder(site.to_owned()));
+                    }
+                }
             }
         }
-        let varying = template_sites(
-            &expansion.fields,
-            &expansion.constants,
-            &expansion.map_assemblies,
-        );
-        if !varying.into_iter().any(|site| site.contains("{member")) {
-            self.push(Reason::MembersWithoutVariation);
-        }
-
-        expansion
-            .members
-            .iter()
-            .map(|member| {
-                let mut instance = projection.clone();
-                instance.expansion = None;
-                for field in &expansion.fields {
-                    let mut field = field.clone();
-                    field.source_path = self.substituted(&field.source_path, member);
-                    instance.fields.push(field);
-                }
-                for assembly in &expansion.map_assemblies {
-                    let mut assembly = assembly.clone();
-                    for entry in &mut assembly.entries {
-                        entry.source_path = self.substituted(&entry.source_path, member);
-                    }
-                    instance.map_assemblies.push(assembly);
-                }
-                for constant in &expansion.constants {
-                    let mut constant = constant.clone();
-                    constant.value = self.substituted(&constant.value, member);
-                    instance.constants.push(constant);
-                }
-                instance
-            })
-            .collect()
-    }
-
-    fn substituted(&mut self, text: &str, member: &str) -> String {
-        let replaced = text
-            .replace("{member-kebab}", &member.to_kebab_case())
-            .replace("{member}", member);
-        // Any brace left over is a placeholder that failed: a misspelling
-        // would otherwise be emitted verbatim.
-        if replaced.contains('{') {
-            self.push(Reason::UnresolvedPlaceholder(text.to_owned()));
-        }
-        replaced
+        projection.instances()
     }
 
     fn check_field(&mut self, field: &FieldSpec) {
-        if let Some(resolved) =
-            self.check_source(&field.source_path, field.null_policy, &field.value_map)
-        {
-            self.check_vocabulary(&field.source_path, &resolved, &field.known_values);
+        if field.known_values.iter().any(String::is_empty) {
+            self.push(Reason::EmptyKnownValue(field.source_path.clone()));
         }
-        self.check_target(&field.target_field);
+        let resolved = self.check_source(&field.source_path, field.null_policy, &field.value_map);
+        if let Some(resolved) = &resolved {
+            self.check_vocabulary(
+                &field.source_path,
+                resolved,
+                &field.known_values,
+                "known_values on a source that is not an enumeration",
+            );
+        }
+        let target = self.check_target(&field.target_field);
+        if let (Some(resolved), Some(target)) = (&resolved, &target) {
+            self.check_enum_outputs(
+                &field.source_path,
+                resolved,
+                &field.value_map,
+                &field.known_values,
+                target,
+            );
+        }
         if field.anchor && field.required {
             self.push(Reason::AnchorConflict(field.source_path.clone()));
         }
-        if field.cardinality == ELEMENTWISE {
-            self.push(Reason::NotHonored {
+        match field.cardinality {
+            CARDINALITY_UNSPECIFIED | CARDINALITY_SINGLE => {}
+            ELEMENTWISE => self.push(Reason::NotHonored {
                 feature: "CARDINALITY_ELEMENTWISE",
-            });
+            }),
+            value => self.push(Reason::UnknownCardinality {
+                path: field.source_path.clone(),
+                value,
+            }),
         }
         if !field.unit.is_empty() {
             self.push(Reason::NotHonored { feature: "unit" });
@@ -628,33 +957,85 @@ impl<'a, 'b> Checker<'a, 'b> {
         null_policy: i32,
         value_map: &[(String, String)],
     ) -> Option<ResolvedField> {
+        if !matches!(
+            null_policy,
+            NULL_UNSPECIFIED | NULL_ABSENT | NULL_INVALID | NULL_EXPLICIT
+        ) {
+            self.push(Reason::UnknownNullPolicy {
+                path: path.to_owned(),
+                value: null_policy,
+            });
+        }
         let Some(resolved) = self.resolve(path) else {
             if self.known {
                 self.push(Reason::UnknownSourcePath(path.to_owned()));
             }
             return None;
         };
+        let nullable_prefix = self.check_prefixes(path);
         if resolved.collection {
             self.push(Reason::NotHonored {
                 feature: "collection-typed sources",
             });
         }
-        if resolved.nullable && null_policy == NULL_UNSPECIFIED {
+        if (resolved.nullable || nullable_prefix) && null_policy == NULL_UNSPECIFIED {
             self.push(Reason::UndecidedNull(path.to_owned()));
         }
-        self.check_vocabulary(path, &resolved, value_map.iter().map(|(from, _)| from));
+        // The graph route that preserves explicit nulls does not exist yet;
+        // honoring the policy is emission work, so declaring it is an error
+        // until then.
+        if null_policy == NULL_EXPLICIT {
+            self.push(Reason::NotHonored {
+                feature: "NULL_POLICY_EXPLICIT_NULL",
+            });
+        }
+        self.check_vocabulary(
+            path,
+            &resolved,
+            value_map.iter().map(|(from, _)| from),
+            "value_map on a source that is not an enumeration",
+        );
         Some(resolved)
     }
 
+    /// Every proper prefix of a source path must be a singular segment: the
+    /// leaf check alone would wave a path through a collection element,
+    /// which no generated field access can spell. Returns whether any prefix
+    /// can be explicitly null, because null policy belongs to the complete
+    /// read rather than only to its leaf.
+    fn check_prefixes(&mut self, path: &str) -> bool {
+        let segments: Vec<&str> = path.split('.').collect();
+        let mut nullable = false;
+        for end in 1..segments.len() {
+            let prefix = segments[..end].join(".");
+            if let Some(resolved) = self.resolve(&prefix) {
+                nullable |= resolved.nullable;
+                if resolved.collection {
+                    self.push(Reason::NotHonored {
+                        feature: "collection-typed sources",
+                    });
+                }
+            }
+        }
+        nullable
+    }
+
     /// Validates `value_map` sources and `known_values` against the
-    /// resolved enum's members; non-enum sources have none to check.
+    /// resolved enum's members. On a source that is not an enumeration the
+    /// declarations would be consulted by nothing — a mapping that reads as
+    /// enforced while doing nothing — so they are rejected as the named
+    /// unimplemented feature.
     fn check_vocabulary(
         &mut self,
         path: &str,
         resolved: &ResolvedField,
         values: impl IntoIterator<Item = impl AsRef<str>>,
+        feature: &'static str,
     ) {
         let Some(members) = &resolved.enum_members else {
+            if values.into_iter().next().is_some() {
+                self.push(Reason::NotHonored { feature });
+            }
             return;
         };
         for value in values {
@@ -696,6 +1077,21 @@ impl<'a, 'b> Checker<'a, 'b> {
                 });
             }
         }
+        if let Some(entries) = self
+            .contract
+            .get_message_by_name(VALUE_MAP)
+            .and_then(|map| map.get_field_by_name("entries"))
+            .and_then(|field| self.vocabulary.field_invariant(&field))
+            .and_then(|invariant| invariant.max_items)
+        {
+            if assembly.entries.len() > entries as usize {
+                self.push(Reason::TooManyStaticValues {
+                    declaration: format!("assembly `{}`", assembly.target_field),
+                    actual: assembly.entries.len(),
+                    limit: entries,
+                });
+            }
+        }
         let mut keys = BTreeSet::new();
         for entry in &assembly.entries {
             if entry.key.is_empty() {
@@ -708,8 +1104,80 @@ impl<'a, 'b> Checker<'a, 'b> {
             if entry.key.contains('{') {
                 self.push(Reason::UnresolvedPlaceholder(entry.key.clone()));
             }
-            self.check_source(&entry.source_path, entry.null_policy, &entry.value_map);
+            if let Some(key) = self
+                .contract
+                .get_message_by_name(VALUE_MAP_ENTRY)
+                .and_then(|entry| entry.get_field_by_name("key"))
+            {
+                // The empty case has the more specific diagnostic above.
+                self.check_static_text("assembly entry key", &entry.key, &key);
+            }
+            let resolved =
+                self.check_source(&entry.source_path, entry.null_policy, &entry.value_map);
+            if let (Some(resolved), Some(target)) = (
+                resolved.as_ref(),
+                self.contract
+                    .get_message_by_name(VALUE)
+                    .and_then(|value| value.get_field_by_name(VALUE_STRING)),
+            ) {
+                self.check_enum_outputs(
+                    &entry.source_path,
+                    resolved,
+                    &entry.value_map,
+                    &[],
+                    &target,
+                );
+            }
             self.check_value_map(&entry.source_path, &entry.value_map);
+        }
+    }
+
+    fn check_static_text(&mut self, declaration: &str, value: &str, field: &FieldDescriptor) {
+        let Some(limit) = self
+            .vocabulary
+            .field_invariant(field)
+            .and_then(|invariant| invariant.max_len)
+        else {
+            return;
+        };
+        if value.len() > limit as usize {
+            self.push(Reason::StaticValueBeyondBound {
+                declaration: declaration.to_owned(),
+                actual: value.len(),
+                limit,
+            });
+        }
+    }
+
+    /// Every enum spelling emission can place in a string landing is known at
+    /// compile time. Prove those literals against the target rather than let a
+    /// matching device value discover an over-bound manifest at runtime.
+    fn check_enum_outputs(
+        &mut self,
+        path: &str,
+        resolved: &ResolvedField,
+        value_map: &[(String, String)],
+        known_values: &[String],
+        target: &FieldDescriptor,
+    ) {
+        let Some(members) = &resolved.enum_members else {
+            return;
+        };
+        if !matches!(target.kind(), Kind::String) {
+            return;
+        }
+
+        let mut outputs: Vec<&str> = value_map.iter().map(|(_, to)| to.as_str()).collect();
+        for known in known_values {
+            if !value_map.iter().any(|(from, _)| from == known) {
+                outputs.push(known);
+            }
+        }
+        if outputs.is_empty() {
+            outputs.extend(members.iter().map(String::as_str));
+        }
+        for output in outputs {
+            self.check_static_text(&format!("enum output for `{path}`"), output, target);
         }
     }
 
@@ -732,7 +1200,7 @@ impl<'a, 'b> Checker<'a, 'b> {
     /// Target fields must not collide: two writes to one path, a write
     /// inside a field another declaration sets whole, or two cases of one
     /// oneof.
-    fn check_targets(&mut self, instance: &ProjectionSpec) {
+    fn check_targets(&mut self, instance: &ProjectionSpec, vocabulary: &Vocabulary) {
         let declared: Vec<&str> = instance
             .fields
             .iter()
@@ -752,12 +1220,20 @@ impl<'a, 'b> Checker<'a, 'b> {
             .filter(|path| !path.is_empty())
             .collect();
 
+        let identity_target = self.target.clone();
         let mut seen = BTreeSet::new();
         for path in &declared {
             if !seen.insert(*path) {
                 self.push(Reason::DuplicateTarget((*path).to_owned()));
             }
-            if *path == "subject" || within("subject", path) {
+            // By spelling when the target is unknown, and by type when it is
+            // known — `key` carries identity as much as `subject` does.
+            if *path == "subject"
+                || within("subject", path)
+                || identity_target
+                    .as_ref()
+                    .is_some_and(|target| writes_identity(target, path))
+            {
                 self.push(Reason::ReservedTarget((*path).to_owned()));
             }
         }
@@ -780,6 +1256,24 @@ impl<'a, 'b> Checker<'a, 'b> {
         let Some(target) = self.target.clone() else {
             return;
         };
+
+        if let Some(profile) = target_profile(&instance.target_type) {
+            for field in target.fields() {
+                let required = vocabulary
+                    .field_invariant(&field)
+                    .is_some_and(|invariant| invariant.required);
+                if !required || field.name() == profile.identity_field {
+                    continue;
+                }
+                let covered = declared.iter().any(|path| {
+                    path.split_once('.').map_or(*path, |(root, _)| root) == field.name()
+                });
+                if !covered {
+                    self.push(Reason::UncoveredRequiredTarget(field.name().to_owned()));
+                }
+            }
+        }
+
         let mut cases: BTreeMap<(String, String), &str> = BTreeMap::new();
         for path in declared {
             let Some(leaf) = resolve_target(&target, path) else {
@@ -811,6 +1305,19 @@ fn within(outer: &str, inner: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('.'))
 }
 
+/// Whether the path sets an identity-carrying field — or reaches into one,
+/// which the literal-`subject` rule alone would wave through via `key`.
+fn writes_identity(target: &MessageDescriptor, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('.').collect();
+    (1..=segments.len()).any(|end| {
+        let prefix = segments[..end].join(".");
+        resolve_target(target, &prefix).is_some_and(|leaf| {
+            matches!(leaf.kind(), Kind::Message(message)
+                if message.full_name() == SIGNAL_KEY || message.full_name() == SUBJECT_TYPE)
+        })
+    })
+}
+
 /// Every string a member substitutes into: source paths and constant
 /// values.
 fn template_sites<'a>(
@@ -830,8 +1337,9 @@ fn template_sites<'a>(
 /// Resolves a dotted target path such as `range.min.double_value`; oneof
 /// cases are fields of their message, so one walk covers both. Descent is
 /// through singular messages only — an element of a repeated field is not
-/// addressable.
-fn resolve_target(message: &MessageDescriptor, path: &str) -> Option<FieldDescriptor> {
+/// addressable. Shared with emission, which lands setters where this walk
+/// lands checks.
+pub(crate) fn resolve_target(message: &MessageDescriptor, path: &str) -> Option<FieldDescriptor> {
     let mut current = message.clone();
     let mut segments = path.split('.').peekable();
     while let Some(segment) = segments.next() {

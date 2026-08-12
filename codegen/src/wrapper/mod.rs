@@ -48,7 +48,7 @@
 //! before emission, so `format_ident!` here never meets one.
 
 mod limits;
-mod names;
+pub(crate) mod names;
 mod plans;
 
 use std::collections::BTreeSet;

@@ -32,7 +32,7 @@ proto-baseline ?= origin/main
 # being the one that matters. Without this, make sees the directory, decides
 # the target is up to date, and silently does nothing.
 .PHONY: all ci fmt bench codegen check-codegen proto-lint proto-breaking \
-	check-proto-format require-buf rust-install clean
+	check-proto-format check-redfish-features require-buf rust-install clean
 
 # `--locked` throughout: generated output is byte-compared, and its bytes are
 # decided by prost-build and prettyplease. Manifests state semver ranges, and
@@ -52,6 +52,7 @@ define build-and-test
 	+$(MAKE) proto-lint
 	+$(MAKE) proto-breaking
 	+$(MAKE) check-codegen
+	+$(MAKE) check-redfish-features
 	cargo clippy $(cargo-locked) --workspace --all-targets -- -D warnings
 	cargo clippy $(cargo-locked) --workspace --all-targets $1 -- -D warnings
 	cargo build $(cargo-locked) --workspace
@@ -113,6 +114,20 @@ codegen:
 
 check-codegen:
 	cargo run $(cargo-locked) -p nv-telemetry-codegen -- --check
+
+# Every transport row the Redfish crate supports is explicit here. Workspace
+# default/all-feature builds cover only the HTTP and combined rows and
+# previously allowed an isolated feature to decay behind dev-dependency
+# feature unification.
+check-redfish-features:
+	cargo clippy $(cargo-locked) -p nv-telemetry-redfish --no-default-features --lib -- -D warnings
+	cargo clippy $(cargo-locked) -p nv-telemetry-redfish --no-default-features --features bmc-mock --lib -- -D warnings
+	cargo clippy $(cargo-locked) -p nv-telemetry-redfish --no-default-features --features bmc-http --lib -- -D warnings
+	cargo clippy $(cargo-locked) -p nv-telemetry-redfish --no-default-features --features bmc-http,bmc-mock --lib -- -D warnings
+	cargo test $(cargo-locked) -p nv-telemetry-redfish --no-default-features --lib
+	cargo test $(cargo-locked) -p nv-telemetry-redfish --no-default-features --features bmc-mock
+	cargo test $(cargo-locked) -p nv-telemetry-redfish --no-default-features --features bmc-http --lib
+	cargo test $(cargo-locked) -p nv-telemetry-redfish --no-default-features --features bmc-http,bmc-mock
 
 # Instruction counts under Valgrind, so results do not depend on machine
 # load. Needs valgrind and a gungraun-runner matching the gungraun version

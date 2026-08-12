@@ -19,8 +19,9 @@ usage: nv-telemetry-codegen <command>
   generate    rewrite the generated trees
   --check     report whether the generated trees are up to date
 
-Generated output is the contract lock, the wire types, and their module root.
-All three are checked in and compared byte for byte.
+Generated output includes the contract lock, validated model and wire types,
+projection modules, and provenance. All are checked in and compared byte for
+byte.
 ";
 
 fn main() -> ExitCode {
@@ -57,12 +58,16 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
     match mode {
         Mode::Generate => {
             println!(
-                "nv-telemetry-codegen: {} message(s) examined, {} file(s) written",
+                "nv-telemetry-codegen: {} message(s) examined, {} file(s) written, {} orphan(s) removed",
                 outcome.examined,
-                outcome.written.len()
+                outcome.written.len(),
+                outcome.removed.len()
             );
             for path in &outcome.written {
                 println!("  wrote {}", path.display());
+            }
+            for path in &outcome.removed {
+                println!("  removed generated orphan {}", path.display());
             }
             if outcome
                 .written
@@ -73,9 +78,20 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
                     "review the contract lock diff: it records semantics no other gate checks"
                 );
             }
-            ExitCode::SUCCESS
+            if outcome.unrecognized.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!(
+                    "nv-telemetry-codegen: preserved {} unrecognized file(s) under a generated directory",
+                    outcome.unrecognized.len()
+                );
+                for path in &outcome.unrecognized {
+                    eprintln!("  {}", path.display());
+                }
+                ExitCode::FAILURE
+            }
         }
-        Mode::Check if outcome.stale.is_empty() => {
+        Mode::Check if outcome.stale.is_empty() && outcome.unrecognized.is_empty() => {
             println!(
                 "nv-telemetry-codegen: generated tree is up to date ({} message(s) examined)",
                 outcome.examined
@@ -90,6 +106,15 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
             );
             for path in &outcome.stale {
                 eprintln!("  {}", path.display());
+            }
+            if !outcome.unrecognized.is_empty() {
+                eprintln!(
+                    "nv-telemetry-codegen: {} unrecognized file(s) were preserved under a generated directory",
+                    outcome.unrecognized.len()
+                );
+                for path in &outcome.unrecognized {
+                    eprintln!("  {}", path.display());
+                }
             }
             eprintln!(
                 "\n`make codegen` regenerates them. Usually the schema changed and the \
