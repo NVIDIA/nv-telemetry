@@ -210,10 +210,7 @@ impl std::error::Error for Error {
             Self::Io { error, .. } => Some(error),
             Self::ManifestLoad(error) => Some(error),
             Self::Index(error) => Some(error),
-            Self::Schema(_)
-            | Self::Backend(_)
-            | Self::Root(_)
-            | Self::Manifests(_) => None,
+            Self::Schema(_) | Self::Backend(_) | Self::Root(_) | Self::Manifests(_) => None,
         }
     }
 }
