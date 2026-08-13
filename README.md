@@ -1,5 +1,5 @@
 # nv-telemetry
-Collection of libraries for bare-metal telemetry collection
+Libraries for bare-metal telemetry collection
 
 # Overview
 
