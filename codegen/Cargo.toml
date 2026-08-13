@@ -32,11 +32,6 @@ syn.workspace = true
 # output: the manifest golden proves emitted bytes equal its checked-in module,
 # and this dependency makes rustc resolve that module during codegen tests.
 nv-telemetry-redfish = { path = "../sources/redfish" }
-# The checked presence fixture deliberately covers a BootOption
-# required-nullable leaf and a Chassis nullable ancestor. These direct dev
-# dependencies make its generated module a real rustc consumer.
-nv-redfish = { workspace = true, features = ["boot-options", "chassis", "computer-systems"] }
-nv-telemetry-model.workspace = true
 nv-telemetry-source.workspace = true
 prost.workspace = true
 protox.workspace = true

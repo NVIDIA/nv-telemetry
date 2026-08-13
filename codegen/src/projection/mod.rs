@@ -3,14 +3,13 @@
 
 //! Projection generation.
 //!
-//! Compiles manifests into extraction code, resolving paths against a
-//! backend-neutral schema index. Manifests under `sources/*/manifests/` are
-//! loaded ([`spec`]), resolved against the CSDL index ([`index`]) and the
-//! contract pool, checked — every declaration the compiler cannot honor is
-//! an error ([`lint`]) — and the checked manifests become the source
-//! crate's generated projection modules ([`mod@emit`]).
+//! Manifests under `sources/*/manifests/` are loaded ([`spec`]), resolved
+//! against the CSDL index ([`index`]) and the contract pool, and checked —
+//! every declaration the compiler cannot honor is an error ([`lint`]).
+//! [`compile`] wraps a clean check into the receipt [`emit`](mod@emit)
+//! requires, so emission cannot run on unchecked manifests; what emission
+//! itself refuses are compiler capability limits, loud at `make codegen`.
 
-pub mod compile;
 pub mod emit;
 pub mod index;
 pub mod lint;
@@ -18,8 +17,6 @@ pub mod spec;
 
 mod location;
 
-pub use compile::compile;
-pub use compile::CompiledManifests;
 pub use emit::emit;
 pub use index::Bundle;
 pub use index::IndexError;
@@ -27,24 +24,44 @@ pub use index::RedfishIndex;
 pub use index::ResolvedField;
 pub use index::Shape;
 pub use index::Step;
+pub use lint::check;
 pub use lint::Violation;
+use prost_reflect::DescriptorPool;
 pub use spec::load;
 pub use spec::ManifestError;
 pub use spec::ManifestSpec;
-pub use spec::WorkspaceRelativePath;
-pub use spec::WorkspaceRelativePathError;
 
-/// Runs the complete projection compiler as a diagnostic-only facade.
+use crate::options::Vocabulary;
+
+/// Manifests that passed every check: the only value [`fn@emit`] accepts.
+/// The private field keeps a caller from constructing one around unchecked
+/// input.
+#[derive(Clone, Copy, Debug)]
+pub struct Checked<'a> {
+    manifests: &'a [ManifestSpec],
+}
+
+impl Checked<'_> {
+    pub(crate) fn manifests(&self) -> &[ManifestSpec] {
+        self.manifests
+    }
+}
+
+/// Checks manifests and returns the receipt emission requires.
 ///
-/// Unlike the internal surface lint, this includes typed lowering: a
-/// conversion or derived name that cannot become a plan is a violation here,
-/// not a later emitter error.
-#[must_use]
-pub fn check(
-    manifests: &[ManifestSpec],
+/// # Errors
+///
+/// Every violation, in deterministic declaration order.
+pub fn compile<'a>(
+    manifests: &'a [ManifestSpec],
     index: &RedfishIndex<'_>,
-    contract: &prost_reflect::DescriptorPool,
-    vocabulary: &crate::options::Vocabulary,
-) -> Vec<Violation> {
-    compile(manifests, index, contract, vocabulary).map_or_else(|violations| violations, |_| vec![])
+    contract: &DescriptorPool,
+    vocabulary: &Vocabulary,
+) -> Result<Checked<'a>, Vec<Violation>> {
+    let violations = check(manifests, index, contract, vocabulary);
+    if violations.is_empty() {
+        Ok(Checked { manifests })
+    } else {
+        Err(violations)
+    }
 }

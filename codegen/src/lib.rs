@@ -14,12 +14,12 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 
 use prost_reflect::DescriptorPool;
-
-mod artifact;
 
 pub mod lint;
 pub mod lock;
@@ -117,11 +117,10 @@ pub struct Outcome {
     pub written: Vec<PathBuf>,
     /// Files whose content on disk differs from what would be generated.
     pub stale: Vec<PathBuf>,
-    /// Positively identified generated files removed as orphans, in
-    /// [`Mode::Generate`].
-    pub removed: Vec<PathBuf>,
-    /// Unexpected files preserved under a generator-owned directory.
-    pub unrecognized: Vec<PathBuf>,
+    /// Files under a generated directory that no manifest produces anymore.
+    /// Never touched: the operator deletes them — and drops the crate's
+    /// `mod generated;` if the last manifest went with them.
+    pub orphans: Vec<PathBuf>,
 }
 
 /// Why compilation could not proceed.
@@ -141,8 +140,6 @@ pub enum Error {
     Manifests(Vec<projection::Violation>),
     /// Wire types could not be rendered from the descriptors.
     Backend(String),
-    /// Two compiler outputs resolved to the same artifact path.
-    DuplicateArtifact(PathBuf),
     /// The workspace root could not be located from the working directory.
     Root(PathBuf),
     /// A generated file could not be read, written, or removed. Carries
@@ -172,9 +169,6 @@ impl fmt::Display for Error {
                 Ok(())
             }
             Self::Backend(detail) => write!(f, "{detail}"),
-            Self::DuplicateArtifact(path) => {
-                write!(f, "two compiler outputs resolve to `{}`", path.display())
-            }
             Self::ManifestLoad(error) => write!(f, "{error}"),
             Self::Index(error) => write!(f, "{error}"),
             Self::Manifests(violations) => {
@@ -218,7 +212,6 @@ impl std::error::Error for Error {
             Self::Index(error) => Some(error),
             Self::Schema(_)
             | Self::Backend(_)
-            | Self::DuplicateArtifact(_)
             | Self::Root(_)
             | Self::Manifests(_) => None,
         }
@@ -315,54 +308,113 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
 
     // The CSDL bundle is parsed only when a manifest exists to compile.
     let manifests = projection::load(here, &pool).map_err(Error::ManifestLoad)?;
-    let mut projection_artifacts = BTreeSet::new();
     if !manifests.is_empty() {
         let bundle = projection::Bundle::dmtf().map_err(Error::Index)?;
         let index = bundle.index().map_err(Error::Index)?;
-        let compiled = projection::compile(&manifests, &index, &pool, &vocabulary)
+        let checked = projection::compile(&manifests, &index, &pool, &vocabulary)
             .map_err(Error::Manifests)?;
-        let generated = projection::emit(&compiled).map_err(Error::Backend)?;
+        let generated =
+            projection::emit(&checked, &index, &pool, &vocabulary).map_err(Error::Backend)?;
         for (path, rendered) in generated {
-            let path = here.join(path);
-            if !projection_artifacts.insert(path.clone()) {
-                return Err(Error::DuplicateArtifact(path));
-            }
-            artifacts.push((path, rendered));
+            artifacts.push((here.join(path), rendered));
         }
     }
 
-    let mut unique_artifacts = BTreeSet::new();
-    for (path, _) in &artifacts {
-        if !unique_artifacts.insert(path.clone()) {
-            return Err(Error::DuplicateArtifact(path.clone()));
-        }
-    }
+    // Artifact paths are distinct by construction: the fixed outputs live
+    // under `model/` and `schema/`, and per-crate module collisions are
+    // already manifest violations.
+    let artifact_paths: BTreeSet<PathBuf> =
+        artifacts.iter().map(|(path, _)| path.clone()).collect();
 
-    let expected =
-        artifact::reconcile_expected_artifacts(here, artifacts, mode).map_err(|failure| {
-            Error::Io {
-                path: failure.failure.path,
-                written: failure.written,
-                error: failure.failure.error,
-            }
-        })?;
     let mut outcome = Outcome {
         examined,
-        written: expected.written,
-        stale: expected.stale,
-        removed: Vec::new(),
-        unrecognized: Vec::new(),
+        written: Vec::new(),
+        stale: Vec::new(),
+        orphans: Vec::new(),
     };
 
-    let owned = artifact::reconcile_projection_artifacts(here, &projection_artifacts, mode)
-        .map_err(|failure| Error::Io {
-            path: failure.path,
+    for (path, rendered) in artifacts {
+        let committed = match fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(Error::Io {
+                    path,
+                    written: outcome.written,
+                    error,
+                })
+            }
+        };
+
+        if committed.as_deref() == Some(rendered.as_str()) {
+            continue;
+        }
+
+        match mode {
+            Mode::Check => outcome.stale.push(path),
+            Mode::Generate => {
+                if let Some(parent) = path.parent() {
+                    if let Err(error) = fs::create_dir_all(parent) {
+                        return Err(Error::Io {
+                            path: parent.to_path_buf(),
+                            written: outcome.written,
+                            error,
+                        });
+                    }
+                }
+                if let Err(error) = fs::write(&path, &rendered) {
+                    return Err(Error::Io {
+                        path,
+                        written: outcome.written,
+                        error,
+                    });
+                }
+                outcome.written.push(path);
+            }
+        }
+    }
+
+    outcome.orphans =
+        generated_orphans(here, &artifact_paths).map_err(|(path, error)| Error::Io {
+            path,
             written: outcome.written.clone(),
-            error: failure.error,
+            error,
         })?;
-    outcome.stale.extend(owned.stale);
-    outcome.removed = owned.removed;
-    outcome.unrecognized = owned.unrecognized;
 
     Ok(outcome)
+}
+
+/// Files under `sources/*/src/generated/` that the compiler no longer
+/// produces — a deleted manifest's module would otherwise sit outside the
+/// staleness gate forever. Detection only; nothing is removed.
+fn generated_orphans(
+    root: &Path,
+    expected: &BTreeSet<PathBuf>,
+) -> Result<Vec<PathBuf>, (PathBuf, io::Error)> {
+    let sources = root.join("sources");
+    let crates = match fs::read_dir(&sources) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err((sources, error)),
+    };
+
+    let mut orphans = Vec::new();
+    for entry in crates {
+        let entry = entry.map_err(|error| (sources.clone(), error))?;
+        let generated = entry.path().join("src").join("generated");
+        let files = match fs::read_dir(&generated) {
+            Ok(files) => files,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err((generated, error)),
+        };
+        for file in files {
+            let file = file.map_err(|error| (generated.clone(), error))?;
+            let path = file.path();
+            if !expected.contains(&path) {
+                orphans.push(path);
+            }
+        }
+    }
+    orphans.sort();
+    Ok(orphans)
 }

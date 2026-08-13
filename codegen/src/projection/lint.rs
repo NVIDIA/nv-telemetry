@@ -17,8 +17,6 @@ use prost_reflect::MessageDescriptor;
 
 use crate::is_contract_package;
 use crate::options::Vocabulary;
-use crate::projection::compile::target_profile;
-use crate::projection::compile::IdentityKind;
 use crate::projection::location::LocationPattern;
 use crate::projection::spec;
 use crate::projection::spec::AssemblySpec;
@@ -56,6 +54,50 @@ const VALUE_MAP_ENTRY: &str = "nv.telemetry.v1.Value.Map.Entry";
 const SIGNAL_KEY: &str = "nv.telemetry.v1.SignalKey";
 const SUBJECT_TYPE: &str = "nv.telemetry.v1.Subject";
 
+/// A target shape the projection compiler deliberately knows how to build.
+///
+/// Reflection verifies these declarations against the contract, but does not
+/// infer new profiles. Adding a target is an architecture decision because it
+/// decides how identity lands and which builder invariants emission promises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TargetProfile {
+    pub(crate) target: &'static str,
+    pub(crate) identity_field: &'static str,
+    pub(crate) identity: IdentityKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IdentityKind {
+    SignalKey,
+    Subject,
+}
+
+const TARGET_PROFILES: &[TargetProfile] = &[
+    TargetProfile {
+        target: "nv.telemetry.v1.SignalDescriptor",
+        identity_field: "key",
+        identity: IdentityKind::SignalKey,
+    },
+    TargetProfile {
+        target: "nv.telemetry.v1.Reading",
+        identity_field: "key",
+        identity: IdentityKind::SignalKey,
+    },
+    TargetProfile {
+        target: "nv.telemetry.v1.StateObservation",
+        identity_field: "subject",
+        identity: IdentityKind::Subject,
+    },
+];
+
+#[must_use]
+pub(crate) fn target_profile(target: &str) -> Option<TargetProfile> {
+    TARGET_PROFILES
+        .iter()
+        .copied()
+        .find(|profile| profile.target == target)
+}
+
 /// One manifest declaration that breaks a rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Violation {
@@ -73,13 +115,6 @@ impl Violation {
     #[must_use]
     pub fn reason(&self) -> &Reason {
         &self.reason
-    }
-
-    pub(crate) fn cannot_emit(subject: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            subject: subject.into(),
-            reason: Reason::CannotEmit(detail.into()),
-        }
     }
 }
 
@@ -172,11 +207,6 @@ pub enum Reason {
         detail: String,
     },
     EmptyConstant(String),
-    ConstantBeyondBound {
-        field: String,
-        actual: usize,
-        limit: u32,
-    },
     AssemblyTargetNotValue {
         field: String,
         actual: String,
@@ -192,7 +222,7 @@ pub enum Reason {
     DuplicateMember(String),
     MembersWithoutVariation,
     ExpansionWithoutMembers,
-    CannotEmit(String),
+    ReadingsPairing(String),
 }
 
 impl fmt::Display for Reason {
@@ -367,16 +397,6 @@ impl fmt::Display for Reason {
             Self::EmptyConstant(field) => {
                 write!(f, "constant for `{field}` is empty")
             }
-            Self::ConstantBeyondBound {
-                field,
-                actual,
-                limit,
-            } => write!(
-                f,
-                "constant for `{field}` is {actual} bytes long, over the \
-                 target's bound of {limit}; the generated builder would \
-                 refuse it on every projection"
-            ),
             Self::AssemblyTargetNotValue { field, actual } => write!(
                 f,
                 "map assembly targets `{field}`, which is `{actual}`; \
@@ -411,7 +431,7 @@ impl fmt::Display for Reason {
             Self::ExpansionWithoutMembers => {
                 f.write_str("an expansion without members expands nothing")
             }
-            Self::CannotEmit(detail) => f.write_str(detail),
+            Self::ReadingsPairing(detail) => f.write_str(detail),
         }
     }
 }
@@ -518,6 +538,128 @@ fn check_manifest(
             violations,
         );
     }
+
+    check_readings_pairing(manifest, index, contract, vocabulary, &report, violations);
+}
+
+/// The invariants the provider relies on when it combines the generated
+/// collections into one `Readings` payload: all instances over a source
+/// share one signal key, so more than one descriptor duplicates that key,
+/// and every possible sample needs its descriptor to exist — a gated
+/// descriptor beside an emitting reading would lose samples at runtime.
+fn check_readings_pairing(
+    manifest: &ManifestSpec,
+    index: &RedfishIndex<'_>,
+    contract: &DescriptorPool,
+    vocabulary: &Vocabulary,
+    report: &impl Fn(&mut Vec<Violation>, Reason),
+    violations: &mut Vec<Violation>,
+) {
+    let mut source_types: Vec<&str> = Vec::new();
+    for projection in &manifest.projections {
+        // An unknown source type already reported as the one root fault.
+        if index.has_type(&projection.source_type)
+            && !source_types.contains(&projection.source_type.as_str())
+        {
+            source_types.push(&projection.source_type);
+        }
+    }
+    for source_type in source_types {
+        let group: Vec<&ProjectionSpec> = manifest
+            .projections
+            .iter()
+            .filter(|projection| projection.source_type == source_type)
+            .collect();
+        let descriptors: Vec<&&ProjectionSpec> = group
+            .iter()
+            .filter(|projection| projection.target_type == "nv.telemetry.v1.SignalDescriptor")
+            .collect();
+        let descriptor_instances: usize = descriptors
+            .iter()
+            .map(|projection| projection.instances().len())
+            .sum();
+        let reading_instances: usize = group
+            .iter()
+            .filter(|projection| projection.target_type == "nv.telemetry.v1.Reading")
+            .map(|projection| projection.instances().len())
+            .sum();
+
+        if descriptor_instances > 1 {
+            report(
+                violations,
+                Reason::ReadingsPairing(format!(
+                    "source `{source_type}` expands to {descriptor_instances} signal \
+                     descriptors with the same key; a Readings payload requires \
+                     descriptor keys to be unique"
+                )),
+            );
+        }
+        if reading_instances == 0 {
+            continue;
+        }
+        if descriptor_instances != 1 {
+            report(
+                violations,
+                Reason::ReadingsPairing(format!(
+                    "source `{source_type}` emits readings without exactly one signal \
+                     descriptor; every sample key must resolve in its Readings payload"
+                )),
+            );
+            continue;
+        }
+        let gated = descriptors
+            .iter()
+            .any(|projection| descriptor_gated(projection, contract, vocabulary));
+        if gated {
+            report(
+                violations,
+                Reason::ReadingsPairing(format!(
+                    "source `{source_type}` gates its signal descriptor while a reading \
+                     can emit; every possible sample must have a descriptor"
+                )),
+            );
+        }
+    }
+}
+
+/// Whether the descriptor projection's output is conditional: an anchored or
+/// required field, a contract-required landing, or an assembly (its own
+/// gate) can each suppress the instance.
+fn descriptor_gated(
+    projection: &ProjectionSpec,
+    contract: &DescriptorPool,
+    vocabulary: &Vocabulary,
+) -> bool {
+    let target = contract.get_message_by_name(&projection.target_type);
+    let expansion_fields = projection
+        .expansion
+        .iter()
+        .flat_map(|expansion| expansion.fields.iter());
+    let gated_field = projection
+        .fields
+        .iter()
+        .chain(expansion_fields)
+        .any(|field| {
+            if field.anchor || field.required {
+                return true;
+            }
+            let root = field
+                .target_field
+                .split('.')
+                .next()
+                .unwrap_or(&field.target_field);
+            target
+                .as_ref()
+                .and_then(|target| target.get_field_by_name(root))
+                .and_then(|root| vocabulary.field_invariant(&root))
+                .is_some_and(|invariant| invariant.required)
+        });
+    let has_assemblies = !projection.map_assemblies.is_empty()
+        || projection
+            .expansion
+            .as_ref()
+            .is_some_and(|expansion| !expansion.map_assemblies.is_empty());
+    gated_field || has_assemblies
 }
 
 /// One projection's checking context: the source scope, the resolved
@@ -632,18 +774,11 @@ impl<'a, 'b> Checker<'a, 'b> {
                 // unchecked, the fault surfaces as a builder refusal on
                 // every projection, discarding the batches it rode with.
                 if let Some(leaf) = self.check_target(&constant.target_field) {
-                    let limit = vocabulary
-                        .field_invariant(&leaf)
-                        .and_then(|invariant| invariant.max_len);
-                    if let Some(limit) = limit {
-                        if constant.value.len() > limit as usize {
-                            self.push(Reason::ConstantBeyondBound {
-                                field: constant.target_field.clone(),
-                                actual: constant.value.len(),
-                                limit,
-                            });
-                        }
-                    }
+                    self.check_static_text(
+                        &format!("constant for `{}`", constant.target_field),
+                        &constant.value,
+                        &leaf,
+                    );
                 }
             }
 
@@ -709,51 +844,6 @@ impl<'a, 'b> Checker<'a, 'b> {
                 detail: format!(
                     "identity fields are {identity_fields:?}, expected only `{}`",
                     profile.identity_field
-                ),
-            });
-        }
-
-        let Some(payload) = self.contract.get_message_by_name(profile.payload) else {
-            self.push(Reason::TargetProfileDrift {
-                target: target_name.to_owned(),
-                detail: format!("payload `{}` is absent", profile.payload),
-            });
-            return;
-        };
-        let Some(payload_field) = payload.get_field_by_name(profile.payload_field) else {
-            self.push(Reason::TargetProfileDrift {
-                target: target_name.to_owned(),
-                detail: format!(
-                    "payload field `{}.{}` is absent",
-                    profile.payload, profile.payload_field
-                ),
-            });
-            return;
-        };
-        let element = match payload_field.kind() {
-            Kind::Message(message) if payload_field.is_list() => message.full_name().to_owned(),
-            other => format!("{other:?}"),
-        };
-        if element != profile.target {
-            self.push(Reason::TargetProfileDrift {
-                target: target_name.to_owned(),
-                detail: format!(
-                    "payload field `{}.{}` contains `{element}`, expected repeated `{}`",
-                    profile.payload, profile.payload_field, profile.target
-                ),
-            });
-        }
-        if self
-            .vocabulary
-            .field_invariant(&payload_field)
-            .and_then(|invariant| invariant.max_items)
-            .is_none()
-        {
-            self.push(Reason::TargetProfileDrift {
-                target: target_name.to_owned(),
-                detail: format!(
-                    "payload field `{}.{}` has no max_items bound",
-                    profile.payload, profile.payload_field
                 ),
             });
         }
@@ -972,13 +1062,19 @@ impl<'a, 'b> Checker<'a, 'b> {
             }
             return None;
         };
-        let nullable_prefix = self.check_prefixes(path);
+        if self.check_prefixes(path) {
+            // Reading through an explicitly nullable segment needs presence
+            // tracking no generated access spells yet.
+            self.push(Reason::NotHonored {
+                feature: "nullable intermediate segments",
+            });
+        }
         if resolved.collection {
             self.push(Reason::NotHonored {
                 feature: "collection-typed sources",
             });
         }
-        if (resolved.nullable || nullable_prefix) && null_policy == NULL_UNSPECIFIED {
+        if resolved.nullable && null_policy == NULL_UNSPECIFIED {
             self.push(Reason::UndecidedNull(path.to_owned()));
         }
         // The graph route that preserves explicit nulls does not exist yet;

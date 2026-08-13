@@ -722,33 +722,26 @@ location and the schema versions checked. Redfish is the standing
 example: the Redfish crate's generator, also owned, emits its index from the
 DMTF schema bundle.
 
-Validation is also the semantic lowering boundary. Projection compilation is
-split into `spec -> compile -> emit`: the spec is author input, the compiled
-plan owns resolved source steps, conversion and target landings, static
-bounds, identity derivation, required-field coverage, and output gates, and
-emission only renders that plan. An emitter must not rediscover those facts
-from a manifest or infer target behavior from an arbitrary protobuf message;
-otherwise "manifest accepted" and "generated behavior" are two independent
-claims that can drift.
+Validation is also the checking boundary for projection compilation. Every
+declaration an *author* can get wrong is a lint rule with its own diagnostic,
+and `compile` wraps a clean check into the receipt emission requires — so
+emission cannot run on unchecked manifests. Emission then resolves against
+the same index the lint checked and refuses, loudly and by declaration, what
+the compiler has not implemented; it never silently degrades. The deliberate
+consequence is that "manifest accepted" and "generated behavior" are one
+claim: what the lint admits, emission can build, and what emission cannot
+build, `make codegen` reports.
 
-Inputs cross that boundary through validated identities. A manifest path is a
-non-empty normalized workspace-relative type, including for programmatic
-compiler users; absolute paths and parent traversal cannot enter diagnostics,
-headers, or provenance, and the loader verifies that a discovered file does
-not resolve through a link outside the selected root. Requested-location
-templates similarly become a `LocationPattern` during compilation. The parser
+Requested-location templates are parsed once, by `LocationPattern`, which
 admits one canonical absolute resource-path grammar and owns placeholder
-segmentation. Lint uses that same parser and emission receives only typed
-literal, wildcard, and capture segments, so URI normalization in a source
-crate cannot make an accepted template unmatchable.
+segmentation. Lint validates through that parser and emission renders its
+typed literal, wildcard, and capture segments, so URI normalization in a
+source crate cannot make an accepted template unmatchable.
 
-Compilation itself does not own filesystem discovery or deletion. It produces
-an expected set of destinations and bytes. The artifact reconciler validates
-the complete set below the selected workspace before the first write, refuses
-linked path components and linked generated directories, and revalidates a
-generated orphan immediately before deleting it. Header recognition determines
-generator ownership, but never grants permission to follow a path outside that
-boundary.
+Compilation produces an expected set of destinations and bytes; generation
+writes exactly those, byte-compared against the checked-in tree. Files under
+a generated directory that no manifest produces anymore are reported as
+orphans for the operator to delete — the compiler never removes files.
 
 Target construction is therefore profile-based. The initial unary profiles
 are `SignalDescriptor` and `Reading`, whose sole identity landing is `key`, and

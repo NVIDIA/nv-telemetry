@@ -13,8 +13,6 @@
 
 use std::fmt;
 use std::fs;
-use std::ops::Deref;
-use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -34,9 +32,6 @@ pub enum ManifestError {
     Parse(PathBuf, String),
     /// A build inconsistency, not a manifest author's fault.
     SchemaMissing,
-    /// A discovered manifest did not resolve to a normal path below the
-    /// selected workspace root.
-    Path(WorkspaceRelativePathError),
 }
 
 impl fmt::Display for ManifestError {
@@ -47,104 +42,18 @@ impl fmt::Display for ManifestError {
             Self::SchemaMissing => {
                 write!(f, "the descriptor set does not define `{MANIFEST}`")
             }
-            Self::Path(error) => write!(f, "{error}"),
         }
     }
 }
 
 impl std::error::Error for ManifestError {}
 
-/// Why a path cannot identify a manifest inside the selected workspace.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceRelativePathError {
-    path: PathBuf,
-    detail: &'static str,
-}
-
-impl fmt::Display for WorkspaceRelativePathError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "manifest path `{}` is not workspace-relative: {}",
-            self.path.display(),
-            self.detail
-        )
-    }
-}
-
-impl std::error::Error for WorkspaceRelativePathError {}
-
-/// A non-empty, normalized path below the selected workspace root.
-///
-/// This is the compiler's trust boundary for manifest identity. Diagnostics,
-/// provenance, and generated headers may render this value without leaking a
-/// checkout-specific absolute path or accepting a parent traversal.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WorkspaceRelativePath(PathBuf);
-
-impl WorkspaceRelativePath {
-    /// Validates a path supplied by a loader or a programmatic compiler user.
-    ///
-    /// # Errors
-    ///
-    /// Empty, absolute, parent-relative, and non-normal paths are rejected.
-    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceRelativePathError> {
-        let path = path.into();
-        if path.as_os_str().is_empty() {
-            return Err(WorkspaceRelativePathError {
-                path,
-                detail: "the path is empty",
-            });
-        }
-        if !path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
-        {
-            return Err(WorkspaceRelativePathError {
-                path,
-                detail: "only normal relative components are allowed",
-            });
-        }
-        Ok(Self(path))
-    }
-
-    /// Renders the path with stable `/` separators for generated text.
-    #[must_use]
-    pub fn rendered(&self) -> String {
-        self.0
-            .iter()
-            .map(|component| component.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/")
-    }
-}
-
-impl AsRef<Path> for WorkspaceRelativePath {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Deref for WorkspaceRelativePath {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl fmt::Display for WorkspaceRelativePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.rendered())
-    }
-}
-
 /// One loaded manifest. Enum fields carry raw numbers; the lint interprets
 /// them.
 #[derive(Clone, Debug)]
 pub struct ManifestSpec {
-    /// Validated workspace-relative manifest path.
-    pub path: WorkspaceRelativePath,
+    /// Workspace-relative manifest path, as the loader derived it.
+    pub path: PathBuf,
     /// The `sources/` directory the manifest was found under.
     pub crate_source: String,
     pub source: String,
@@ -169,11 +78,15 @@ pub struct ProjectionSpec {
 }
 
 impl ManifestSpec {
-    /// The manifest's path from the workspace root, for diagnostics and
-    /// generated headers.
+    /// The manifest's path from the workspace root, rendered with stable
+    /// `/` separators for diagnostics and generated headers.
     #[must_use]
     pub fn relative_path(&self) -> String {
-        self.path.rendered()
+        self.path
+            .iter()
+            .map(|component| component.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 }
 
@@ -301,8 +214,6 @@ pub fn load(root: &Path, pool: &DescriptorPool) -> Result<Vec<ManifestSpec>, Man
     let descriptor = pool
         .get_message_by_name(MANIFEST)
         .ok_or(ManifestError::SchemaMissing)?;
-    let canonical_root =
-        fs::canonicalize(root).map_err(|error| ManifestError::Io(root.to_path_buf(), error))?;
 
     let sources = root.join("sources");
     let mut files = Vec::new();
@@ -339,7 +250,6 @@ pub fn load(root: &Path, pool: &DescriptorPool) -> Result<Vec<ManifestSpec>, Man
 
     let mut manifests = Vec::new();
     for path in files {
-        ensure_workspace_member(&canonical_root, &path)?;
         let text =
             fs::read_to_string(&path).map_err(|error| ManifestError::Io(path.clone(), error))?;
         let message = DynamicMessage::parse_text_format(descriptor.clone(), &text)
@@ -350,32 +260,12 @@ pub fn load(root: &Path, pool: &DescriptorPool) -> Result<Vec<ManifestSpec>, Man
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let relative = workspace_relative(root, &path)?;
+        // The loader built `path` under `root`, so the strip is a rendering
+        // choice, not a trust boundary.
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
         manifests.push(manifest_spec(&message, relative, crate_source));
     }
     Ok(manifests)
-}
-
-fn ensure_workspace_member(canonical_root: &Path, path: &Path) -> Result<(), ManifestError> {
-    let canonical_path =
-        fs::canonicalize(path).map_err(|error| ManifestError::Io(path.to_path_buf(), error))?;
-    if canonical_path.starts_with(canonical_root) {
-        return Ok(());
-    }
-    Err(ManifestError::Path(WorkspaceRelativePathError {
-        path: path.to_path_buf(),
-        detail: "the path resolves outside the selected workspace root",
-    }))
-}
-
-fn workspace_relative(root: &Path, path: &Path) -> Result<WorkspaceRelativePath, ManifestError> {
-    let relative = path.strip_prefix(root).map_err(|_| {
-        ManifestError::Path(WorkspaceRelativePathError {
-            path: path.to_path_buf(),
-            detail: "the path is outside the selected workspace root",
-        })
-    })?;
-    WorkspaceRelativePath::new(relative).map_err(ManifestError::Path)
 }
 
 // The readers default missing fields exactly as proto3 does.
@@ -443,11 +333,7 @@ fn list<T>(
         .unwrap_or_default()
 }
 
-fn manifest_spec(
-    message: &DynamicMessage,
-    path: WorkspaceRelativePath,
-    crate_source: String,
-) -> ManifestSpec {
+fn manifest_spec(message: &DynamicMessage, path: PathBuf, crate_source: String) -> ManifestSpec {
     ManifestSpec {
         path,
         crate_source,
@@ -545,99 +431,4 @@ fn value_map(message: &DynamicMessage) -> Vec<(String, String)> {
     messages(message, "value_map", |mapping| {
         (string(mapping, "from"), string(mapping, "to"))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-    use std::path::PathBuf;
-
-    use super::ensure_workspace_member;
-    use super::workspace_relative;
-    use super::ManifestSpec;
-    use super::WorkspaceRelativePath;
-
-    #[test]
-    fn manifest_paths_are_relative_to_the_workspace_not_an_ancestor_named_sources() {
-        let root = PathBuf::from("sources/checkout/nv-telemetry");
-        let absolute = root.join("sources/redfish/manifests/sensor.textpb");
-        let path = workspace_relative(&root, &absolute).expect("the path is below the workspace");
-        let manifest = ManifestSpec {
-            path,
-            crate_source: "redfish".to_owned(),
-            source: "redfish".to_owned(),
-            backend: 1,
-            index: "nv-redfish-schema/dmtf".to_owned(),
-            projections: Vec::new(),
-            subject: None,
-        };
-
-        assert_eq!(
-            manifest.relative_path(),
-            "sources/redfish/manifests/sensor.textpb"
-        );
-    }
-
-    #[test]
-    fn manifest_paths_reject_every_workspace_escape_shape() {
-        for path in [
-            PathBuf::new(),
-            PathBuf::from("/tmp/sensor.textpb"),
-            PathBuf::from("../sensor.textpb"),
-            PathBuf::from("sources/../sensor.textpb"),
-            PathBuf::from("./sources/redfish/sensor.textpb"),
-        ] {
-            assert!(
-                WorkspaceRelativePath::new(path.clone()).is_err(),
-                "{path:?} must not cross the compiler boundary"
-            );
-        }
-    }
-
-    #[test]
-    fn workspace_relative_refuses_a_path_below_another_root() {
-        let error = workspace_relative(
-            Path::new("checkout-a"),
-            Path::new("checkout-b/sources/redfish/manifests/sensor.textpb"),
-        )
-        .expect_err("a different checkout cannot become provenance");
-
-        assert!(error.to_string().contains("outside the selected workspace"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_linked_manifest_cannot_resolve_outside_the_workspace() {
-        use std::fs;
-        use std::os::unix::fs::symlink;
-        use std::time::SystemTime;
-
-        let serial = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("the clock is after the epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "nv-telemetry-manifest-root-{}-{serial}",
-            std::process::id(),
-        ));
-        let external = std::env::temp_dir().join(format!(
-            "nv-telemetry-manifest-external-{}-{serial}",
-            std::process::id(),
-        ));
-        fs::create_dir_all(&root).expect("the workspace fixture is created");
-        fs::create_dir_all(&external).expect("the external fixture is created");
-        let external_manifest = external.join("sensor.textpb");
-        fs::write(&external_manifest, "source: \"redfish\"\n")
-            .expect("the external manifest is written");
-        let linked = root.join("sensor.textpb");
-        symlink(&external_manifest, &linked).expect("the manifest is linked");
-        let canonical_root = fs::canonicalize(&root).expect("the fixture root resolves");
-
-        let error = ensure_workspace_member(&canonical_root, &linked)
-            .expect_err("external manifest content cannot cross the loader boundary");
-        assert!(error.to_string().contains("resolves outside"));
-
-        fs::remove_dir_all(&root).expect("the workspace fixture is removed");
-        fs::remove_dir_all(&external).expect("the external fixture is removed");
-    }
 }

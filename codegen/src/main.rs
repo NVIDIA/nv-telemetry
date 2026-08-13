@@ -58,16 +58,12 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
     match mode {
         Mode::Generate => {
             println!(
-                "nv-telemetry-codegen: {} message(s) examined, {} file(s) written, {} orphan(s) removed",
+                "nv-telemetry-codegen: {} message(s) examined, {} file(s) written",
                 outcome.examined,
-                outcome.written.len(),
-                outcome.removed.len()
+                outcome.written.len()
             );
             for path in &outcome.written {
                 println!("  wrote {}", path.display());
-            }
-            for path in &outcome.removed {
-                println!("  removed generated orphan {}", path.display());
             }
             if outcome
                 .written
@@ -78,20 +74,9 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
                     "review the contract lock diff: it records semantics no other gate checks"
                 );
             }
-            if outcome.unrecognized.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                eprintln!(
-                    "nv-telemetry-codegen: preserved {} unrecognized file(s) under a generated directory",
-                    outcome.unrecognized.len()
-                );
-                for path in &outcome.unrecognized {
-                    eprintln!("  {}", path.display());
-                }
-                ExitCode::FAILURE
-            }
+            orphan_report(outcome)
         }
-        Mode::Check if outcome.stale.is_empty() && outcome.unrecognized.is_empty() => {
+        Mode::Check if outcome.stale.is_empty() && outcome.orphans.is_empty() => {
             println!(
                 "nv-telemetry-codegen: generated tree is up to date ({} message(s) examined)",
                 outcome.examined
@@ -99,33 +84,48 @@ fn report(mode: Mode, outcome: &Outcome) -> ExitCode {
             ExitCode::SUCCESS
         }
         Mode::Check => {
-            eprintln!(
-                "nv-telemetry-codegen: {} generated file(s) differ from what the compiler \
-                 would write",
-                outcome.stale.len()
-            );
-            for path in &outcome.stale {
-                eprintln!("  {}", path.display());
-            }
-            if !outcome.unrecognized.is_empty() {
+            if !outcome.stale.is_empty() {
                 eprintln!(
-                    "nv-telemetry-codegen: {} unrecognized file(s) were preserved under a generated directory",
-                    outcome.unrecognized.len()
+                    "nv-telemetry-codegen: {} generated file(s) differ from what the compiler \
+                     would write",
+                    outcome.stale.len()
                 );
-                for path in &outcome.unrecognized {
+                for path in &outcome.stale {
                     eprintln!("  {}", path.display());
                 }
+                eprintln!(
+                    "\n`make codegen` regenerates them. Usually the schema changed and the \
+                     tree\ndid not; a stray `cargo fmt` on stable can also rewrite generated \
+                     files,\nwhich regenerating puts back.\n\nRead the resulting diff rather \
+                     than just committing it. The contract lock\nrecords semantics no other \
+                     gate checks — numbers, types, presence,\nannotations, enum values, and \
+                     oneofs — so for annotation changes it is the\nonly review surface there \
+                     is."
+                );
             }
-            eprintln!(
-                "\n`make codegen` regenerates them. Usually the schema changed and the \
-                 tree\ndid not; a stray `cargo fmt` on stable can also rewrite generated \
-                 files,\nwhich regenerating puts back.\n\nRead the resulting diff rather \
-                 than just committing it. The contract lock\nrecords semantics no other \
-                 gate checks — numbers, types, presence,\nannotations, enum values, and \
-                 oneofs — so for annotation changes it is the\nonly review surface there \
-                 is."
-            );
+            let _ = orphan_report(outcome);
             ExitCode::FAILURE
         }
     }
+}
+
+/// Orphans cannot be regenerated away; the operator deletes them, so both
+/// modes fail while naming them.
+fn orphan_report(outcome: &Outcome) -> ExitCode {
+    if outcome.orphans.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    eprintln!(
+        "nv-telemetry-codegen: {} file(s) under a generated directory that no \
+         manifest produces",
+        outcome.orphans.len()
+    );
+    for path in &outcome.orphans {
+        eprintln!("  {}", path.display());
+    }
+    eprintln!(
+        "delete them by hand; if the last manifest of a crate went with them, \
+         also drop `mod generated;` from that crate's lib.rs"
+    );
+    ExitCode::FAILURE
 }
