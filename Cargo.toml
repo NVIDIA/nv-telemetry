@@ -57,10 +57,23 @@ proc-macro2 = "1"
 # easy inputs.
 heck = "0.5"
 
+# The Redfish client, consumed only by `sources/redfish`: typed DMTF schema
+# models over a transport-agnostic `Bmc` trait. Default features are off so
+# the HTTP stack (reqwest, tokio) enters the tree only where the crate's
+# `bmc-http` feature asks for it; the mock implements the same trait for
+# transport-free tests.
+nv-redfish = { version = "0.14.1", default-features = false }
+nv-redfish-bmc-mock = "0.14.1"
+
 # Build-time only, for the projection compiler: the same CSDL parser and
 # vendored DMTF bundle that nv-redfish generates its typed models from.
 nv-redfish-csdl-compiler = "0.14.1"
 nv-redfish-schema = "0.14.1"
+
+# Dev-only: fixture JSON for the acquisition corpus, and the executor
+# bmc-mock's async trait impl needs under test.
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 
 # Benchmarks measure instruction counts under Valgrind, so numbers are
 # machine-load independent and comparable across runs. Dev-only; running

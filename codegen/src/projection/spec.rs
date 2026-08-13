@@ -52,6 +52,7 @@ impl std::error::Error for ManifestError {}
 /// them.
 #[derive(Clone, Debug)]
 pub struct ManifestSpec {
+    /// Workspace-relative manifest path, as the loader derived it.
     pub path: PathBuf,
     /// The `sources/` directory the manifest was found under.
     pub crate_source: String,
@@ -76,6 +77,69 @@ pub struct ProjectionSpec {
     pub expansion: Option<ExpansionSpec>,
 }
 
+impl ManifestSpec {
+    /// The manifest's path from the workspace root, rendered with stable
+    /// `/` separators for diagnostics and generated headers.
+    #[must_use]
+    pub fn relative_path(&self) -> String {
+        self.path
+            .iter()
+            .map(|component| component.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
+
+impl ProjectionSpec {
+    /// What this projection means once its expansion is applied: one
+    /// instance per member — the shared declarations plus the expansion's,
+    /// placeholders substituted — or the projection itself when it declares
+    /// no expansion. The lint checks these instances and emission generates
+    /// from them, so the two cannot disagree about what an expansion means.
+    #[must_use]
+    pub fn instances(&self) -> Vec<Self> {
+        let Some(expansion) = &self.expansion else {
+            return vec![self.clone()];
+        };
+        expansion
+            .members
+            .iter()
+            .map(|member| {
+                let mut instance = self.clone();
+                instance.expansion = None;
+                for field in &expansion.fields {
+                    let mut field = field.clone();
+                    field.source_path = substitute(&field.source_path, member);
+                    instance.fields.push(field);
+                }
+                for assembly in &expansion.map_assemblies {
+                    let mut assembly = assembly.clone();
+                    for entry in &mut assembly.entries {
+                        entry.source_path = substitute(&entry.source_path, member);
+                    }
+                    instance.map_assemblies.push(assembly);
+                }
+                for constant in &expansion.constants {
+                    let mut constant = constant.clone();
+                    constant.value = substitute(&constant.value, member);
+                    instance.constants.push(constant);
+                }
+                instance
+            })
+            .collect()
+    }
+}
+
+/// Substitutes the expansion placeholders for one member. A brace left in
+/// the result is a placeholder that failed; the lint reports it and
+/// emission never sees one.
+#[must_use]
+pub fn substitute(text: &str, member: &str) -> String {
+    use heck::ToKebabCase as _;
+    text.replace("{member-kebab}", &member.to_kebab_case())
+        .replace("{member}", member)
+}
+
 #[derive(Clone, Debug)]
 pub struct ExpansionSpec {
     pub members: Vec<String>,
@@ -84,14 +148,16 @@ pub struct ExpansionSpec {
     pub map_assemblies: Vec<AssemblySpec>,
 }
 
-#[derive(Clone, Debug)]
+// Compared by value: emission derives one subject per source type and must
+// recognize two projections declaring the same identity as agreeing.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubjectSpec {
     pub kind: String,
     pub scope: Vec<ScopeSpec>,
     pub id_path: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopeSpec {
     PayloadPath(String),
     LocationTemplate {
@@ -194,7 +260,10 @@ pub fn load(root: &Path, pool: &DescriptorPool) -> Result<Vec<ManifestSpec>, Man
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        manifests.push(manifest_spec(&message, path, crate_source));
+        // The loader built `path` under `root`, so the strip is a rendering
+        // choice, not a trust boundary.
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        manifests.push(manifest_spec(&message, relative, crate_source));
     }
     Ok(manifests)
 }

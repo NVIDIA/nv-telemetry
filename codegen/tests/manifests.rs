@@ -40,6 +40,18 @@ fn violations_of(manifests: &[ManifestSpec]) -> Vec<Violation> {
     check(manifests, &INDEX, &POOL, &VOCABULARY)
 }
 
+fn emit(manifests: &[ManifestSpec]) -> Result<Vec<(PathBuf, String)>, String> {
+    let checked = nv_telemetry_codegen::projection::compile(manifests, &INDEX, &POOL, &VOCABULARY)
+        .map_err(|violations| {
+            violations
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+    nv_telemetry_codegen::projection::emit(&checked, &INDEX, &POOL, &VOCABULARY)
+}
+
 fn rejects(spec: ManifestSpec, needle: &str) {
     let violations = violations_of(&[spec]);
     assert!(
@@ -47,6 +59,16 @@ fn rejects(spec: ManifestSpec, needle: &str) {
             .iter()
             .any(|violation| violation.to_string().contains(needle)),
         "expected a violation mentioning {needle:?}, got: {violations:?}"
+    );
+}
+
+/// A declaration the lint accepts but the emitter cannot honor: the error
+/// is loud at `make codegen` and names the declaration.
+fn emit_rejects(spec: ManifestSpec, needle: &str) {
+    let error = emit(&[spec]).expect_err("the manifests should fail emission");
+    assert!(
+        error.contains(needle),
+        "expected an emission error mentioning {needle:?}, got: {error}"
     );
 }
 
@@ -99,9 +121,26 @@ fn projection(name: &str) -> ProjectionSpec {
     }
 }
 
+fn descriptor(name: &str) -> ProjectionSpec {
+    let mut descriptor = projection(name);
+    "nv.telemetry.v1.SignalDescriptor".clone_into(&mut descriptor.target_type);
+    descriptor.fields.clear();
+    descriptor
+}
+
+fn state_projection(name: &str) -> ProjectionSpec {
+    let mut state = projection(name);
+    "nv.telemetry.v1.StateObservation".clone_into(&mut state.target_type);
+    state.constants = vec![ConstantSpec {
+        target_field: "name".to_owned(),
+        value: name.to_owned(),
+    }];
+    state
+}
+
 fn manifest(projections: Vec<ProjectionSpec>) -> ManifestSpec {
     ManifestSpec {
-        path: PathBuf::from("sources/redfish/manifests/test.textpb"),
+        path: manifest_path("sources/redfish/manifests/test.textpb"),
         crate_source: "redfish".to_owned(),
         source: "redfish".to_owned(),
         backend: 1,
@@ -109,6 +148,10 @@ fn manifest(projections: Vec<ProjectionSpec>) -> ManifestSpec {
         projections,
         subject: None,
     }
+}
+
+fn manifest_path(path: impl Into<PathBuf>) -> PathBuf {
+    path.into()
 }
 
 /// A threshold-shaped projection: one anchored field at `path`, expanded
@@ -136,7 +179,57 @@ fn expanded(members: Vec<&str>, path: &str) -> ProjectionSpec {
 // The baseline is clean, so each rejection below is its mutation's.
 #[test]
 fn the_baseline_manifest_is_clean() {
-    passes(manifest(vec![projection("sample")]));
+    passes(manifest(vec![
+        descriptor("descriptor"),
+        projection("sample"),
+    ]));
+}
+
+#[test]
+fn only_explicit_unary_target_profiles_are_accepted() {
+    for target in [
+        "nv.telemetry.v1.ResourceRelation",
+        "nv.telemetry.v1.ValueRange",
+    ] {
+        let mut broken = projection("unsupported-target");
+        broken.target_type = target.to_owned();
+        rejects(manifest(vec![broken]), "has no projection profile");
+    }
+}
+
+#[test]
+fn every_required_target_field_must_be_covered() {
+    let mut broken = projection("missing-value");
+    broken.target_type = "nv.telemetry.v1.StateObservation".to_owned();
+    broken.fields.clear();
+    broken.constants = vec![ConstantSpec {
+        target_field: "name".to_owned(),
+        value: "state".to_owned(),
+    }];
+    rejects(
+        manifest(vec![broken]),
+        "required target field `value` is not populated",
+    );
+}
+
+#[test]
+fn a_required_target_field_is_an_automatic_output_gate() {
+    // Sensor.Reading is nullable and NULL_POLICY_ABSENT: ordinary silence
+    // must suppress the required Reading.value, never reach builder.build().
+    let files = emit(&[manifest(vec![
+        descriptor("descriptor"),
+        projection("sample"),
+    ])])
+    .expect("the profiled Reading projection emits");
+    let rendered = &files
+        .iter()
+        .find(|(path, _)| path.ends_with("test.rs"))
+        .expect("the manifest module is rendered")
+        .1;
+    assert!(
+        rendered.contains("if sample_value.is_some()"),
+        "required Reading.value does not gate output:\n{rendered}"
+    );
 }
 
 #[test]
@@ -167,6 +260,49 @@ fn a_nullable_source_needs_a_null_policy() {
     let mut broken = projection("sample");
     broken.fields[0].null_policy = 0;
     rejects(manifest(vec![broken]), "declares no null_policy");
+}
+
+#[test]
+fn a_nullable_intermediate_segment_is_not_honored() {
+    // `Front` is optional+nullable while `UserLabel` is optional and
+    // non-nullable: an explicit null can terminate this read before its
+    // leaf, and no generated access spells that state yet. Declaring the
+    // path is an error until the compiler grows presence tracking.
+    let mut nested = state_projection("nested-null");
+    nested.source_type = "Chassis".to_owned();
+    nested.subject = Some(SubjectSpec {
+        kind: "chassis".to_owned(),
+        scope: vec![ScopeSpec::LocationTemplate {
+            template: "/redfish/v1/Chassis/{chassis}".to_owned(),
+            capture: "chassis".to_owned(),
+        }],
+        id_path: "Id".to_owned(),
+    });
+    nested.fields = vec![field("Doors.Front.UserLabel", "value.string_value")];
+    nested.fields[0].null_policy = 2;
+    rejects(manifest(vec![nested]), "`nullable intermediate segments`");
+}
+
+#[test]
+fn a_nullable_subject_prefix_is_not_honored() {
+    let mut broken = state_projection("nullable-subject-prefix");
+    broken.source_type = "Chassis".to_owned();
+    broken.subject = Some(SubjectSpec {
+        kind: "chassis".to_owned(),
+        scope: vec![ScopeSpec::PayloadPath("Doors.Front.UserLabel".to_owned())],
+        id_path: "Id".to_owned(),
+    });
+    broken.fields = vec![field("Manufacturer", "value.string_value")];
+    rejects(manifest(vec![broken]), "`nullable subject sources`");
+}
+
+#[test]
+fn preserving_explicit_nulls_is_not_honored_yet() {
+    // The graph route that preserves explicit nulls does not exist, so the
+    // declaration would read as enforced while collapsing null to absent.
+    let mut broken = projection("sample");
+    broken.fields[0].null_policy = 3;
+    rejects(manifest(vec![broken]), "`NULL_POLICY_EXPLICIT_NULL`");
 }
 
 #[test]
@@ -242,6 +378,38 @@ fn a_known_value_outside_the_enum_is_rejected() {
     broken.fields[0].source_path = "ReadingType".to_owned();
     broken.fields[0].known_values = vec!["Kelvinish".to_owned()];
     rejects(manifest(vec![broken]), "names `Kelvinish`");
+}
+
+#[test]
+fn an_empty_known_enum_value_is_rejected_before_emission() {
+    let mut broken = descriptor("descriptor");
+    broken.fields = vec![field("ReadingType", "kind")];
+    broken.fields[0].known_values = vec![String::new()];
+    rejects(manifest(vec![broken]), "empty known enum value");
+}
+
+#[test]
+fn unknown_raw_manifest_enum_numbers_are_rejected() {
+    let mut null = projection("sample");
+    null.fields[0].null_policy = 99;
+    rejects(manifest(vec![null]), "unknown null_policy number 99");
+
+    let mut cardinality = projection("sample");
+    cardinality.fields[0].cardinality = 99;
+    rejects(manifest(vec![cardinality]), "unknown cardinality number 99");
+
+    let mut entry = state_projection("state");
+    entry.fields.clear();
+    entry.map_assemblies = vec![AssemblySpec {
+        target_field: "value".to_owned(),
+        entries: vec![EntrySpec {
+            key: "reading".to_owned(),
+            source_path: "Reading".to_owned(),
+            null_policy: 99,
+            value_map: Vec::new(),
+        }],
+    }];
+    rejects(manifest(vec![entry]), "unknown null_policy number 99");
 }
 
 #[test]
@@ -331,7 +499,9 @@ fn a_subject_path_names_one_scalar() {
 fn projections_inherit_the_manifest_subject() {
     let mut inherited = projection("sample");
     inherited.subject = None;
-    let mut with_default = manifest(vec![inherited]);
+    let mut inherited_descriptor = descriptor("descriptor");
+    inherited_descriptor.subject = None;
+    let mut with_default = manifest(vec![inherited_descriptor, inherited]);
     with_default.subject = Some(subject());
     passes(with_default);
 }
@@ -478,8 +648,10 @@ fn projection_names_are_unique_per_crate() {
     let pair = vec![manifest(vec![projection("sample")]), other_crate];
     let violations = violations_of(&pair);
     assert!(
-        violations.is_empty(),
-        "same name in another crate must pass: {violations:?}"
+        !violations
+            .iter()
+            .any(|violation| violation.to_string().contains("a second projection named")),
+        "same name in another crate must not collide: {violations:?}"
     );
 }
 
@@ -504,4 +676,415 @@ fn assembly_entries_get_the_same_source_checks_as_fields() {
         }],
     }];
     rejects(manifest(vec![broken]), "collection-typed sources");
+}
+
+// Emission shares the checked manifests and the fold; these pins hold its
+// two edges — the acceptance suite for what it produces is the corpus
+// under `sources/redfish/tests/`, and the staleness gate byte-compares the
+// checked-in tree.
+
+#[test]
+fn the_shipped_manifests_emit_the_checked_in_tree() {
+    let root = nv_telemetry_codegen::workspace_root().expect("a workspace root above the tests");
+    let manifests =
+        nv_telemetry_codegen::projection::load(&root, &POOL).expect("shipped manifests load");
+    assert!(!manifests.is_empty(), "the sensor manifest ships");
+    let files = emit(&manifests).expect("shipped manifests emit");
+    for (path, rendered) in files {
+        let committed = std::fs::read_to_string(root.join(&path))
+            .unwrap_or_else(|error| panic!("{} unreadable: {error}", path.display()));
+        assert_eq!(
+            committed,
+            rendered,
+            "{} is stale; run `make codegen`",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn a_conversion_the_emitter_lacks_is_an_error_never_a_silent_skip() {
+    // The surface lint accepts this shape — the paths resolve and the target
+    // exists — but typed lowering must reject the unsupported conversion
+    // before an emitter can be obtained.
+    let mut broken = projection("sample");
+    broken.fields[0].source_path = "ReadingUnits".to_owned();
+    emit_rejects(
+        manifest(vec![descriptor("descriptor"), broken]),
+        "no conversion from `Edm.String`",
+    );
+}
+
+// Review-driven pins: each closes one way a lint-clean manifest could reach
+// silently wrong generated code.
+
+#[test]
+fn readings_payloads_pair_descriptors_and_samples() {
+    rejects(
+        manifest(vec![projection("sample")]),
+        "every sample key must resolve",
+    );
+
+    rejects(
+        manifest(vec![descriptor("first"), descriptor("second")]),
+        "2 signal descriptors with the same key",
+    );
+
+    let mut gated = descriptor("descriptor");
+    gated.fields = vec![field("ReadingType", "kind")];
+    gated.fields[0].anchor = true;
+    rejects(
+        manifest(vec![gated, projection("sample")]),
+        "gates its signal descriptor",
+    );
+}
+
+#[test]
+fn required_nullable_source_fields_keep_explicit_null_distinct() {
+    // BootOptionReference is Redfish.Required but nullable: nv-redfish emits
+    // Option<String>, where None can only mean explicit JSON null.
+    let mut reference = field("BootOptionReference", "value.string_value");
+    reference.null_policy = 2;
+    let projected = ProjectionSpec {
+        name: "boot-reference".to_owned(),
+        source_type: "BootOption".to_owned(),
+        target_type: "nv.telemetry.v1.StateObservation".to_owned(),
+        subject: Some(SubjectSpec {
+            kind: "boot-option".to_owned(),
+            scope: vec![ScopeSpec::LocationTemplate {
+                template: "/redfish/v1/Systems/{system}/BootOptions/{id}".to_owned(),
+                capture: "system".to_owned(),
+            }],
+            id_path: "Id".to_owned(),
+        }),
+        fields: vec![reference],
+        iterate: String::new(),
+        versions: 0,
+        constants: vec![ConstantSpec {
+            target_field: "name".to_owned(),
+            value: "reference".to_owned(),
+        }],
+        map_assemblies: Vec::new(),
+        expansion: None,
+    };
+    let files = emit(&[manifest(vec![projected])]).expect("required-nullable source emits");
+    let rendered = &files
+        .iter()
+        .find(|(path, _)| path.ends_with("test.rs"))
+        .expect("the manifest module is rendered")
+        .1;
+    assert!(
+        rendered.contains("match boot_option.boot_option_reference.clone()")
+            && rendered.contains("\"BootOption.BootOptionReference\",")
+            && rendered.contains("\"explicitly null\""),
+        "required-nullable None did not become explicit null:\n{rendered}"
+    );
+}
+
+#[test]
+fn vocabulary_on_a_non_enum_source_is_not_honored() {
+    // The rewrites would be consulted by nothing: a mapping that reads as
+    // enforced while doing nothing.
+    let mut mapped = projection("sample");
+    mapped.fields[0].source_path = "ReadingUnits".to_owned();
+    mapped.fields[0].value_map = vec![("Cel".to_owned(), "celsius".to_owned())];
+    rejects(
+        manifest(vec![mapped]),
+        "`value_map on a source that is not an enumeration`",
+    );
+
+    let mut known = projection("sample");
+    known.fields[0].source_path = "ReadingUnits".to_owned();
+    known.fields[0].known_values = vec!["Cel".to_owned()];
+    rejects(
+        manifest(vec![known]),
+        "`known_values on a source that is not an enumeration`",
+    );
+}
+
+#[test]
+fn a_constant_over_the_targets_bound_is_rejected() {
+    // Unchecked, this surfaces as a builder refusal on every projection,
+    // discarding the batches and issues it rode with.
+    let mut broken = projection("sample");
+    broken.target_type = "nv.telemetry.v1.StateObservation".to_owned();
+    broken.constants = vec![ConstantSpec {
+        target_field: "name".to_owned(),
+        value: "x".repeat(300),
+    }];
+    rejects(manifest(vec![broken]), "over the target's bound");
+}
+
+#[test]
+fn static_subject_values_obey_the_subject_schema() {
+    let mut overlong = projection("overlong-subject-kind");
+    overlong.subject = Some(SubjectSpec {
+        kind: "x".repeat(129),
+        ..subject()
+    });
+    rejects(manifest(vec![overlong]), "subject kind is 129 bytes long");
+
+    let contributor = ScopeSpec::LocationTemplate {
+        template: "/redfish/v1/Chassis/{chassis}/Sensors/{id}".to_owned(),
+        capture: "chassis".to_owned(),
+    };
+    let mut too_many = projection("too-many-scope-contributors");
+    too_many.subject = Some(SubjectSpec {
+        scope: vec![contributor; 17],
+        ..subject()
+    });
+    rejects(manifest(vec![too_many]), "subject scope has 17 items");
+}
+
+#[test]
+fn enum_outputs_obey_the_target_string_bound() {
+    let mut broken = projection("overlong-enum-output");
+    broken.target_type = "nv.telemetry.v1.SignalDescriptor".to_owned();
+    broken.fields = vec![field("ReadingType", "kind")];
+    broken.fields[0].value_map = vec![("Temperature".to_owned(), "x".repeat(129))];
+    rejects(
+        manifest(vec![broken]),
+        "enum output for `ReadingType` is 129 bytes long",
+    );
+}
+
+fn state_map_projection(entries: Vec<EntrySpec>) -> ProjectionSpec {
+    ProjectionSpec {
+        target_type: "nv.telemetry.v1.StateObservation".to_owned(),
+        fields: Vec::new(),
+        constants: vec![ConstantSpec {
+            target_field: "name".to_owned(),
+            value: "attributes".to_owned(),
+        }],
+        map_assemblies: vec![AssemblySpec {
+            target_field: "value".to_owned(),
+            entries,
+        }],
+        ..projection("state-map")
+    }
+}
+
+fn map_entry(key: String) -> EntrySpec {
+    EntrySpec {
+        key,
+        source_path: "Reading".to_owned(),
+        null_policy: ABSENT,
+        value_map: Vec::new(),
+    }
+}
+
+#[test]
+fn map_assembly_literals_obey_the_value_schema() {
+    rejects(
+        manifest(vec![state_map_projection(vec![map_entry("x".repeat(257))])]),
+        "assembly entry key is 257 bytes long",
+    );
+
+    let entries = (0..1_025)
+        .map(|index| map_entry(format!("key-{index}")))
+        .collect();
+    rejects(
+        manifest(vec![state_map_projection(entries)]),
+        "assembly `value` has 1025 items",
+    );
+}
+
+#[test]
+fn location_captures_are_complete_unique_segments() {
+    let mut embedded = projection("embedded-capture");
+    embedded.subject = Some(SubjectSpec {
+        scope: vec![ScopeSpec::LocationTemplate {
+            template: "/redfish/v1/Chassis/prefix-{chassis}/Sensors/{id}".to_owned(),
+            capture: "chassis".to_owned(),
+        }],
+        ..subject()
+    });
+    rejects(
+        manifest(vec![embedded]),
+        "placeholder segment `prefix-{chassis}` must be exactly",
+    );
+
+    let mut repeated = projection("repeated-capture");
+    repeated.subject = Some(SubjectSpec {
+        scope: vec![ScopeSpec::LocationTemplate {
+            template: "/redfish/v1/{chassis}/Chassis/{chassis}/Sensors/{id}".to_owned(),
+            capture: "chassis".to_owned(),
+        }],
+        ..subject()
+    });
+    rejects(
+        manifest(vec![repeated]),
+        "capture `chassis` appears 2 times",
+    );
+}
+
+#[test]
+fn location_templates_must_already_be_canonical_resource_paths() {
+    for (template, needle) in [
+        (
+            "/redfish/v1/Chassis/{chassis}/Sensors/{id}/",
+            "no trailing separator",
+        ),
+        (
+            "/redfish/v1/Chassis/{chassis}/Sensors/{id}?view=full",
+            "query and fragment components",
+        ),
+        (
+            "/redfish/v1/Chassis/{chassis}/Sensors/{id}#/Reading",
+            "query and fragment components",
+        ),
+        (
+            "/redfish/v1//Chassis/{chassis}/Sensors/{id}",
+            "no empty segments",
+        ),
+    ] {
+        let mut broken = projection("noncanonical-location");
+        broken.subject = Some(SubjectSpec {
+            scope: vec![ScopeSpec::LocationTemplate {
+                template: template.to_owned(),
+                capture: "chassis".to_owned(),
+            }],
+            ..subject()
+        });
+        rejects(manifest(vec![broken]), needle);
+    }
+}
+
+#[test]
+fn generator_owned_manifest_stems_are_rejected() {
+    for stem in ["mod", "provenance"] {
+        let mut broken = manifest(vec![projection(stem)]);
+        broken.path = manifest_path(format!("sources/redfish/manifests/{stem}.textpb"));
+        rejects(broken, "is owned by the generator");
+    }
+}
+
+#[test]
+fn a_stem_that_does_not_become_a_module_name_is_rejected() {
+    // `3d-flow` passes the lint (not reserved, not duplicated) but snake
+    // cases to `3d_flow`, which no `mod` declaration can name.
+    let mut broken = manifest(vec![state_projection("sample")]);
+    broken.path = manifest_path("sources/redfish/manifests/3d-flow.textpb");
+    emit_rejects(broken, "rename the manifest");
+}
+
+#[test]
+fn a_path_through_a_collection_is_rejected() {
+    // The leaf is a plain scalar; only an intermediate is a collection, so
+    // the leaf check alone would wave the path through to field access on a
+    // Vec in the generated tree.
+    let mut broken = projection("sample");
+    broken.source_type = "Chassis".to_owned();
+    broken.fields[0].source_path = "Location.Contacts.ContactName".to_owned();
+    rejects(manifest(vec![broken]), "collection-typed sources");
+}
+
+#[test]
+fn a_nullable_subject_source_is_not_honored() {
+    // The subject vocabulary has no null policy to declare what a null
+    // means, and identity must not be guessed.
+    let mut broken = projection("sample");
+    broken.subject = Some(SubjectSpec {
+        id_path: "Reading".to_owned(),
+        ..subject()
+    });
+    rejects(manifest(vec![broken]), "`nullable subject sources`");
+}
+
+#[test]
+fn identity_reached_through_key_is_reserved() {
+    // `key` carries identity as much as `subject` does; the literal-subject
+    // rule alone would wave this through.
+    let mut broken = projection("sample");
+    broken.fields[0].target_field = "key.subject.id".to_owned();
+    rejects(manifest(vec![broken]), "writes into the target's identity");
+}
+
+#[test]
+fn an_anchor_inside_a_group_still_gates_output() {
+    // The group build consumes the member locals, so the anchor's gate is
+    // hoisted into a flag the instance condition reads: an absent anchored
+    // RangeMin must suppress output even when RangeMax answered.
+    let mut anchored = projection("sample");
+    anchored.target_type = "nv.telemetry.v1.SignalDescriptor".to_owned();
+    anchored.fields = vec![
+        field("ReadingRangeMin", "range.min.double_value"),
+        field("ReadingRangeMax", "range.max.double_value"),
+    ];
+    anchored.fields[0].anchor = true;
+    let files = emit(&[manifest(vec![anchored])]).expect("a grouped anchor emits");
+    let rendered = &files
+        .iter()
+        .find(|(path, _)| path.ends_with("test.rs"))
+        .expect("the manifest's module is rendered")
+        .1;
+    assert!(
+        rendered.contains("let sample_range_gate = sample_range_min.is_some()"),
+        "the anchor's gate is not hoisted before the group build:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("if sample_range_gate"),
+        "the instance does not read the hoisted gate:\n{rendered}"
+    );
+}
+
+#[test]
+fn a_constant_inside_a_sub_message_is_an_error() {
+    let mut broken = projection("sample");
+    broken.target_type = "nv.telemetry.v1.SignalDescriptor".to_owned();
+    broken.fields = Vec::new();
+    broken.constants = vec![ConstantSpec {
+        target_field: "range.min.double_value".to_owned(),
+        value: "1".to_owned(),
+    }];
+    emit_rejects(
+        manifest(vec![broken]),
+        "group-building constants is not implemented",
+    );
+}
+
+#[test]
+fn identical_declared_subjects_agree() {
+    // Two projections stating the same identity are one derivation, however
+    // the agreement was spelled; only genuine distinctness is refused.
+    let mut first = state_projection("first");
+    first.subject = Some(subject());
+    let mut second = state_projection("second");
+    second.subject = Some(subject());
+    emit(&[manifest(vec![first, second])]).expect("identical subjects emit one derivation");
+}
+
+#[test]
+fn distinct_subjects_for_one_source_type_are_errors() {
+    let mut first = projection("first");
+    first.subject = Some(subject());
+    let mut second = projection("second");
+    second.subject = Some(SubjectSpec {
+        kind: "other-sensor".to_owned(),
+        ..subject()
+    });
+    // Two readings-target projections would trip the pairing rule first;
+    // the descriptor keeps this fixture about subjects alone.
+    first.target_type = "nv.telemetry.v1.SignalDescriptor".to_owned();
+    first.fields.clear();
+    emit_rejects(manifest(vec![first, second]), "declare distinct subjects");
+}
+
+#[test]
+fn a_projection_name_rust_cannot_spell_is_an_error_not_a_panic() {
+    let broken = state_projection("3d-flow");
+    emit_rejects(manifest(vec![broken]), "not a usable Rust identifier");
+}
+
+#[test]
+fn two_stems_reducing_to_one_module_are_an_error() {
+    let mut first = manifest(vec![projection("first")]);
+    first.path = manifest_path("sources/redfish/manifests/sensor-read.textpb");
+    let mut second = manifest(vec![projection("second")]);
+    second.path = manifest_path("sources/redfish/manifests/sensor_read.textpb");
+    let error = emit(&[first, second]).expect_err("colliding modules cannot emit");
+    assert!(
+        error.contains("already generated"),
+        "the error names the collision: {error}"
+    );
 }

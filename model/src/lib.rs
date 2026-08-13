@@ -27,6 +27,11 @@ mod value;
 mod tests;
 
 pub use finite::Finite;
+/// The schema's numeric bounds, one constant per annotation, generated. Public
+/// so hand-written projections — the acquisition crates mapping source fields
+/// into this model — enforce the schema's number rather than a copy of it,
+/// exactly as this crate's own hand-written validators do.
+pub use generated::limits;
 /// The validated model: one type per contract message, plus the reshaped
 /// enums and the batch payload. Everything here upholds the schema's
 /// invariants for as long as it exists.

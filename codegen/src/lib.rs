@@ -12,9 +12,11 @@
 //! the compiler cannot honor is an error rather than a warning; it never emits
 //! silently degraded code.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 
 use prost_reflect::DescriptorPool;
@@ -115,6 +117,10 @@ pub struct Outcome {
     pub written: Vec<PathBuf>,
     /// Files whose content on disk differs from what would be generated.
     pub stale: Vec<PathBuf>,
+    /// Files under a generated directory that no manifest produces anymore.
+    /// Never touched: the operator deletes them — and drops the crate's
+    /// `mod generated;` if the last manifest went with them.
+    pub orphans: Vec<PathBuf>,
 }
 
 /// Why compilation could not proceed.
@@ -136,9 +142,10 @@ pub enum Error {
     Backend(String),
     /// The workspace root could not be located from the working directory.
     Root(PathBuf),
-    /// A generated file could not be read or written. Carries whatever was
-    /// already written, because a failure partway through leaves artifacts
-    /// that disagree with each other and the operator has to know which.
+    /// A generated file could not be read, written, or removed. Carries
+    /// whatever was already written, because a failure partway through leaves
+    /// artifacts that disagree with each other and the operator has to know
+    /// which.
     Io {
         /// The path that failed.
         path: PathBuf,
@@ -279,17 +286,7 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
     let here = workspace_root()?;
     let here = here.as_path();
 
-    // The CSDL bundle is parsed only when a manifest exists to check.
-    let manifests = projection::load(here, &pool).map_err(Error::ManifestLoad)?;
-    if !manifests.is_empty() {
-        let bundle = projection::Bundle::dmtf().map_err(Error::Index)?;
-        let index = bundle.index().map_err(Error::Index)?;
-        let violations = projection::check(&manifests, &index, &pool, &vocabulary);
-        if !violations.is_empty() {
-            return Err(Error::Manifests(violations));
-        }
-    }
-    let artifacts = [
+    let mut artifacts = vec![
         (
             here.join(LOCK_PATH),
             lock::Snapshot::capture(&pool, &vocabulary).render(),
@@ -306,10 +303,31 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
         (here.join(GENERATED_MOD_PATH), GENERATED_MOD.to_owned()),
     ];
 
+    // The CSDL bundle is parsed only when a manifest exists to compile.
+    let manifests = projection::load(here, &pool).map_err(Error::ManifestLoad)?;
+    if !manifests.is_empty() {
+        let bundle = projection::Bundle::dmtf().map_err(Error::Index)?;
+        let index = bundle.index().map_err(Error::Index)?;
+        let checked = projection::compile(&manifests, &index, &pool, &vocabulary)
+            .map_err(Error::Manifests)?;
+        let generated =
+            projection::emit(&checked, &index, &pool, &vocabulary).map_err(Error::Backend)?;
+        for (path, rendered) in generated {
+            artifacts.push((here.join(path), rendered));
+        }
+    }
+
+    // Artifact paths are distinct by construction: the fixed outputs live
+    // under `model/` and `schema/`, and per-crate module collisions are
+    // already manifest violations.
+    let artifact_paths: BTreeSet<PathBuf> =
+        artifacts.iter().map(|(path, _)| path.clone()).collect();
+
     let mut outcome = Outcome {
         examined,
         written: Vec::new(),
         stale: Vec::new(),
+        orphans: Vec::new(),
     };
 
     for (path, rendered) in artifacts {
@@ -353,5 +371,47 @@ pub fn run(mode: Mode) -> Result<Outcome, Error> {
         }
     }
 
+    outcome.orphans =
+        generated_orphans(here, &artifact_paths).map_err(|(path, error)| Error::Io {
+            path,
+            written: outcome.written.clone(),
+            error,
+        })?;
+
     Ok(outcome)
+}
+
+/// Files under `sources/*/src/generated/` that the compiler no longer
+/// produces — a deleted manifest's module would otherwise sit outside the
+/// staleness gate forever. Detection only; nothing is removed.
+fn generated_orphans(
+    root: &Path,
+    expected: &BTreeSet<PathBuf>,
+) -> Result<Vec<PathBuf>, (PathBuf, io::Error)> {
+    let sources = root.join("sources");
+    let crates = match fs::read_dir(&sources) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err((sources, error)),
+    };
+
+    let mut orphans = Vec::new();
+    for entry in crates {
+        let entry = entry.map_err(|error| (sources.clone(), error))?;
+        let generated = entry.path().join("src").join("generated");
+        let files = match fs::read_dir(&generated) {
+            Ok(files) => files,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err((generated, error)),
+        };
+        for file in files {
+            let file = file.map_err(|error| (generated.clone(), error))?;
+            let path = file.path();
+            if !expected.contains(&path) {
+                orphans.push(path);
+            }
+        }
+    }
+    orphans.sort();
+    Ok(orphans)
 }

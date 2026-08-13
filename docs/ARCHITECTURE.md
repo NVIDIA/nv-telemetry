@@ -722,6 +722,59 @@ location and the schema versions checked. Redfish is the standing
 example: the Redfish crate's generator, also owned, emits its index from the
 DMTF schema bundle.
 
+Validation is also the checking boundary for projection compilation. Every
+declaration an *author* can get wrong is a lint rule with its own diagnostic,
+and `compile` wraps a clean check into the receipt emission requires — so
+emission cannot run on unchecked manifests. Emission then resolves against
+the same index the lint checked and refuses, loudly and by declaration, what
+the compiler has not implemented; it never silently degrades. The deliberate
+consequence is that "manifest accepted" and "generated behavior" are one
+claim: what the lint admits, emission can build, and what emission cannot
+build, `make codegen` reports.
+
+Requested-location templates are parsed once, by `LocationPattern`, which
+admits one canonical absolute resource-path grammar and owns placeholder
+segmentation. Lint validates through that parser and emission renders its
+typed literal, wildcard, and capture segments, so URI normalization in a
+source crate cannot make an accepted template unmatchable.
+
+Compilation produces an expected set of destinations and bytes; generation
+writes exactly those, byte-compared against the checked-in tree. Files under
+a generated directory that no manifest produces anymore are reported as
+orphans for the operator to delete — the compiler never removes files.
+
+Target construction is therefore profile-based. The initial unary profiles
+are `SignalDescriptor` and `Reading`, whose sole identity landing is `key`, and
+`StateObservation`, whose sole identity landing is `subject`. A profile is an
+explicit promise that the compiler knows how to complete that target's
+builder and triage every device-driven invariant. Reflection verifies the
+promise against the contract, but never invents a profile. Messages with no
+identity, multiple identities, batch/payload shapes, and helper messages are
+rejected as projection roots until their construction semantics are designed
+and registered deliberately.
+
+Profiles also carry payload-level obligations that no unary builder can prove.
+For a source type that emits `Reading`, compilation requires exactly one
+`SignalDescriptor` instance with the same derived key and proves that the
+descriptor is unconditional whenever a sample can emit. More than one
+descriptor would duplicate a key; a gated or absent descriptor would leave a
+sample unresolved in `Readings`. These are compile errors, not provider
+assembly failures. Each target profile also names the repeated payload field it
+enters. Compilation reads that field's `max_items` annotation and rejects a
+static instance count above it, so a device answering every gate cannot make
+provider assembly discover a plan/model cardinality disagreement.
+
+Source presence is a four-state semantic even though Rust uses only three
+container shapes: required/non-null is `T`, optional/non-null is `Option<T>`,
+required/nullable is `Option<T>` whose `None` means explicit null, and
+optional/nullable is `Option<Option<T>>`. The compiled read plan preserves
+those meanings through intermediate fields, and lint requires a null policy
+when any segment of the path can be explicitly null rather than inspecting the
+leaf alone. Emission applies that policy only after distinguishing absence from
+explicit null. Raw protobuf enum numbers in a
+manifest are validated before lowering, and static enum spellings must be
+non-empty, so token emission receives only total typed choices.
+
 Rust type checking still applies to the generated projection code, but the
 load-bearing guarantees are schema validation at build time and the payload
 corpus in tests. A projection is only as trustworthy as the device data it has
@@ -738,10 +791,12 @@ immutable `SignalDescriptor` indexed by a canonical `SignalKey`. Sensor,
 EnvironmentMetrics, and MetricReport samples project to the same key, so the
 planner can change acquisition routes without changing public reading
 identity. Routes spell the same signal differently — a metric report naming a
-reading with a property fragment the sensor resource does not use — so a key
-reduces its URI to the resource denoted. Reduction happens when the key is
-built rather than at each call site, since a key that skipped it would fail to
-join without failing loudly.
+reading with a property fragment the sensor resource does not use, or a request
+adding query options — so generated subject derivation reduces the requested
+location before matching its manifest template. The captured scope and ID then
+form the key. Reduction lives in the source crate's location-grammar hook used
+by every generated matcher, rather than in provider call sites, so a route
+cannot accidentally derive a different identity by skipping it.
 
 On the wire, readings reference their descriptor by key, so units and bounds
 are not repeated on every sample. In process, a `SignalCatalog` — a runtime
@@ -795,6 +850,16 @@ reference in process, encoded once per external boundary. A batch contains:
 - completeness information;
 - one homogeneous payload domain: readings, logs, state observations,
   inventory, or an observed resource graph.
+
+Collection providers do not assemble that envelope independently. Their
+`Acquire::perform` hook receives no collection timestamp and returns only
+`AcquisitionParts`: validated coverage/payload pairs plus issues. The
+non-overridable source-layer `acquire(unit, at)` wrapper captures the admitted
+unit's endpoint and origin, polls the hook, and stamps every batch with that
+identity and its caller's `at`. Every batch from one successful acquisition
+therefore shares its endpoint, provider, request class, and start time;
+orchestration owns using that same admitted identity and instant when it builds
+the corresponding status.
 
 Batches are safe to fan out by reference. Consumers may include exporters,
 in-process channels, persistence, APIs, or external adapters.
@@ -869,6 +934,15 @@ retryability, duration, endpoint, provider, and request class. It allows the
 embedder to operate the collection pipeline without confusing pipeline failure
 with device state.
 
+Operator-facing failure detail is derived from classified facts. Source
+adapters do not copy raw response bodies or transport error displays into it:
+those strings can contain credential-bearing URLs, query secrets, or arbitrary
+device data. Protocol-specific evidence belongs in a separately designed,
+redacted diagnostic channel rather than the generic status contract. The
+in-process failure type also caps derived detail to the status schema's byte
+bound, truncating at a UTF-8 boundary with a marker, so orchestration can copy
+it without creating a second validation failure.
+
 Observation absence, collection failure, and stale prior data are distinct.
 The library preserves the information needed for consumers to apply their own
 freshness and absence policies.
@@ -939,6 +1013,12 @@ the case on both the acquisition and delivery sides. So:
 - one crate per exporter over a shared traversal crate, because the OTLP and
   Prometheus client libraries have nothing to do with each other;
 - orchestration vocabulary kept lightweight.
+
+Every optional transport combination a source crate claims to support is a
+named build-and-test matrix row. Default and all-feature workspace builds test
+the aggregate endpoints; they do not prove isolated features, because Cargo
+feature unification can otherwise hide unused code, missing dependencies, or a
+test-only feature leak.
 
 Every source crate has the same three parts — transport, projection manifests,
 and generated projection code — and only the first is hand-written. Its size

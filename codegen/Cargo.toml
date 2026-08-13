@@ -28,7 +28,11 @@ syn.workspace = true
 [dev-dependencies]
 # Fixture schemas for compiler tests are compiled in-process; the depth and
 # fidelity tests encode dynamic messages and compare them against the
-# generated types.
+# generated types. The Redfish source is also a compile fixture for projection
+# output: the manifest golden proves emitted bytes equal its checked-in module,
+# and this dependency makes rustc resolve that module during codegen tests.
+nv-telemetry-redfish = { path = "../sources/redfish" }
+nv-telemetry-source.workspace = true
 prost.workspace = true
 protox.workspace = true
 
