@@ -662,6 +662,13 @@ fn descriptor_gated(
     gated_field || has_assemblies
 }
 
+/// What walking a path's proper prefixes established: whether any segment
+/// is explicitly nullable, and whether any is a collection.
+struct PrefixFacts {
+    nullable: bool,
+    collection: bool,
+}
+
 /// One projection's checking context: the source scope, the resolved
 /// target, and the deduplicating violation sink. Expansion checks per
 /// instance, but most faults do not vary by member; dedupe keeps one
@@ -922,8 +929,11 @@ impl<'a, 'b> Checker<'a, 'b> {
         if !self.known {
             return;
         }
-        let nullable_prefix = self.check_prefixes(path);
+        let prefixes = self.check_prefixes(path);
         match self.resolve(path) {
+            // A path routed through a collection does not resolve; the
+            // prefix walk named that fault already.
+            None if prefixes.collection => {}
             None => self.push(Reason::UnknownSourcePath(path.to_owned())),
             Some(resolved) if resolved.collection => self.push(Reason::NonScalarSubject {
                 path: path.to_owned(),
@@ -933,7 +943,7 @@ impl<'a, 'b> Checker<'a, 'b> {
                 path: path.to_owned(),
                 actual: format!("complex type `{}`", resolved.type_name),
             }),
-            Some(resolved) if resolved.nullable || nullable_prefix => {
+            Some(resolved) if resolved.nullable || prefixes.nullable => {
                 self.push(Reason::NotHonored {
                     feature: "nullable subject sources",
                 });
@@ -1056,13 +1066,17 @@ impl<'a, 'b> Checker<'a, 'b> {
                 value: null_policy,
             });
         }
+        // Prefixes are walked before the whole path: a path routed through
+        // a collection does not resolve at all, and reporting it as an
+        // unknown path would mislabel the fault the prefix walk names.
+        let prefixes = self.check_prefixes(path);
         let Some(resolved) = self.resolve(path) else {
-            if self.known {
+            if self.known && !prefixes.collection {
                 self.push(Reason::UnknownSourcePath(path.to_owned()));
             }
             return None;
         };
-        if self.check_prefixes(path) {
+        if prefixes.nullable {
             // Reading through an explicitly nullable segment needs presence
             // tracking no generated access spells yet.
             self.push(Reason::NotHonored {
@@ -1096,24 +1110,28 @@ impl<'a, 'b> Checker<'a, 'b> {
 
     /// Every proper prefix of a source path must be a singular segment: the
     /// leaf check alone would wave a path through a collection element,
-    /// which no generated field access can spell. Returns whether any prefix
-    /// can be explicitly null, because null policy belongs to the complete
-    /// read rather than only to its leaf.
-    fn check_prefixes(&mut self, path: &str) -> bool {
+    /// which no generated field access can spell. Nullability is gathered
+    /// too, because null policy belongs to the complete read rather than
+    /// only to its leaf.
+    fn check_prefixes(&mut self, path: &str) -> PrefixFacts {
         let segments: Vec<&str> = path.split('.').collect();
-        let mut nullable = false;
+        let mut facts = PrefixFacts {
+            nullable: false,
+            collection: false,
+        };
         for end in 1..segments.len() {
             let prefix = segments[..end].join(".");
             if let Some(resolved) = self.resolve(&prefix) {
-                nullable |= resolved.nullable;
+                facts.nullable |= resolved.nullable;
                 if resolved.collection {
+                    facts.collection = true;
                     self.push(Reason::NotHonored {
                         feature: "collection-typed sources",
                     });
                 }
             }
         }
-        nullable
+        facts
     }
 
     /// Validates `value_map` sources and `known_values` against the
