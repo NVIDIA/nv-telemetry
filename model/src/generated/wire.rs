@@ -608,6 +608,82 @@ impl Completeness {
         }
     }
 }
+/// One source field that failed to project, located by source-schema path.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionIssue {
+    /// Dotted path in the source's schema grammar, with indexes into repeated
+    /// source fields: `Chassis.Sensors\[3\].Reading`.
+    #[prost(string, optional, tag = "1")]
+    pub path: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "projection_issue::IssueKind", optional, tag = "2")]
+    pub kind: ::core::option::Option<i32>,
+    /// What made the reported value unusable. Present exactly when the kind is
+    /// invalid — a wrapper rule: silence has no detail to quote.
+    #[prost(string, optional, tag = "3")]
+    pub detail: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// Nested message and enum types in `ProjectionIssue`.
+pub mod projection_issue {
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum IssueKind {
+        Unspecified = 0,
+        /// The device did not report a field the projection requires.
+        MissingRequired = 1,
+        /// The device reported the field unusably; the detail quotes the failure.
+        Invalid = 2,
+    }
+    impl IssueKind {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "ISSUE_KIND_UNSPECIFIED",
+                Self::MissingRequired => "ISSUE_KIND_MISSING_REQUIRED",
+                Self::Invalid => "ISSUE_KIND_INVALID",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "ISSUE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+                "ISSUE_KIND_MISSING_REQUIRED" => Some(Self::MissingRequired),
+                "ISSUE_KIND_INVALID" => Some(Self::Invalid),
+                _ => None,
+            }
+        }
+    }
+}
+/// The issues one acquisition produced, under the same identity and instant
+/// that stamp its sibling batches. An acquisition with no issues emits no
+/// message at all — an empty envelope would be a fabrication, the same one
+/// the batch doctrine forbids — a wrapper rule.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectionIssues {
+    #[prost(message, optional, tag = "1")]
+    pub endpoint: ::core::option::Option<EndpointContext>,
+    #[prost(message, optional, tag = "2")]
+    pub origin: ::core::option::Option<Origin>,
+    /// The acquisition instant the issues belong to.
+    #[prost(message, optional, tag = "3")]
+    pub at: ::core::option::Option<Timestamp>,
+    /// One issue per failed field: the path is the identity, and report order
+    /// is not data.
+    #[prost(message, repeated, tag = "4")]
+    pub issues: ::prost::alloc::vec::Vec<ProjectionIssue>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AcquisitionStatus {
     #[prost(string, optional, tag = "1")]

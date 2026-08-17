@@ -420,6 +420,23 @@ consumer's own policy).
 failures may trip the endpoint breaker, while unsupported and protocol
 failures affect only their request class.
 
+A fourth fact rides its own stream: what one source field failed to become.
+`ProjectionIssues` carries the same identity and instant that stamp its
+sibling batches, and one issue per failed field:
+
+```
+ProjectionIssue
+  path:   "Chassis.Sensors[3].Reading"
+  kind:   ISSUE_KIND_INVALID
+  detail: "not a finite number"
+```
+
+Missing and invalid are different facts — silence versus an answer that
+cannot be used — and issues ride beside batches, never inside one: a response
+that answered and was wholly unusable would otherwise need a fabricated empty
+batch just to carry them. An acquisition with no issues emits no
+`ProjectionIssues` at all; an empty envelope would be the same fabrication.
+
 ---
 
 # The annotation vocabulary
@@ -526,9 +543,11 @@ implementation — they are places the model does not yet reach.
 cross-field constraints, and those are stated in schema comments as "wrapper
 rules": `ValueRange` needs at least one bound with min not exceeding max,
 `ObservationWindow`'s end must follow its start, `AcquisitionStatus` carries a
-`failure_class` exactly when it failed, `Timestamp.nanos` is bounded below one
-second, every `SignalKey` a sample references must resolve in the same batch,
-and a complete `ResourceGraph` must be reachable from its scope subject.
+`failure_class` exactly when it failed, `ProjectionIssue` quotes a `detail`
+exactly when its kind is invalid, `ProjectionIssues` is never empty,
+`Timestamp.nanos` is bounded below one second, every `SignalKey` a sample
+references must resolve in the same batch, and a complete `ResourceGraph`
+must be reachable from its scope subject.
 Validators enforce them; the vocabulary cannot state them, because each
 relates one field to another.
 
@@ -536,12 +555,6 @@ Two absolute bounds are also missing: a minimum item count, and a value range
 for numbers. The first is why an empty payload with `COMPLETE` is a valid batch
 asserting total absence — though that is partly semantic, since a genuinely
 empty complete collection is a real observation.
-
-**No projection-issue wire type.** The missing-versus-invalid distinction the
-design rests on now has an in-process type — `ProjectionIssue` in
-`nv-telemetry-source`, attached to acquisition results — but no wire
-representation yet, so "the device answered NaN" and "the device did not
-answer" still reach a *cross-process* consumer identically.
 
 **gNMI JSON payloads.** `json_ietf_val` is the dominant production encoding and
 cannot currently be carried: `Value.bytes_value` caps at 4096 bytes and a

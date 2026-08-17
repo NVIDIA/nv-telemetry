@@ -837,7 +837,8 @@ subject scope is another. Issues never become fabricated observations.
 
 ## Output contract
 
-The library exposes two generic output streams.
+The library exposes three generic output streams: observation batches,
+acquisition status, and projection issues.
 
 ### Observation batches
 
@@ -946,6 +947,15 @@ it without creating a second validation failure.
 Observation absence, collection failure, and stale prior data are distinct.
 The library preserves the information needed for consumers to apply their own
 freshness and absence policies.
+
+### Projection issues
+
+`ProjectionIssues` carries what source fields failed to become — one issue
+per failed field, missing and invalid distinct — under the same identity and
+instant that stamp the sibling batches. Issues
+ride beside batches, never inside one, and an acquisition with no issues
+emits no envelope at all. Sources yield in-process issues only; orchestration
+builds the envelope, exactly as it builds `AcquisitionStatus`.
 
 ### Delivery
 

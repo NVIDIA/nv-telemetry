@@ -1,0 +1,79 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Projection issues: what one source field failed to become.
+//
+// Missing and invalid are different facts — silence versus an answer that
+// cannot be used — and a cross-process consumer needs the distinction as
+// much as the in-process one has it. Issues describe what is *not* in any
+// batch, which is why they ride beside batches rather than inside one: a
+// response that answered and was wholly unusable would otherwise need a
+// fabricated empty batch just to carry them.
+
+syntax = "proto3";
+
+package nv.telemetry.v1;
+
+import "nv/telemetry/options/v1/annotations.proto";
+import "nv/telemetry/v1/batch.proto";
+import "nv/telemetry/v1/value.proto";
+
+option csharp_namespace = "Nvidia.NvTelemetry.V1";
+option go_package = "github.com/NVIDIA/nv-telemetry/gen/nv/telemetry/v1;telemetryv1";
+option java_package = "com.nvidia.nvtelemetry.v1";
+
+// One source field that failed to project, located by source-schema path.
+message ProjectionIssue {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  enum IssueKind {
+    ISSUE_KIND_UNSPECIFIED = 0;
+    // The device did not report a field the projection requires.
+    ISSUE_KIND_MISSING_REQUIRED = 1;
+    // The device reported the field unusably; the detail quotes the failure.
+    ISSUE_KIND_INVALID = 2;
+  }
+
+  // Dotted path in the source's schema grammar, with indexes into repeated
+  // source fields: `Chassis.Sensors[3].Reading`.
+  optional string path = 1 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    non_empty: true
+    max_len: 1024
+  }];
+
+  optional IssueKind kind = 2 [(nv.telemetry.options.v1.field_invariant) = {
+    required: true
+    reject_unspecified: true
+  }];
+
+  // What made the reported value unusable. Present exactly when the kind is
+  // invalid — a wrapper rule: silence has no detail to quote.
+  optional string detail = 3 [(nv.telemetry.options.v1.field_invariant) = {
+    non_empty: true
+    max_len: 4096
+  }];
+}
+
+// The issues one acquisition produced, under the same identity and instant
+// that stamp its sibling batches. An acquisition with no issues emits no
+// message at all — an empty envelope would be a fabrication, the same one
+// the batch doctrine forbids — a wrapper rule.
+message ProjectionIssues {
+  option (nv.telemetry.options.v1.message_invariant) = {validated: true};
+
+  optional EndpointContext endpoint = 1 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  optional Origin origin = 2 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // The acquisition instant the issues belong to.
+  optional Timestamp at = 3 [(nv.telemetry.options.v1.field_invariant) = {required: true}];
+
+  // One issue per failed field: the path is the identity, and report order
+  // is not data.
+  repeated ProjectionIssue issues = 4 [(nv.telemetry.options.v1.field_invariant) = {
+    unordered: true
+    unique_by: ["path"]
+    max_items: 65536
+  }];
+}
