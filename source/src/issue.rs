@@ -19,6 +19,9 @@
 
 use std::fmt;
 
+use nv_telemetry_model::Invalid;
+use nv_telemetry_model::IssueKind;
+
 /// Why one source field did not become an observation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -92,6 +95,33 @@ impl ProjectionIssue {
     pub fn kind(&self) -> &ProjectionIssueKind {
         &self.kind
     }
+
+    /// Converts into the wire model. The detail is prose, so overlong text
+    /// is UTF-8-safely bounded to the contract limit; the path is the
+    /// locator, so an empty or overlong one is rejected by the model's own
+    /// validation rather than truncated into a different locator.
+    ///
+    /// # Errors
+    ///
+    /// An empty or overlong path, or an invalid-kind issue whose detail is
+    /// empty.
+    pub fn into_model(self) -> Result<nv_telemetry_model::ProjectionIssue, Invalid> {
+        let detail_limit = nv_telemetry_model::limits::PROJECTIONISSUE_DETAIL_MAX_LEN as usize;
+        let (kind, detail) = match self.kind {
+            ProjectionIssueKind::MissingRequired => (IssueKind::MissingRequired, None),
+            ProjectionIssueKind::Invalid { detail } => (
+                IssueKind::Invalid,
+                crate::result::bounded(detail, detail_limit),
+            ),
+        };
+        let mut builder = nv_telemetry_model::ProjectionIssue::builder()
+            .path(self.path)
+            .kind(kind);
+        if let Some(detail) = detail {
+            builder = builder.detail(detail);
+        }
+        builder.build()
+    }
 }
 
 impl fmt::Display for ProjectionIssue {
@@ -128,5 +158,44 @@ mod tests {
         let issue = ProjectionIssue::missing("Id");
         assert_eq!(issue.kind(), &ProjectionIssueKind::MissingRequired);
         assert_eq!(issue.to_string(), "`Id`: required but not reported");
+    }
+
+    #[test]
+    fn issues_copy_onto_the_wire_with_their_kind() {
+        let missing = ProjectionIssue::missing("Id").into_model().expect("valid");
+        assert_eq!(missing.path(), "Id");
+        assert_eq!(missing.kind(), IssueKind::MissingRequired);
+        assert_eq!(missing.detail(), None);
+
+        let invalid = ProjectionIssue::invalid("Reading", "not finite")
+            .into_model()
+            .expect("valid");
+        assert_eq!(invalid.kind(), IssueKind::Invalid);
+        assert_eq!(invalid.detail(), Some("not finite"));
+    }
+
+    #[test]
+    fn overlong_detail_is_bounded_and_an_overlong_path_is_refused() {
+        let path_limit = nv_telemetry_model::limits::PROJECTIONISSUE_PATH_MAX_LEN as usize;
+        let detail_limit = nv_telemetry_model::limits::PROJECTIONISSUE_DETAIL_MAX_LEN as usize;
+
+        let issue = ProjectionIssue::invalid("Reading", "d".repeat(detail_limit + 1))
+            .into_model()
+            .expect("bounded detail validates");
+        let detail = issue.detail().expect("detail retained");
+        assert_eq!(detail.len(), detail_limit);
+        assert!(detail.ends_with(crate::result::DETAIL_TRUNCATION_MARKER));
+
+        assert!(ProjectionIssue::missing("p".repeat(path_limit + 1))
+            .into_model()
+            .is_err());
+    }
+
+    #[test]
+    fn producer_bugs_fail_loudly_instead_of_fabricating() {
+        assert!(ProjectionIssue::missing("").into_model().is_err());
+        assert!(ProjectionIssue::invalid("Reading", "")
+            .into_model()
+            .is_err());
     }
 }

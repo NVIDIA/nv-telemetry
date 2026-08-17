@@ -181,6 +181,48 @@ impl crate::canonical::Canonical for Completeness {
         i32::from(*self).cmp(&i32::from(*other))
     }
 }
+/// Validated form of `nv.telemetry.v1.ProjectionIssue.IssueKind`.
+///
+/// The unspecified value is unrepresentable: conversion rejects it, because
+/// every `nv.telemetry.v1.ProjectionIssue.IssueKind` field in the contract declares `reject_unspecified`. A value
+/// newer than this build decodes as [`IssueKind::Unrecognized`] instead of
+/// failing, so additive schema evolution does not break older consumers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum IssueKind {
+    /// `ISSUE_KIND_MISSING_REQUIRED`.
+    MissingRequired,
+    /// `ISSUE_KIND_INVALID`.
+    Invalid,
+    /// A value newer than this build. Interpreting it is the consumer's
+    /// decision; re-encoding preserves it.
+    Unrecognized(i32),
+}
+impl TryFrom<i32> for IssueKind {
+    type Error = Violation;
+    fn try_from(value: i32) -> Result<Self, Violation> {
+        match value {
+            0 => Err(Violation::Unspecified),
+            1 => Ok(Self::MissingRequired),
+            2 => Ok(Self::Invalid),
+            other => Ok(Self::Unrecognized(other)),
+        }
+    }
+}
+impl From<IssueKind> for i32 {
+    fn from(value: IssueKind) -> Self {
+        match value {
+            IssueKind::MissingRequired => 1,
+            IssueKind::Invalid => 2,
+            IssueKind::Unrecognized(other) => other,
+        }
+    }
+}
+impl crate::canonical::Canonical for IssueKind {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        i32::from(*self).cmp(&i32::from(*other))
+    }
+}
 /// Validated form of `nv.telemetry.v1.Severity`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -2612,6 +2654,404 @@ impl From<Origin> for wire::Origin {
         Self {
             provider: Some(value.provider),
             request_class: Some(value.request_class),
+        }
+    }
+}
+/// Validated form of `nv.telemetry.v1.ProjectionIssue`; the schema carries the field semantics.
+///
+/// Holds its invariants for as long as it exists: built through
+/// [`ProjectionIssueBuilder`] or decoded from the wire, both of which run the same
+/// checks, including this message's cross-field rules.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectionIssue {
+    path: String,
+    kind: IssueKind,
+    detail: Option<String>,
+}
+impl crate::canonical::Canonical for ProjectionIssue {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path
+            .cmp(&other.path)
+            .then_with(|| i32::from(self.kind).cmp(&i32::from(other.kind)))
+            .then_with(|| crate::canonical::cmp_option(
+                self.detail.as_ref(),
+                other.detail.as_ref(),
+            ))
+    }
+}
+impl crate::canonical::Digest for ProjectionIssue {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::str_value(state, &self.path);
+        crate::canonical::tag(state, 2);
+        crate::canonical::i32_value(state, i32::from(self.kind));
+        if let Some(element) = &self.detail {
+            crate::canonical::tag(state, 3);
+            crate::canonical::str_value(state, element);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ProjectionIssue {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        ::prost::encoding::string::encode(1, &self.path, buf);
+        ::prost::encoding::int32::encode(2, &i32::from(self.kind), buf);
+        if let Some(element) = &self.detail {
+            ::prost::encoding::string::encode(3, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        ::prost::encoding::string::encoded_len(1, &self.path)
+            + ::prost::encoding::int32::encoded_len(2, &i32::from(self.kind))
+            + self
+                .detail
+                .as_ref()
+                .map_or(0, |element| ::prost::encoding::string::encoded_len(3, element))
+    }
+}
+impl ProjectionIssue {
+    /// A builder holding nothing yet.
+    #[must_use]
+    pub fn builder() -> ProjectionIssueBuilder {
+        ProjectionIssueBuilder::default()
+    }
+    /// The `path`.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    /// The `kind`.
+    #[must_use]
+    pub fn kind(&self) -> IssueKind {
+        self.kind
+    }
+    /// The `detail`, when present.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+    fn check(&self) -> Result<(), Invalid> {
+        if self.path.is_empty() {
+            return Err(Invalid::field("path", Violation::Empty));
+        }
+        if let Some(violation) = invalid::too_long(
+            self.path.len(),
+            limits::PROJECTIONISSUE_PATH_MAX_LEN,
+        ) {
+            return Err(Invalid::field("path", violation));
+        }
+        if let Some(element) = &self.detail {
+            if element.is_empty() {
+                return Err(Invalid::field("detail", Violation::Empty));
+            }
+        }
+        if let Some(element) = &self.detail {
+            if let Some(violation) = invalid::too_long(
+                element.len(),
+                limits::PROJECTIONISSUE_DETAIL_MAX_LEN,
+            ) {
+                return Err(Invalid::field("detail", violation));
+            }
+        }
+        rules::projection_issue(self)?;
+        Ok(())
+    }
+}
+/// Builds a [`ProjectionIssue`]. Setters are infallible; [`build`](ProjectionIssueBuilder::build)
+/// validates everything at once, exactly as decoding does.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectionIssueBuilder {
+    path: Option<String>,
+    kind: Option<IssueKind>,
+    detail: Option<String>,
+}
+impl ProjectionIssueBuilder {
+    /// Sets `path`.
+    #[must_use]
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+    /// Sets `kind`.
+    #[must_use]
+    pub fn kind(mut self, kind: IssueKind) -> Self {
+        self.kind = Some(kind);
+        self
+    }
+    /// Sets `detail`.
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+    /// Validates and builds.
+    ///
+    /// # Errors
+    ///
+    /// [`Invalid`] naming the first field that is absent or breaks its
+    /// schema invariants.
+    pub fn build(self) -> Result<ProjectionIssue, Invalid> {
+        let built = ProjectionIssue {
+            path: self.path.ok_or_else(|| Invalid::field("path", Violation::Absent))?,
+            kind: self.kind.ok_or_else(|| Invalid::field("kind", Violation::Absent))?,
+            detail: self.detail,
+        };
+        built.check()?;
+        Ok(built)
+    }
+}
+impl TryFrom<wire::ProjectionIssue> for ProjectionIssue {
+    type Error = Invalid;
+    fn try_from(wire: wire::ProjectionIssue) -> Result<Self, Invalid> {
+        let built = Self {
+            path: wire.path.ok_or_else(|| Invalid::field("path", Violation::Absent))?,
+            kind: IssueKind::try_from(
+                    wire.kind.ok_or_else(|| Invalid::field("kind", Violation::Absent))?,
+                )
+                .map_err(|violation| Invalid::field("kind", violation))?,
+            detail: wire.detail,
+        };
+        built.check()?;
+        Ok(built)
+    }
+}
+impl From<ProjectionIssue> for wire::ProjectionIssue {
+    fn from(value: ProjectionIssue) -> Self {
+        Self {
+            path: Some(value.path),
+            kind: Some(value.kind.into()),
+            detail: value.detail,
+        }
+    }
+}
+/// Validated form of `nv.telemetry.v1.ProjectionIssues`; the schema carries the field semantics.
+///
+/// Holds its invariants for as long as it exists: built through
+/// [`ProjectionIssuesBuilder`] or decoded from the wire, both of which run the same
+/// checks, including this message's cross-field rules.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectionIssues {
+    endpoint: EndpointContext,
+    origin: Origin,
+    at: Timestamp,
+    issues: Vec<ProjectionIssue>,
+}
+impl crate::canonical::Canonical for ProjectionIssues {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::canonical::Canonical::canonical_cmp(&self.endpoint, &other.endpoint)
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.origin,
+                &other.origin,
+            ))
+            .then_with(|| crate::canonical::Canonical::canonical_cmp(
+                &self.at,
+                &other.at,
+            ))
+            .then_with(|| crate::canonical::cmp_slice(&self.issues, &other.issues))
+    }
+}
+impl crate::canonical::Digest for ProjectionIssues {
+    fn digest<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::canonical::tag(state, 1);
+        crate::canonical::Digest::digest(&self.endpoint, state);
+        crate::canonical::tag(state, 2);
+        crate::canonical::Digest::digest(&self.origin, state);
+        crate::canonical::tag(state, 3);
+        crate::canonical::Digest::digest(&self.at, state);
+        crate::canonical::tag(state, 4);
+        crate::canonical::count(state, self.issues.len());
+        for element in &self.issues {
+            crate::canonical::Digest::digest(element, state);
+        }
+        crate::canonical::end(state);
+    }
+}
+impl crate::encode::Emit for ProjectionIssues {
+    fn emit(&self, buf: &mut impl ::prost::bytes::BufMut) {
+        crate::encode::nested(1, &self.endpoint, buf);
+        crate::encode::nested(2, &self.origin, buf);
+        crate::encode::nested(3, &self.at, buf);
+        for element in &self.issues {
+            crate::encode::nested(4, element, buf);
+        }
+    }
+    fn emitted_len(&self) -> usize {
+        crate::encode::nested_len(1, &self.endpoint)
+            + crate::encode::nested_len(2, &self.origin)
+            + crate::encode::nested_len(3, &self.at)
+            + self
+                .issues
+                .iter()
+                .map(|element| crate::encode::nested_len(4, element))
+                .sum::<usize>()
+    }
+}
+impl ProjectionIssues {
+    /// A builder holding nothing yet.
+    #[must_use]
+    pub fn builder() -> ProjectionIssuesBuilder {
+        ProjectionIssuesBuilder::default()
+    }
+    /// The `endpoint`.
+    #[must_use]
+    pub fn endpoint(&self) -> &EndpointContext {
+        &self.endpoint
+    }
+    /// The `origin`.
+    #[must_use]
+    pub fn origin(&self) -> &Origin {
+        &self.origin
+    }
+    /// The `at`.
+    #[must_use]
+    pub fn at(&self) -> &Timestamp {
+        &self.at
+    }
+    /// The `issues`.
+    #[must_use]
+    pub fn issues(&self) -> &[ProjectionIssue] {
+        &self.issues
+    }
+    fn check(&self) -> Result<(), Invalid> {
+        if let Some(violation) = invalid::too_many(
+            self.issues.len(),
+            limits::PROJECTIONISSUES_ISSUES_MAX_ITEMS,
+        ) {
+            return Err(Invalid::field("issues", violation));
+        }
+        for index in 1..self.issues.len() {
+            if self.issues[index].path == self.issues[index - 1].path {
+                return Err(Invalid::element("issues", index, Violation::Duplicate));
+            }
+        }
+        rules::projection_issues(self)?;
+        Ok(())
+    }
+    fn canonicalize(&mut self) {
+        self.issues.sort_by(crate::canonical::Canonical::canonical_cmp);
+    }
+    /// Decodes and validates from wire bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError::Malformed`](crate::DecodeError) when the bytes are not
+    /// protobuf, [`DecodeError::Invalid`](crate::DecodeError) when they decode
+    /// but break the contract.
+    pub fn decode(bytes: &[u8]) -> Result<Self, crate::DecodeError> {
+        let wire = <wire::ProjectionIssues as ::prost::Message>::decode(bytes)
+            .map_err(crate::DecodeError::Malformed)?;
+        Self::try_from(wire).map_err(crate::DecodeError::Invalid)
+    }
+    /// Encodes the canonical wire form, straight from the validated
+    /// representation — no intermediate wire tree, no clone. Byte-identical
+    /// to prost encoding the rebuilt tree, which the tests hold it to.
+    #[must_use]
+    pub fn encode_to_vec(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(crate::encode::Emit::emitted_len(self));
+        crate::encode::Emit::emit(self, &mut buf);
+        buf
+    }
+}
+/// Builds a [`ProjectionIssues`]. Setters are infallible; [`build`](ProjectionIssuesBuilder::build)
+/// validates everything at once, exactly as decoding does.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectionIssuesBuilder {
+    endpoint: Option<EndpointContext>,
+    origin: Option<Origin>,
+    at: Option<Timestamp>,
+    issues: Vec<ProjectionIssue>,
+}
+impl ProjectionIssuesBuilder {
+    /// Sets `endpoint`.
+    #[must_use]
+    pub fn endpoint(mut self, endpoint: EndpointContext) -> Self {
+        self.endpoint = Some(endpoint);
+        self
+    }
+    /// Sets `origin`.
+    #[must_use]
+    pub fn origin(mut self, origin: Origin) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+    /// Sets `at`.
+    #[must_use]
+    pub fn at(mut self, at: Timestamp) -> Self {
+        self.at = Some(at);
+        self
+    }
+    /// Sets `issues`.
+    #[must_use]
+    pub fn issues(mut self, issues: Vec<ProjectionIssue>) -> Self {
+        self.issues = issues;
+        self
+    }
+    /// Validates and builds.
+    ///
+    /// # Errors
+    ///
+    /// [`Invalid`] naming the first field that is absent or breaks its
+    /// schema invariants.
+    pub fn build(self) -> Result<ProjectionIssues, Invalid> {
+        let mut built = ProjectionIssues {
+            endpoint: self
+                .endpoint
+                .ok_or_else(|| Invalid::field("endpoint", Violation::Absent))?,
+            origin: self
+                .origin
+                .ok_or_else(|| Invalid::field("origin", Violation::Absent))?,
+            at: self.at.ok_or_else(|| Invalid::field("at", Violation::Absent))?,
+            issues: self.issues,
+        };
+        built.canonicalize();
+        built.check()?;
+        Ok(built)
+    }
+}
+impl TryFrom<wire::ProjectionIssues> for ProjectionIssues {
+    type Error = Invalid;
+    fn try_from(wire: wire::ProjectionIssues) -> Result<Self, Invalid> {
+        let mut built = Self {
+            endpoint: EndpointContext::try_from(
+                    wire
+                        .endpoint
+                        .ok_or_else(|| Invalid::field("endpoint", Violation::Absent))?,
+                )
+                .map_err(|error| error.at("endpoint"))?,
+            origin: Origin::try_from(
+                    wire
+                        .origin
+                        .ok_or_else(|| Invalid::field("origin", Violation::Absent))?,
+                )
+                .map_err(|error| error.at("origin"))?,
+            at: Timestamp::try_from(
+                    wire.at.ok_or_else(|| Invalid::field("at", Violation::Absent))?,
+                )
+                .map_err(|error| error.at("at"))?,
+            issues: {
+                let mut elements = Vec::with_capacity(wire.issues.len());
+                for (index, element) in wire.issues.into_iter().enumerate() {
+                    elements
+                        .push(
+                            ProjectionIssue::try_from(element)
+                                .map_err(|error| error.at_index("issues", index))?,
+                        );
+                }
+                elements
+            },
+        };
+        built.canonicalize();
+        built.check()?;
+        Ok(built)
+    }
+}
+impl From<ProjectionIssues> for wire::ProjectionIssues {
+    fn from(value: ProjectionIssues) -> Self {
+        Self {
+            endpoint: Some(value.endpoint.into()),
+            origin: Some(value.origin.into()),
+            at: Some(value.at.into()),
+            issues: value.issues.into_iter().map(Into::into).collect(),
         }
     }
 }

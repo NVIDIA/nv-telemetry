@@ -12,6 +12,7 @@ use crate::Completeness;
 use crate::Coverage;
 use crate::EndpointContext;
 use crate::FailureClass;
+use crate::IssueKind;
 use crate::NumericValue;
 use crate::ObservationBatch;
 use crate::ObservationWindow;
@@ -19,6 +20,8 @@ use crate::ObservedResource;
 use crate::Origin;
 use crate::Outcome;
 use crate::Payload;
+use crate::ProjectionIssue;
+use crate::ProjectionIssues;
 use crate::Reading;
 use crate::Readings;
 use crate::ResourceGraph;
@@ -179,6 +182,102 @@ fn a_failure_carries_its_class_and_a_success_does_not() {
         .failure_class(FailureClass::Timeout)
         .build()
         .is_ok());
+}
+
+#[test]
+fn an_invalid_issue_quotes_its_failure_and_silence_does_not() {
+    let base = |kind: IssueKind| ProjectionIssue::builder().path("Reading").kind(kind);
+
+    let error = base(IssueKind::Invalid).build().unwrap_err();
+    assert_eq!(error.path(), "detail");
+
+    let error = base(IssueKind::MissingRequired)
+        .detail("noise")
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "detail");
+
+    assert!(base(IssueKind::MissingRequired).build().is_ok());
+    assert!(base(IssueKind::Invalid)
+        .detail("not finite")
+        .build()
+        .is_ok());
+}
+
+#[test]
+fn one_issue_per_failed_field_and_never_an_empty_envelope() {
+    let issue = |path: &str| {
+        ProjectionIssue::builder()
+            .path(path)
+            .kind(IssueKind::MissingRequired)
+            .build()
+            .expect("a valid issue")
+    };
+    let base = || {
+        ProjectionIssues::builder()
+            .endpoint(
+                EndpointContext::builder()
+                    .endpoint_id("bmc-lab-07")
+                    .build()
+                    .expect("a valid endpoint"),
+            )
+            .origin(
+                Origin::builder()
+                    .provider("redfish")
+                    .request_class("read")
+                    .build()
+                    .expect("a valid origin"),
+            )
+            .at(Timestamp::new(1_785_621_243, 0).expect("a valid instant"))
+    };
+
+    // Identity is the path alone: a second issue for the same field is a
+    // duplicate even when its kind differs.
+    let other_kind = ProjectionIssue::builder()
+        .path("Id")
+        .kind(IssueKind::Invalid)
+        .detail("not finite")
+        .build()
+        .expect("a valid issue");
+    let error = base()
+        .issues(vec![issue("Id"), other_kind])
+        .build()
+        .unwrap_err();
+    assert_eq!(error.path(), "issues[1]");
+    assert_eq!(error.violation(), &Violation::Duplicate);
+
+    let error = base().build().unwrap_err();
+    assert_eq!(error.path(), "issues");
+    assert_eq!(
+        error.violation(),
+        &Violation::Rule("no issues is no message, not an empty one")
+    );
+
+    // The decode path runs the same rule: an empty envelope on the wire is
+    // the fabrication the rule exists to refuse.
+    let empty = wire::ProjectionIssues {
+        endpoint: Some(wire::EndpointContext {
+            endpoint_id: Some("bmc-lab-07".into()),
+            attributes: None,
+        }),
+        origin: Some(wire::Origin {
+            provider: Some("redfish".into()),
+            request_class: Some("read".into()),
+        }),
+        at: Some(wire::Timestamp {
+            seconds: Some(1),
+            nanos: Some(0),
+        }),
+        issues: vec![],
+    };
+    let error = ProjectionIssues::try_from(empty).unwrap_err();
+    assert_eq!(error.path(), "issues");
+    assert_eq!(
+        error.violation(),
+        &Violation::Rule("no issues is no message, not an empty one")
+    );
+
+    assert!(base().issues(vec![issue("Id")]).build().is_ok());
 }
 
 #[test]
@@ -347,6 +446,14 @@ fn every_field_survives_the_validated_round_trip() {
     let numeric = |value: f64| wire::NumericValue {
         kind: Some(wire::numeric_value::Kind::DoubleValue(value)),
     };
+    let endpoint = || wire::EndpointContext {
+        endpoint_id: Some("bmc-lab-07".into()),
+        attributes: Some(map.clone()),
+    };
+    let origin = || wire::Origin {
+        provider: Some("redfish".into()),
+        request_class: Some("read".into()),
+    };
 
     let payloads = vec![
         wire::observation_batch::Payload::Readings(wire::Readings {
@@ -416,14 +523,8 @@ fn every_field_survives_the_validated_round_trip() {
 
     for payload in payloads {
         let maximal = wire::ObservationBatch {
-            endpoint: Some(wire::EndpointContext {
-                endpoint_id: Some("bmc-lab-07".into()),
-                attributes: Some(map.clone()),
-            }),
-            origin: Some(wire::Origin {
-                provider: Some("redfish".into()),
-                request_class: Some("read".into()),
-            }),
+            endpoint: Some(endpoint()),
+            origin: Some(origin()),
             window: Some(wire::ObservationWindow {
                 start: Some(ts(1)),
                 end: Some(ts(2)),
@@ -471,5 +572,37 @@ fn every_field_survives_the_validated_round_trip() {
         direct,
         status.encode_to_vec(),
         "the direct status encoder diverged from prost"
+    );
+
+    // Issues are given in canonical (path) order so the unordered sort
+    // cannot reorder them, keeping byte equality the assertion.
+    let issues = wire::ProjectionIssues {
+        endpoint: Some(endpoint()),
+        origin: Some(origin()),
+        at: Some(ts(60)),
+        issues: vec![
+            wire::ProjectionIssue {
+                path: Some("Id".into()),
+                kind: Some(wire::projection_issue::IssueKind::MissingRequired as i32),
+                detail: None,
+            },
+            wire::ProjectionIssue {
+                path: Some("Sensors[3].Reading".into()),
+                kind: Some(wire::projection_issue::IssueKind::Invalid as i32),
+                detail: Some("not a finite number".into()),
+            },
+        ],
+    };
+    let validated = ProjectionIssues::try_from(issues.clone()).expect("maximal issues valid");
+    let direct = validated.encode_to_vec();
+    assert_eq!(
+        wire::ProjectionIssues::from(validated),
+        issues,
+        "an issue field was dropped on the round trip"
+    );
+    assert_eq!(
+        direct,
+        issues.encode_to_vec(),
+        "the direct issues encoder diverged from prost"
     );
 }

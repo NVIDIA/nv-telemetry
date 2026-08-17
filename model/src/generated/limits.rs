@@ -62,6 +62,15 @@ pub const ORIGIN_PROVIDER_MAX_LEN: u32 = 128;
 /// `nv.telemetry.v1.Origin.request_class` `max_len`, in bytes.
 pub const ORIGIN_REQUEST_CLASS_MAX_LEN: u32 = 128;
 
+/// `nv.telemetry.v1.ProjectionIssues.issues` `max_items`.
+pub const PROJECTIONISSUES_ISSUES_MAX_ITEMS: u32 = 65_536;
+
+/// `nv.telemetry.v1.ProjectionIssue.detail` `max_len`, in bytes.
+pub const PROJECTIONISSUE_DETAIL_MAX_LEN: u32 = 4_096;
+
+/// `nv.telemetry.v1.ProjectionIssue.path` `max_len`, in bytes.
+pub const PROJECTIONISSUE_PATH_MAX_LEN: u32 = 1_024;
+
 /// `nv.telemetry.v1.Readings.descriptors` `max_items`.
 pub const READINGS_DESCRIPTORS_MAX_ITEMS: u32 = 65_536;
 

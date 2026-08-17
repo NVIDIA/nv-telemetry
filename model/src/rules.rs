@@ -32,6 +32,7 @@ use crate::EndpointContext;
 use crate::Invalid;
 use crate::Inventory;
 use crate::InventoryItem;
+use crate::IssueKind;
 use crate::LogRecord;
 use crate::Logs;
 use crate::NumericValue;
@@ -41,6 +42,8 @@ use crate::ObservedResource;
 use crate::Origin;
 use crate::Outcome;
 use crate::Payload;
+use crate::ProjectionIssue;
+use crate::ProjectionIssues;
 use crate::Reading;
 use crate::Readings;
 use crate::ResourceGraph;
@@ -254,6 +257,39 @@ pub(crate) fn acquisition_status(status: &AcquisitionStatus) -> Result<(), Inval
         )),
         _ => Ok(()),
     }
+}
+
+/// "Present exactly when the kind is invalid — a wrapper rule: silence has
+/// no detail to quote."
+///
+/// An unrecognized kind constrains nothing: it is a newer producer's word,
+/// and whether that kind quotes a detail is that producer's contract with
+/// its consumers, not this build's guess.
+pub(crate) fn projection_issue(issue: &ProjectionIssue) -> Result<(), Invalid> {
+    match (issue.kind(), issue.detail()) {
+        (IssueKind::Invalid, None) => Err(Invalid::field(
+            "detail",
+            Violation::Rule("an invalid value quotes its failure"),
+        )),
+        (IssueKind::MissingRequired, Some(_)) => Err(Invalid::field(
+            "detail",
+            Violation::Rule("silence has no detail to quote"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// "An acquisition with no issues emits no message at all — an empty
+/// envelope would be a fabrication, the same one the batch doctrine
+/// forbids — a wrapper rule."
+pub(crate) fn projection_issues(issues: &ProjectionIssues) -> Result<(), Invalid> {
+    if issues.issues().is_empty() {
+        return Err(Invalid::field(
+            "issues",
+            Violation::Rule("no issues is no message, not an empty one"),
+        ));
+    }
+    Ok(())
 }
 
 /// "Scope on a graph batch means reachability from the scope subject ...

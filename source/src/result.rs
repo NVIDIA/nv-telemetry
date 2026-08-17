@@ -23,7 +23,7 @@ use nv_telemetry_model::Timestamp;
 
 use crate::ProjectionIssue;
 
-const DETAIL_TRUNCATION_MARKER: &str = "...";
+pub(crate) const DETAIL_TRUNCATION_MARKER: &str = "...";
 
 type CoveredPayloads = Box<[(Coverage, Payload)]>;
 
@@ -206,7 +206,8 @@ impl AcquisitionFailure {
     /// without introducing a second validation failure.
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = bounded_detail(detail.into());
+        let limit = nv_telemetry_model::limits::ACQUISITIONSTATUS_DETAIL_MAX_LEN as usize;
+        self.detail = bounded(detail.into(), limit);
         self
     }
 
@@ -230,31 +231,35 @@ impl AcquisitionFailure {
     }
 }
 
-fn bounded_detail(mut detail: String) -> Option<String> {
-    if detail.is_empty() {
+/// Empty text becomes `None`; overlong text is UTF-8-safely truncated to
+/// `limit` with a marker. Both callers bound `detail` fields, whose
+/// contracts reject present-but-empty, so `None` is the only honest
+/// spelling of nothing there; a field where empty is legal data must not
+/// come through here.
+pub(crate) fn bounded(mut text: String, limit: usize) -> Option<String> {
+    if text.is_empty() {
         return None;
     }
-    let limit = nv_telemetry_model::limits::ACQUISITIONSTATUS_DETAIL_MAX_LEN as usize;
-    if detail.len() <= limit {
-        return Some(detail);
+    if text.len() <= limit {
+        return Some(text);
     }
 
     if limit < DETAIL_TRUNCATION_MARKER.len() {
         let mut end = limit;
-        while !detail.is_char_boundary(end) {
+        while !text.is_char_boundary(end) {
             end -= 1;
         }
-        detail.truncate(end);
-        return (!detail.is_empty()).then_some(detail);
+        text.truncate(end);
+        return (!text.is_empty()).then_some(text);
     }
 
     let mut end = limit - DETAIL_TRUNCATION_MARKER.len();
-    while !detail.is_char_boundary(end) {
+    while !text.is_char_boundary(end) {
         end -= 1;
     }
-    detail.truncate(end);
-    detail.push_str(DETAIL_TRUNCATION_MARKER);
-    Some(detail)
+    text.truncate(end);
+    text.push_str(DETAIL_TRUNCATION_MARKER);
+    Some(text)
 }
 
 impl fmt::Display for AcquisitionFailure {

@@ -61,6 +61,7 @@ fn explicit_presence_survives_into_the_generated_api() {
     let status = wire::AcquisitionStatus::default();
     assert!(status.outcome.is_none());
     assert!(status.failure_class.is_none());
+    assert!(wire::ProjectionIssue::default().kind.is_none());
 }
 
 #[test]
