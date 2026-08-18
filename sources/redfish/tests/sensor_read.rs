@@ -263,7 +263,7 @@ async fn a_sensor_outside_a_chassis_yields_issues_and_nothing_else() {
     assert_eq!(
         acquired.issues(),
         &[ProjectionIssue::invalid(
-            "uri",
+            "@location.chassis",
             "requested location has no chassis segment"
         )]
     );
@@ -278,7 +278,7 @@ async fn an_identity_failure_never_copies_query_secrets_into_an_issue() {
     assert_eq!(
         acquired.issues(),
         &[ProjectionIssue::invalid(
-            "uri",
+            "@location.chassis",
             "requested location has no chassis segment"
         )]
     );
@@ -317,7 +317,10 @@ async fn every_identity_fault_is_reported_before_output_is_suppressed() {
         acquired.issues(),
         &[
             ProjectionIssue::invalid("Sensor.Id", "`id`: present but empty"),
-            ProjectionIssue::invalid("uri", "requested location has no chassis segment"),
+            ProjectionIssue::invalid(
+                "@location.chassis",
+                "requested location has no chassis segment"
+            ),
         ]
     );
 }

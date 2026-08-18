@@ -532,6 +532,31 @@ source entry id, the property that held a link — is one the source may not
 supply, and a key that can be absent would call two elements duplicates
 precisely when the source was least informative.
 
+## Adding a contract message
+
+A new wire message touches these artifacts; the list exists so first passes
+are complete rather than review-discovered:
+
+1. The `.proto` under `schema/proto/nv/telemetry/v1/` — per-field
+   annotations decided (`required`, `non_empty`, bounds,
+   `reject_unspecified`; on repeated fields `unordered` and `unique_by`: is
+   order data, and what is an element's identity?), `validated` on the
+   message.
+2. `make codegen` — regenerates wire/model/limits and moves
+   `schema/contract.lock`; the lock diff is the review surface.
+3. `model/src/rules.rs` — the cross-field rules the vocabulary cannot
+   state, or a deliberate `Ok(())` recording that the schema states none
+   (compiler-forced: the model does not build without an answer).
+4. `model/src/tests/boundary.rs` — a boundary test per wrapper rule, on the
+   builder and decode paths both, and the maximal round trip extended when
+   the message carries `encode_to_vec`.
+5. `model/src/tests/wire_properties.rs` — every new `optional` enum field
+   joins the presence census.
+6. A producer bridge in `source/` when sources originate the type, with its
+   bounding and validity story stated.
+7. Docs: this file (semantics, a worked example) and `ARCHITECTURE.md`'s
+   Output contract section when the message is a stream.
+
 ---
 
 # Known limitations

@@ -321,6 +321,27 @@ fn an_unrecognized_enum_value_survives_and_unspecified_does_not() {
 }
 
 #[test]
+fn an_unrecognized_value_may_not_alias_a_recognized_one() {
+    let base = || ProjectionIssue::builder().path("Reading");
+
+    // A genuinely newer value builds; aliases of the unspecified value or
+    // of a recognized variant do not — their bytes would fail this build's
+    // own decode.
+    assert!(base().kind(IssueKind::Unrecognized(99)).build().is_ok());
+
+    let error = base().kind(IssueKind::Unrecognized(0)).build().unwrap_err();
+    assert_eq!(error.path(), "kind");
+    assert_eq!(error.violation(), &Violation::Unspecified);
+
+    let error = base().kind(IssueKind::Unrecognized(2)).build().unwrap_err();
+    assert_eq!(error.path(), "kind");
+    assert_eq!(
+        error.violation(),
+        &Violation::Rule("an unrecognized value must not alias a recognized one")
+    );
+}
+
+#[test]
 fn a_complete_scoped_graph_must_hang_off_its_root() {
     let chassis = built_subject("chassis", "1U");
     let sensor = built_subject("sensor", "Inlet");

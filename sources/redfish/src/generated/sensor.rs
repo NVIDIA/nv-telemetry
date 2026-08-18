@@ -743,7 +743,7 @@ pub(crate) fn project_sensor(
                 issues
                     .push(
                         ::nv_telemetry_source::ProjectionIssue::invalid(
-                            "uri",
+                            "@location.chassis",
                             "`scope`: present but empty",
                         ),
                     );
@@ -754,7 +754,7 @@ pub(crate) fn project_sensor(
                 issues
                     .push(
                         ::nv_telemetry_source::ProjectionIssue::invalid(
-                            "uri",
+                            "@location.chassis",
                             format!(
                                 "`scope`: {} bytes long, over the schema's bound of {}",
                                 value.len(),
@@ -771,7 +771,7 @@ pub(crate) fn project_sensor(
             issues
                 .push(
                     ::nv_telemetry_source::ProjectionIssue::invalid(
-                        "uri",
+                        "@location.chassis",
                         "requested location has no chassis segment",
                     ),
                 );
@@ -791,7 +791,7 @@ pub(crate) fn project_sensor(
                     let path = if error.path().starts_with("id") {
                         "Sensor.Id"
                     } else {
-                        "uri"
+                        "@location.chassis"
                     };
                     issues
                         .push(
