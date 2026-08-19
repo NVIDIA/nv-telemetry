@@ -35,7 +35,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.90.0"
+          toolchain: "1.95.0"
 
       # Cached because a cold build of the protobuf crates dominates the job.
       # actions/cache rather than a third-party Rust cache action: NVIDIA's
@@ -88,7 +88,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.90.0"
+          toolchain: "1.95.0"
 
       # actions/cache rather than a third-party Rust cache action: NVIDIA's
       # allowlist admits actions/*, and the caching this needs is a path list.

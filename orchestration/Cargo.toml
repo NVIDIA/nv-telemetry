@@ -7,8 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+nv-redfish-dispatcher.workspace = true
 nv-telemetry-model.workspace = true
 nv-telemetry-source.workspace = true
+
+[dev-dependencies]
+gungraun.workspace = true
+
+[[bench]]
+name = "orchestration"
+harness = false
 
 [lints]
 workspace = true

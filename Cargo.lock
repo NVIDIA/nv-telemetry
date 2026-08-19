@@ -1007,6 +1007,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nv-redfish-dispatcher"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08571eeb08fdee9aad2bd0591d393056fad9f350c2827704877576956c92f121"
+dependencies = [
+ "futures-core",
+ "futures-util",
+]
+
+[[package]]
 name = "nv-redfish-schema"
 version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1066,6 +1076,8 @@ dependencies = [
 name = "nv-telemetry-orchestration"
 version = "0.1.0"
 dependencies = [
+ "gungraun",
+ "nv-redfish-dispatcher",
  "nv-telemetry-model",
  "nv-telemetry-source",
 ]
@@ -1076,6 +1088,21 @@ version = "0.1.0"
 dependencies = [
  "nv-telemetry-export",
  "nv-telemetry-model",
+]
+
+[[package]]
+name = "nv-telemetry-probe"
+version = "0.1.0"
+dependencies = [
+ "nv-redfish",
+ "nv-redfish-bmc-mock",
+ "nv-redfish-dispatcher",
+ "nv-telemetry-model",
+ "nv-telemetry-orchestration",
+ "nv-telemetry-redfish",
+ "nv-telemetry-source",
+ "tokio",
+ "url",
 ]
 
 [[package]]

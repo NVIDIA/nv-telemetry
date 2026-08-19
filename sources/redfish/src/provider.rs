@@ -21,6 +21,7 @@ use nv_telemetry_source::Acquire;
 use nv_telemetry_source::AcquisitionFailure;
 use nv_telemetry_source::AcquisitionFailureClass;
 use nv_telemetry_source::AcquisitionParts;
+use nv_telemetry_source::ProviderDeclaration;
 
 use crate::failure::ClassifyError;
 use crate::projection::project_sensor;
@@ -76,6 +77,14 @@ impl<B> SensorRead<B> {
 
     /// Request class, as dispatcher lanes and breakers key it.
     pub const REQUEST_CLASS: &'static str = "sensor-read";
+
+    /// This provider's declaration, single-sourced from the same constants
+    /// its `Origin` is built from, so the plan and the wire always name the
+    /// same identity.
+    #[must_use]
+    pub fn declaration() -> ProviderDeclaration {
+        ProviderDeclaration::polled(Self::PROVIDER, Self::REQUEST_CLASS, 1)
+    }
 
     /// A read of `sensor` on the endpoint `bmc` reaches.
     ///
@@ -175,6 +184,7 @@ mod tests {
     use nv_telemetry_model::Origin;
     use nv_telemetry_model::StateObservation;
     use nv_telemetry_source::AcquisitionFailureClass;
+    use nv_telemetry_source::AcquisitionMode;
 
     use super::internal_bug;
     use super::SensorRead;
@@ -215,6 +225,18 @@ mod tests {
         assert!(!rendered.contains("/redfish/"));
         assert!(!rendered.contains("query-secret"));
         assert!(!rendered.contains("transport-secret"));
+    }
+
+    #[test]
+    fn the_declaration_names_the_origins_identity() {
+        // The planner selects by declaration and the wire carries the
+        // origin; this pin keeps the two from ever naming different
+        // providers.
+        let declaration = SensorRead::<()>::declaration();
+        assert_eq!(declaration.provider(), SensorRead::<()>::PROVIDER);
+        assert_eq!(declaration.request_class(), SensorRead::<()>::REQUEST_CLASS);
+        assert_eq!(declaration.mode(), AcquisitionMode::Polled);
+        assert_eq!(declaration.cost(), 1);
     }
 
     #[test]

@@ -1,0 +1,22 @@
+[package]
+name = "nv-telemetry-probe"
+description = "Demo embedder: polls one Redfish endpoint and prints the three streams"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nv-redfish = { workspace = true, features = ["bmc-http"] }
+nv-redfish-bmc-mock.workspace = true
+nv-redfish-dispatcher.workspace = true
+nv-telemetry-model.workspace = true
+nv-telemetry-orchestration.workspace = true
+nv-telemetry-redfish = { workspace = true, features = ["bmc-mock"] }
+nv-telemetry-source.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+url.workspace = true
+
+[lints]
+workspace = true

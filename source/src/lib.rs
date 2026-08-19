@@ -13,7 +13,9 @@
 //!   collection provider;
 //! - [`Acquired`] — the batches and [`ProjectionIssue`]s a success yields;
 //! - [`AcquisitionFailure`] — the classified facts a failure yields;
-//! - [`Capability`] — what a probe (itself just an `Acquire`) learns.
+//! - [`Capability`] — what a probe (itself just an `Acquire`) learns;
+//! - [`ProviderDeclaration`] — what one provider offers, as the plain data
+//!   the planner plans against.
 //!
 //! A failed request emits no batch at all, and the outcome type makes the
 //! alternative unrepresentable. Missing and invalid source fields are
@@ -28,23 +30,24 @@
 //! status cannot misreport one. Sources contribute exactly what the trait
 //! exposes: identity, and the classified outcome.
 //!
-//! Reserved here for later milestones, in the order they are expected:
-//! provider declarations (what need a provider satisfies, polled or
-//! streamed, estimated cost — the planner's vocabulary); the stage trait and
-//! artifact plumbing for multi-step acquisitions such as catalogs; streamed
-//! subscription types, whose admission gNMI settles (a subscription's
-//! connect attempt is an [`Acquire`] whose output is a stream — an addition
-//! to this contract, not a change); and the projection driver machinery that
-//! returns with the manifest compiler, for which [`ProjectionIssue`] is the
-//! fixed anchor.
+//! Reserved here for later milestones, in the order they are expected: the
+//! stage trait and artifact plumbing for multi-step acquisitions such as
+//! catalogs; streamed subscription types, whose admission gNMI settles (a
+//! subscription's connect attempt is an [`Acquire`] whose output is a
+//! stream — an addition to this contract, not a change); and the projection
+//! driver machinery that returns with the manifest compiler, for which
+//! [`ProjectionIssue`] is the fixed anchor.
 
 mod acquire;
+mod declare;
 mod issue;
 mod result;
 
 pub use acquire::acquire;
 pub use acquire::Acquire;
 pub use acquire::Capability;
+pub use declare::AcquisitionMode;
+pub use declare::ProviderDeclaration;
 pub use issue::ProjectionIssue;
 pub use issue::ProjectionIssueKind;
 pub use result::Acquired;
