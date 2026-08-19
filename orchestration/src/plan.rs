@@ -143,7 +143,7 @@ pub enum PlanError {
         /// The declared provider name.
         provider: String,
     },
-    /// A need's cadence is zero or beyond [`MAX_CADENCE`].
+    /// A need's cadence is zero or beyond the year-long maximum.
     InvalidCadence {
         /// The need's target.
         target: String,
