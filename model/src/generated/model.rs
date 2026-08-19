@@ -97,6 +97,31 @@ impl crate::canonical::Canonical for FailureClass {
         i32::from(*self).cmp(&i32::from(*other))
     }
 }
+impl FailureClass {
+    /// Rejects an `Unrecognized` that aliases the unspecified value
+    /// or a variant this build recognizes: its bytes would not
+    /// round-trip — 0 is refused by decode outright, and an alias
+    /// silently comes back as the recognized variant instead of
+    /// itself.
+    fn check(self) -> Result<(), Violation> {
+        match self {
+            Self::Unrecognized(value) => {
+                match Self::try_from(value) {
+                    Ok(Self::Unrecognized(_)) => Ok(()),
+                    Ok(_) => {
+                        Err(
+                            Violation::Rule(
+                                "an unrecognized value must not alias a recognized one",
+                            ),
+                        )
+                    }
+                    Err(violation) => Err(violation),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+}
 /// Validated form of `nv.telemetry.v1.AcquisitionStatus.Outcome`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -137,6 +162,31 @@ impl From<Outcome> for i32 {
 impl crate::canonical::Canonical for Outcome {
     fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
         i32::from(*self).cmp(&i32::from(*other))
+    }
+}
+impl Outcome {
+    /// Rejects an `Unrecognized` that aliases the unspecified value
+    /// or a variant this build recognizes: its bytes would not
+    /// round-trip — 0 is refused by decode outright, and an alias
+    /// silently comes back as the recognized variant instead of
+    /// itself.
+    fn check(self) -> Result<(), Violation> {
+        match self {
+            Self::Unrecognized(value) => {
+                match Self::try_from(value) {
+                    Ok(Self::Unrecognized(_)) => Ok(()),
+                    Ok(_) => {
+                        Err(
+                            Violation::Rule(
+                                "an unrecognized value must not alias a recognized one",
+                            ),
+                        )
+                    }
+                    Err(violation) => Err(violation),
+                }
+            }
+            _ => Ok(()),
+        }
     }
 }
 /// Validated form of `nv.telemetry.v1.Completeness`.
@@ -181,6 +231,31 @@ impl crate::canonical::Canonical for Completeness {
         i32::from(*self).cmp(&i32::from(*other))
     }
 }
+impl Completeness {
+    /// Rejects an `Unrecognized` that aliases the unspecified value
+    /// or a variant this build recognizes: its bytes would not
+    /// round-trip — 0 is refused by decode outright, and an alias
+    /// silently comes back as the recognized variant instead of
+    /// itself.
+    fn check(self) -> Result<(), Violation> {
+        match self {
+            Self::Unrecognized(value) => {
+                match Self::try_from(value) {
+                    Ok(Self::Unrecognized(_)) => Ok(()),
+                    Ok(_) => {
+                        Err(
+                            Violation::Rule(
+                                "an unrecognized value must not alias a recognized one",
+                            ),
+                        )
+                    }
+                    Err(violation) => Err(violation),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+}
 /// Validated form of `nv.telemetry.v1.ProjectionIssue.IssueKind`.
 ///
 /// The unspecified value is unrepresentable: conversion rejects it, because
@@ -221,6 +296,31 @@ impl From<IssueKind> for i32 {
 impl crate::canonical::Canonical for IssueKind {
     fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
         i32::from(*self).cmp(&i32::from(*other))
+    }
+}
+impl IssueKind {
+    /// Rejects an `Unrecognized` that aliases the unspecified value
+    /// or a variant this build recognizes: its bytes would not
+    /// round-trip — 0 is refused by decode outright, and an alias
+    /// silently comes back as the recognized variant instead of
+    /// itself.
+    fn check(self) -> Result<(), Violation> {
+        match self {
+            Self::Unrecognized(value) => {
+                match Self::try_from(value) {
+                    Ok(Self::Unrecognized(_)) => Ok(()),
+                    Ok(_) => {
+                        Err(
+                            Violation::Rule(
+                                "an unrecognized value must not alias a recognized one",
+                            ),
+                        )
+                    }
+                    Err(violation) => Err(violation),
+                }
+            }
+            _ => Ok(()),
+        }
     }
 }
 /// Validated form of `nv.telemetry.v1.Severity`.
@@ -275,6 +375,31 @@ impl From<Severity> for i32 {
 impl crate::canonical::Canonical for Severity {
     fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
         i32::from(*self).cmp(&i32::from(*other))
+    }
+}
+impl Severity {
+    /// Rejects an `Unrecognized` that aliases the unspecified value
+    /// or a variant this build recognizes: its bytes would not
+    /// round-trip — 0 is refused by decode outright, and an alias
+    /// silently comes back as the recognized variant instead of
+    /// itself.
+    fn check(self) -> Result<(), Violation> {
+        match self {
+            Self::Unrecognized(value) => {
+                match Self::try_from(value) {
+                    Ok(Self::Unrecognized(_)) => Ok(()),
+                    Ok(_) => {
+                        Err(
+                            Violation::Rule(
+                                "an unrecognized value must not alias a recognized one",
+                            ),
+                        )
+                    }
+                    Err(violation) => Err(violation),
+                }
+            }
+            _ => Ok(()),
+        }
     }
 }
 /// Validated form of `nv.telemetry.v1.AcquisitionStatus`; the schema carries the field semantics.
@@ -478,6 +603,12 @@ impl AcquisitionStatus {
             limits::ACQUISITIONSTATUS_REQUEST_CLASS_MAX_LEN,
         ) {
             return Err(Invalid::field("request_class", violation));
+        }
+        self.outcome.check().map_err(|violation| Invalid::field("outcome", violation))?;
+        if let Some(value) = self.failure_class {
+            value
+                .check()
+                .map_err(|violation| Invalid::field("failure_class", violation))?;
         }
         if let Some(element) = &self.detail {
             if element.is_empty() {
@@ -734,6 +865,9 @@ impl Coverage {
         self.scope.as_ref()
     }
     fn check(&self) -> Result<(), Invalid> {
+        self.completeness
+            .check()
+            .map_err(|violation| Invalid::field("completeness", violation))?;
         rules::coverage(self)?;
         Ok(())
     }
@@ -1393,6 +1527,9 @@ impl LogRecord {
         self.attributes.as_ref()
     }
     fn check(&self) -> Result<(), Invalid> {
+        if let Some(value) = self.severity {
+            value.check().map_err(|violation| Invalid::field("severity", violation))?;
+        }
         if let Some(violation) = invalid::too_long(
             self.message.len(),
             limits::LOGRECORD_MESSAGE_MAX_LEN,
@@ -2740,6 +2877,7 @@ impl ProjectionIssue {
         ) {
             return Err(Invalid::field("path", violation));
         }
+        self.kind.check().map_err(|violation| Invalid::field("kind", violation))?;
         if let Some(element) = &self.detail {
             if element.is_empty() {
                 return Err(Invalid::field("detail", Violation::Empty));

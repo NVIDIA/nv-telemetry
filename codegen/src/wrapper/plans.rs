@@ -562,8 +562,35 @@ pub(super) fn plan_field(field: &FieldDescriptor, vocabulary: &Vocabulary) -> Re
                 "u64_value",
             )
         }
+        Kind::Enum(_) if field.is_list() => {
+            return Err(format!(
+                "`{}`: a repeated enum needs a reshaping decision this \
+                 generator has not made yet",
+                field.full_name()
+            ));
+        }
         Kind::Enum(declared) => {
             let ty = ident(&short_name(declared.full_name()));
+            // The builder accepts an already-typed enum, so a hand-built
+            // `Unrecognized` aliasing a recognized discriminant arrives here
+            // without passing `TryFrom<i32>`; the enum's own check refuses
+            // it. Decode cannot carry such a value — `TryFrom<i32>`
+            // normalizes — so there the shared check is inert uniformity.
+            checks.extend(if invariant.required {
+                quote! {
+                    self.#id
+                        .check()
+                        .map_err(|violation| Invalid::field(#lit, violation))?;
+                }
+            } else {
+                quote! {
+                    if let Some(value) = self.#id {
+                        value
+                            .check()
+                            .map_err(|violation| Invalid::field(#lit, violation))?;
+                    }
+                }
+            });
             let setter_doc = docs(&[format!("Sets `{name}`.")]);
             let setter = quote! {
                 #setter_doc

@@ -612,7 +612,10 @@ impl Completeness {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectionIssue {
     /// Dotted path in the source's schema grammar, with indexes into repeated
-    /// source fields: `Chassis.Sensors\[3\].Reading`.
+    /// source fields: `Chassis.Sensors\[3\].Reading`. A fact outside the schema
+    /// carries an `@`-prefixed locator — `@location.chassis` names a
+    /// request-URI capture — which no schema property can collide with.
+    /// Element prefixes may precede a locator: `Sensors\[3\].@location.chassis`.
     #[prost(string, optional, tag = "1")]
     pub path: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(enumeration = "projection_issue::IssueKind", optional, tag = "2")]

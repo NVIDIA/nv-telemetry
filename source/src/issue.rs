@@ -15,7 +15,15 @@
 //! `Sensor.Reading`, `Sensors[3].Status.Health` — built outward as the issue
 //! propagates, exactly as [`Invalid`](nv_telemetry_model::Invalid) builds
 //! model paths. The two read alike on purpose: locating a projection issue
-//! and locating a validation violation are the same skill.
+//! and locating a validation violation are the same skill. A fact outside
+//! the schema carries an `@`-prefixed locator, such as `@location.chassis`
+//! for a request-URI capture; element prefixes built by [`ProjectionIssue::at`]
+//! or [`ProjectionIssue::at_index`] may precede one.
+//!
+//! Paths are identities: the wire envelope holds one issue per path across
+//! a whole acquisition, so whoever iterates elements must prefix each
+//! element's issues with [`ProjectionIssue::at`] or
+//! [`ProjectionIssue::at_index`] to keep them distinct.
 
 use std::fmt;
 

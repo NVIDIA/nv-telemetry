@@ -375,6 +375,7 @@ fn enum_items(
     let encode_arms = arms.iter().map(|(arm, number, _)| {
         quote! { #name::#arm => #number, }
     });
+    let check = enum_check(&name);
 
     Ok(quote! {
         #doc
@@ -412,7 +413,34 @@ fn enum_items(
                 i32::from(*self).cmp(&i32::from(*other))
             }
         }
+
+        #check
     })
+}
+
+/// The honesty check every enum-typed field runs on build and decode alike.
+fn enum_check(name: &Ident) -> TokenStream {
+    quote! {
+        impl #name {
+            /// Rejects an `Unrecognized` that aliases the unspecified value
+            /// or a variant this build recognizes: its bytes would not
+            /// round-trip — 0 is refused by decode outright, and an alias
+            /// silently comes back as the recognized variant instead of
+            /// itself.
+            fn check(self) -> Result<(), Violation> {
+                match self {
+                    Self::Unrecognized(value) => match Self::try_from(value) {
+                        Ok(Self::Unrecognized(_)) => Ok(()),
+                        Ok(_) => Err(Violation::Rule(
+                            "an unrecognized value must not alias a recognized one",
+                        )),
+                        Err(violation) => Err(violation),
+                    },
+                    _ => Ok(()),
+                }
+            }
+        }
+    }
 }
 
 // The message template in execution order — struct, impl, builder, TryFrom,

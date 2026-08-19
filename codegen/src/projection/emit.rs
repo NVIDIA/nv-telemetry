@@ -1032,14 +1032,16 @@ impl Emitter<'_> {
                         source_type.to_snake_case()
                     ));
                     helpers.extend(location_helper(&helper, &pattern));
-                    // A requested URI is untrusted and may carry query
-                    // secrets. The issue identifies the `uri` field already;
-                    // keep detail static rather than copying the request
-                    // into diagnostics.
+                    // The fact at fault is a URI capture, not a schema field;
+                    // `@location.{capture}` names it without colliding with
+                    // the schema's PascalCase properties. A requested URI is
+                    // untrusted and may carry query secrets, so detail stays
+                    // static rather than copying the request into diagnostics.
+                    let locator = format!("@location.{capture}");
                     let detail = format!("requested location has no {capture} segment");
                     let conversion = checked_text(
                         &self.text_check(&scope_field),
-                        "uri",
+                        &locator,
                         quote! { Some(value) },
                     );
                     evaluations.extend(quote! {
@@ -1047,7 +1049,7 @@ impl Emitter<'_> {
                             Some(value) => #conversion,
                             None => {
                                 issues.push(::nv_telemetry_source::ProjectionIssue::invalid(
-                                    "uri",
+                                    #locator,
                                     #detail,
                                 ));
                                 None
@@ -1055,7 +1057,7 @@ impl Emitter<'_> {
                         };
                     });
                     scope_locals.push(local);
-                    blames.push("uri".to_owned());
+                    blames.push(locator);
                 }
                 ScopeSpec::PathKey(_) | ScopeSpec::Unset => {
                     return Err(format!(
