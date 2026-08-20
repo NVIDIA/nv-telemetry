@@ -125,7 +125,9 @@ impl RatePolicy {
         self
     }
 
-    /// Tokens accrued per `per` — the sustained rate.
+    /// Tokens accrued per `per` — the sustained rate. A zero `per` is the
+    /// dispatcher's unlimited-rate mode: the bucket is always full and
+    /// `burst`/`refill` are inert.
     #[must_use]
     pub fn with_refill(mut self, refill: u64, per: Duration) -> Self {
         self.refill = refill;
@@ -291,17 +293,21 @@ fn validate(policy: &EndpointPolicy) -> Result<(), RecipeError> {
         ));
     }
     let rate = &policy.rate;
-    if rate.burst == 0 || rate.refill == 0 {
-        // Zero refill would spend the burst and then park polling forever
-        // with no error and no wake-up.
-        return Err(RecipeError::InvalidPolicy(
-            "rate burst and refill must be positive",
-        ));
-    }
-    if rate.per.is_zero() || rate.per > MAX_POLICY_INTERVAL {
-        return Err(RecipeError::InvalidPolicy(
-            "refill interval must be positive and at most a year",
-        ));
+    // A zero interval is the dispatcher's documented unlimited-rate mode:
+    // the bucket is always full and every other rate field is inert.
+    if !rate.per.is_zero() {
+        if rate.burst == 0 || rate.refill == 0 {
+            // Zero refill would spend the burst and then park polling
+            // forever with no error and no wake-up.
+            return Err(RecipeError::InvalidPolicy(
+                "rate burst and refill must be positive",
+            ));
+        }
+        if rate.per > MAX_POLICY_INTERVAL {
+            return Err(RecipeError::InvalidPolicy(
+                "refill interval must be at most a year",
+            ));
+        }
     }
     Ok(())
 }
@@ -403,13 +409,23 @@ mod tests {
             EndpointPolicy::default()
                 .with_rate(RatePolicy::default().with_refill(0, Duration::from_secs(1))),
             EndpointPolicy::default()
-                .with_rate(RatePolicy::default().with_refill(1, Duration::ZERO)),
-            EndpointPolicy::default()
                 .with_rate(RatePolicy::default().with_refill(1, Duration::MAX)),
         ];
         for policy in bad {
             let error = validate(&policy).expect_err("an unusable policy is refused");
             assert!(matches!(error, RecipeError::InvalidPolicy(_)));
         }
+    }
+
+    #[test]
+    fn a_zero_interval_is_the_unlimited_rate_not_an_error() {
+        // The dispatcher ignores every other rate field in this mode, so
+        // even the otherwise-jamming zeros validate.
+        let unlimited = EndpointPolicy::default().with_rate(
+            RatePolicy::default()
+                .with_refill(0, Duration::ZERO)
+                .with_burst(0),
+        );
+        validate(&unlimited).expect("a zero interval means unlimited, not misconfigured");
     }
 }
