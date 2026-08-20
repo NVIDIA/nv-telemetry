@@ -31,6 +31,8 @@ sources/
   redfish/            nv-telemetry-redfish        HTTP/JSON, OData, DMTF schemas
   gnmi/               nv-telemetry-gnmi           gRPC subscribe, YANG paths
 orchestration/        nv-telemetry-orchestration  planner, providers, recipes
+examples/
+  probe/              nv-telemetry-probe          demo embedder (not published)
 export/               nv-telemetry-export         shared batch traversal
 exporters/
   otlp/               nv-telemetry-otlp

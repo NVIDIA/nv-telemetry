@@ -10,6 +10,7 @@ members = [
     "export",
     "exporters/otlp",
     "exporters/prometheus",
+    "examples/probe",
 ]
 resolver = "2"
 
@@ -25,6 +26,8 @@ repository = "https://github.com/NVIDIA/nv-telemetry"
 nv-telemetry-schema = { path = "schema", version = "0.1.0" }
 nv-telemetry-model = { path = "model", version = "0.1.0" }
 nv-telemetry-source = { path = "source", version = "0.1.0" }
+nv-telemetry-orchestration = { path = "orchestration", version = "0.1.0" }
+nv-telemetry-redfish = { path = "sources/redfish", version = "0.1.0" }
 nv-telemetry-export = { path = "export", version = "0.1.0" }
 
 # Protobuf runtime for the generated model. Because generated code is checked
@@ -69,6 +72,8 @@ nv-redfish-bmc-mock = "0.15.1"
 # vendored DMTF bundle that nv-redfish generates its typed models from.
 nv-redfish-csdl-compiler = "0.15.1"
 nv-redfish-schema = "0.15.1"
+nv-redfish-dispatcher = "0.15"
+url = "2"
 
 # Dev-only: fixture JSON for the acquisition corpus, and the executor
 # bmc-mock's async trait impl needs under test.
