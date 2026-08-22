@@ -11,5 +11,6 @@ mod boundary;
 mod canonical;
 mod encoding;
 mod properties;
+mod rules;
 mod values;
 mod wire_properties;
